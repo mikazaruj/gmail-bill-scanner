@@ -1,3 +1,49 @@
+import ScannedBill from './ScannedBill';
+
+export type { ScannedBill };
+
+/**
+ * Interface for Gmail API response message parts
+ */
+export interface GmailMessagePart {
+  partId?: string;
+  mimeType: string;
+  filename?: string;
+  headers?: { name: string; value: string }[];
+  body?: {
+    size?: number;
+    data?: string;
+    attachmentId?: string;
+  };
+  parts?: GmailMessagePart[];
+}
+
+/**
+ * Interface for Gmail API response message format
+ */
+export interface GmailMessage {
+  id: string;
+  threadId: string;
+  labelIds?: string[];
+  snippet?: string;
+  historyId?: string;
+  internalDate?: string;
+  payload?: GmailMessagePart;
+  sizeEstimate?: number;
+  raw?: string;
+}
+
+/**
+ * Interface for Gmail attachments
+ */
+export interface GmailAttachment {
+  attachmentId: string;
+  messageId: string;
+  filename: string;
+  data: string;
+  size?: number;
+}
+
 // Bill types
 export interface Bill {
   id: string;
@@ -10,53 +56,6 @@ export interface Bill {
   pdfAttachmentId?: string;
   createdAt: Date;
   updatedAt: Date;
-}
-
-// Gmail API types
-export interface GmailMessage {
-  id: string;
-  threadId: string;
-  labelIds: string[];
-  snippet: string;
-  internalDate: string;
-  payload: GmailPayload;
-}
-
-export interface GmailPayload {
-  partId: string;
-  mimeType: string;
-  filename: string;
-  headers: GmailHeader[];
-  body: GmailBody;
-  parts?: GmailPart[];
-}
-
-export interface GmailHeader {
-  name: string;
-  value: string;
-}
-
-export interface GmailBody {
-  size: number;
-  data?: string;
-  attachmentId?: string;
-}
-
-export interface GmailPart {
-  partId: string;
-  mimeType: string;
-  filename: string;
-  headers: GmailHeader[];
-  body: GmailBody;
-  parts?: GmailPart[];
-}
-
-export interface GmailAttachment {
-  attachmentId: string;
-  messageId: string;
-  data: string;
-  size: number;
-  filename: string;
 }
 
 // Email source types

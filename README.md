@@ -25,14 +25,26 @@ A Chrome extension that automatically scans, extracts, and organizes bill inform
    ```
    npm install
    ```
-3. Start the development server:
+3. Create a `.env.local` file in the project root with the following variables:
+   ```
+   # Google OAuth credentials (create at https://console.cloud.google.com/apis/credentials)
+   GOOGLE_CLIENT_ID=your_google_client_id_here
+   
+   # Supabase credentials (create at https://supabase.com)
+   SUPABASE_URL=your_supabase_url_here
+   SUPABASE_ANON_KEY=your_supabase_anon_key_here
+   ```
+   
+   > **Important**: For Google OAuth, create a **Chrome App** client type (not a Web application) and add the extension's redirect URL to the authorized redirect URIs. The extension's redirect URL is in the format: `https://<extension-id>.chromiumapp.org/`
+   
+4. Start the development server:
    ```
    npm run dev
    ```
-4. Load the extension in Chrome:
+5. Load the extension in Chrome:
    - Open Chrome and go to `chrome://extensions`
    - Enable "Developer Mode"
-   - Click "Load unpacked" and select the `build/chrome-mv3-dev` directory
+   - Click "Load unpacked" and select the `build` directory
 
 ### Build for Production
 
@@ -40,9 +52,20 @@ A Chrome extension that automatically scans, extracts, and organizes bill inform
 npm run build
 ```
 
-The production-ready extension will be available in the `build/chrome-mv3-prod` directory.
+The production-ready extension will be available in the `build` directory.
 
-### Project Structure
+## End User Guide
+
+End users of the extension only need to:
+
+1. Install the extension from the Chrome Web Store (or load unpacked for testing)
+2. Sign in with their Google account when prompted
+3. Configure scan settings and select/create a Google Sheet for storing bill data
+4. Start scanning emails for bills
+
+No API credentials are required from end users - these are built into the extension by developers.
+
+## Project Structure
 
 ```
 /extension

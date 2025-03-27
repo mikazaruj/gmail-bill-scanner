@@ -16,9 +16,33 @@ export interface Message {
   payload?: any;
 }
 
+/**
+ * Bill data structure
+ */
+export interface BillData {
+  id?: string;
+  vendor: string;
+  amount: number;
+  date?: string | Date;
+  accountNumber?: string;
+  category?: string;
+  isPaid?: boolean;
+  emailId?: string;
+  attachmentId?: string;
+  company?: string;
+  type?: string;
+}
+
+/**
+ * Request params for scanning emails
+ */
+export interface ScanEmailsRequest {
+  maxResults?: number;
+}
+
 export interface ScanEmailsResponse {
   success: boolean;
-  bills?: any[];
+  bills?: BillData[];
   error?: string;
 }
 

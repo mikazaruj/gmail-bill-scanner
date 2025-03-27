@@ -1,6 +1,17 @@
 const path = require('path');
 const CopyPlugin = require('copy-webpack-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+const webpack = require('webpack');
+const dotenv = require('dotenv');
+
+// Load environment variables from .env.local
+const env = dotenv.config({ path: '.env.local' }).parsed || {};
+
+// Create our environment variables to be injected into the app
+const envKeys = Object.keys(env).reduce((prev, next) => {
+  prev[`process.env.${next}`] = JSON.stringify(env[next]);
+  return prev;
+}, {});
 
 module.exports = {
   mode: 'production',
@@ -44,6 +55,7 @@ module.exports = {
     ],
   },
   plugins: [
+    new webpack.DefinePlugin(envKeys),
     new HtmlWebpackPlugin({
       template: './src/popup/index.html',
       filename: 'popup.html',

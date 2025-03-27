@@ -31,6 +31,7 @@ const Options = () => {
 
   useEffect(() => {
     checkAuthStatus();
+    loadSettings();
   }, []);
 
   useEffect(() => {
@@ -41,8 +42,7 @@ const Options = () => {
     }
   }, [isAuth]);
 
-  useEffect(() => {
-    // Load saved options
+  const loadSettings = async () => {
     chrome.storage.sync.get(
       {
         spreadsheetId: '',
@@ -53,9 +53,10 @@ const Options = () => {
         setCurrentSpreadsheetId(items.spreadsheetId);
         setMaxResults(items.maxResults);
         setSearchDays(items.searchDays);
+        setLoading(false);
       }
     );
-  }, []);
+  };
 
   const checkAuthStatus = async () => {
     try {
@@ -232,16 +233,17 @@ const Options = () => {
     return (
       <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full">
-          <h1 className="text-2xl font-bold text-center mb-6">Gmail Bill Scanner Options</h1>
-          <p className="text-gray-600 mb-8 text-center">
-            Please sign in with your Google account to configure the extension.
-          </p>
+          <h1 className="text-2xl font-bold text-center mb-6">Gmail Bill Scanner</h1>
           
           {error && (
             <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
               {error}
             </div>
           )}
+          
+          <p className="text-gray-600 mb-6 text-center">
+            Sign in with your Google account to use this extension.
+          </p>
           
           <button
             onClick={handleLogin}
@@ -255,173 +257,143 @@ const Options = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 py-8 px-4">
-      <div className="max-w-3xl mx-auto bg-white rounded-lg shadow-md p-6">
-        <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">Extension Options</h1>
+    <div className="p-6 max-w-3xl mx-auto">
+      <h1 className="text-2xl font-bold mb-6">Gmail Bill Scanner Settings</h1>
+      
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+          {error}
+        </div>
+      )}
+      
+      {message && (
+        <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4">
+          {message}
+        </div>
+      )}
+      
+      {/* Google Authentication Section */}
+      <div className="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+        <h2 className="text-xl font-semibold mb-4">Google Account</h2>
+        
+        <div>
+          <p className="mb-4">Successfully authenticated with Google!</p>
           <button
+            className="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
             onClick={handleLogout}
-            className="text-sm text-gray-600 hover:text-gray-800 underline"
+            disabled={loading}
           >
-            Sign out
+            {loading ? "Processing..." : "Sign Out"}
           </button>
         </div>
+      </div>
+      
+      {/* Scan Settings Section */}
+      <div className="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+        <h2 className="text-xl font-semibold mb-4">Scan Settings</h2>
         
-        {error && (
-          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-            {error}
-          </div>
-        )}
-        
-        {saveSuccess && (
-          <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4">
-            Settings saved successfully!
-          </div>
-        )}
-        
-        {message && (
-          <div className="mb-4 p-3 bg-green-100 text-green-800 rounded">
-            {message}
-          </div>
-        )}
-        
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold mb-3">Google Sheets Integration</h2>
-          <div className="mb-4">
-            <label className="block text-gray-700 mb-2">
-              Select a Google Sheet:
-            </label>
-            <div className="flex gap-2">
-              <select
-                value={spreadsheetId}
-                onChange={handleSpreadsheetChange}
-                className="block w-full p-2 border border-gray-300 rounded"
-                disabled={loadingSpreadsheets}
-              >
-                <option value="">-- Select a spreadsheet --</option>
-                {spreadsheets.map(sheet => (
-                  <option key={sheet.id} value={sheet.id}>
-                    {sheet.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={loadSpreadsheets}
-                className="bg-gray-200 hover:bg-gray-300 text-gray-800 px-4 py-2 rounded"
-                disabled={loadingSpreadsheets}
-              >
-                {loadingSpreadsheets ? "Loading..." : "Refresh"}
-              </button>
-            </div>
-          </div>
-          
-          <div className="mb-4">
-            <label className="block text-gray-700 mb-2">
-              Or enter a Spreadsheet ID manually:
-            </label>
-            <input
-              type="text"
-              value={spreadsheetId}
-              onChange={handleManualSpreadsheetIdChange}
-              placeholder="Enter Google Spreadsheet ID"
-              className="block w-full p-2 border border-gray-300 rounded"
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              You can find the ID in the URL of your Google Sheet: 
-              https://docs.google.com/spreadsheets/d/<span className="font-mono">SPREADSHEET_ID</span>/edit
-            </p>
-          </div>
+        <div className="mb-4">
+          <label className="block text-gray-700 text-sm font-bold mb-2">
+            Days to scan (past)
+          </label>
+          <input
+            className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+            type="number"
+            min="1"
+            max="365"
+            value={searchDays}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchDays(parseInt(e.target.value))}
+          />
         </div>
         
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold mb-3">Scan Preferences</h2>
-          
-          <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  name="scanAttachments"
-                  checked={scanPreferences.scanAttachments}
-                  onChange={handleScanPreferenceChange}
-                  className="form-checkbox h-4 w-4 text-blue-600"
-                />
-                <span>Scan PDF attachments</span>
-              </label>
-            </div>
-            
-            <div>
-              <label className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  name="scanSubject"
-                  checked={scanPreferences.scanSubject}
-                  onChange={handleScanPreferenceChange}
-                  className="form-checkbox h-4 w-4 text-blue-600"
-                />
-                <span>Scan email subject</span>
-              </label>
-            </div>
-            
-            <div>
-              <label className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  name="scanBody"
-                  checked={scanPreferences.scanBody}
-                  onChange={handleScanPreferenceChange}
-                  className="form-checkbox h-4 w-4 text-blue-600"
-                />
-                <span>Scan email body</span>
-              </label>
-            </div>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-gray-700 mb-1">
-                Days to scan:
-              </label>
-              <select
-                name="daysToScan"
-                value={scanPreferences.daysToScan}
-                onChange={handleScanPreferenceChange}
-                className="block w-full p-2 border border-gray-300 rounded"
-              >
-                <option value={7}>Last 7 days</option>
-                <option value={14}>Last 14 days</option>
-                <option value={30}>Last 30 days</option>
-                <option value={60}>Last 60 days</option>
-                <option value={90}>Last 90 days</option>
-              </select>
-            </div>
-            
-            <div>
-              <label className="block text-gray-700 mb-1">
-                Maximum emails to scan:
-              </label>
-              <input
-                type="number"
-                name="maxResults"
-                value={scanPreferences.maxResults}
-                onChange={handleScanPreferenceChange}
-                min={1}
-                max={200}
-                className="block w-full p-2 border border-gray-300 rounded"
-              />
-            </div>
-          </div>
+        <div className="mb-4">
+          <label className="block text-gray-700 text-sm font-bold mb-2">
+            Maximum emails to scan
+          </label>
+          <input
+            className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+            type="number"
+            min="1"
+            max="500"
+            value={maxResults}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMaxResults(parseInt(e.target.value))}
+          />
         </div>
         
-        <div className="mt-6 flex justify-end">
+        <div className="flex items-center justify-end">
           <button
+            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
             onClick={handleSave}
             disabled={isSaving}
-            className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded transition-colors"
           >
-            {isSaving ? 'Saving...' : 'Save Settings'}
+            {isSaving ? "Saving..." : "Save Settings"}
           </button>
         </div>
+      </div>
+      
+      {/* Google Sheets Integration */}
+      <div className="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4">
+        <h2 className="text-xl font-semibold mb-4">Google Sheets Integration</h2>
+        
+        <div className="mb-4">
+          <label className="block text-gray-700 text-sm font-bold mb-2">
+            Select a Google Sheet
+          </label>
+          
+          {loadingSpreadsheets ? (
+            <p>Loading spreadsheets...</p>
+          ) : (
+            <select
+              className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+              value={spreadsheetId}
+              onChange={handleSpreadsheetChange}
+              disabled={!isAuth}
+            >
+              <option value="">-- Select a spreadsheet --</option>
+              {spreadsheets.map((sheet) => (
+                <option key={sheet.id} value={sheet.id}>
+                  {sheet.name}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+        
+        <div className="mb-4">
+          <label className="block text-gray-700 text-sm font-bold mb-2">
+            Or enter Spreadsheet ID manually
+          </label>
+          <input
+            className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+            type="text"
+            value={spreadsheetId}
+            onChange={handleManualSpreadsheetIdChange}
+            placeholder="Spreadsheet ID from URL"
+            disabled={!isAuth}
+          />
+        </div>
+        
+        <div className="flex items-center justify-between">
+          <button
+            className="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+            onClick={handleCreateSheet}
+            disabled={!isAuth || loading}
+          >
+            Create New Sheet
+          </button>
+          
+          <button
+            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+            onClick={handleSaveSettings}
+            disabled={!isAuth || !spreadsheetId || loading}
+          >
+            Save Sheet ID
+          </button>
+        </div>
+      </div>
+      
+      <div className="text-center text-gray-500 text-xs">
+        &copy; 2023 Gmail Bill Scanner. All rights reserved.
       </div>
     </div>
   );

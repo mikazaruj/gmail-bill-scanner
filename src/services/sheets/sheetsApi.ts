@@ -4,6 +4,114 @@ import { Bill } from '../../types';
 export const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 
 /**
+ * Creates a new Google Spreadsheet for bill tracking
+ * @param token Access token
+ * @param title Title of the sheet
+ * @returns Object containing spreadsheetId
+ */
+export async function createSpreadsheet(
+  token: string, 
+  title: string
+): Promise<{ spreadsheetId: string }> {
+  try {
+    // Create a new sheet
+    const response = await fetch(
+      'https://sheets.googleapis.com/v4/spreadsheets',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          properties: {
+            title,
+          },
+          sheets: [
+            {
+              properties: {
+                title: 'Bills',
+                gridProperties: {
+                  frozenRowCount: 1,
+                },
+              },
+            },
+          ],
+        }),
+      }
+    );
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(`Sheets API error: ${error.error.message}`);
+    }
+    
+    const data = await response.json();
+    
+    // Set up header row
+    await setupSheetHeaders(data.spreadsheetId, 'Bills', token);
+    
+    return {
+      spreadsheetId: data.spreadsheetId
+    };
+  } catch (error) {
+    console.error('Failed to create spreadsheet:', error);
+    throw error;
+  }
+}
+
+/**
+ * Append multiple bill records to a Google Sheet
+ * @param token Access token
+ * @param spreadsheetId Spreadsheet ID
+ * @param bills Array of bill data to add
+ * @returns True if successful
+ */
+export async function appendBillData(
+  token: string,
+  spreadsheetId: string, 
+  bills: any[]
+): Promise<boolean> {
+  try {
+    if (!bills || bills.length === 0) {
+      return true; // Nothing to append
+    }
+    
+    // Transform bill data for sheet format
+    const rows = bills.map(bill => {
+      // Format date if it exists
+      const formattedDate = bill.date ? 
+        (typeof bill.date === 'string' ? bill.date : bill.date.toISOString().split('T')[0]) : 
+        '';
+      
+      return [
+        bill.vendor || '',
+        bill.amount || 0,
+        formattedDate,
+        bill.accountNumber || '',
+        false, // Default to unpaid
+        bill.emailId || '',
+        bill.attachmentId || '',
+        new Date().toISOString()
+      ];
+    });
+    
+    // Append rows to sheet
+    await appendSheetValues(
+      spreadsheetId,
+      'Bills!A2:H',
+      rows,
+      token
+    );
+    
+    return true;
+  } catch (error) {
+    console.error('Failed to append bills to sheet:', error);
+    throw error;
+  }
+}
+
+/**
  * Creates a new Google Sheet for bill tracking if it doesn't exist
  * @param title Title of the sheet
  * @returns Sheet ID and name

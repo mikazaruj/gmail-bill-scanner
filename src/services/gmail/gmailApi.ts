@@ -4,15 +4,22 @@ import { GmailMessage, GmailAttachment } from '../../types';
 export const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
 /**
- * Fetches emails matching the given query
- * @param query Search query for Gmail
- * @param maxResults Maximum number of results to return
+ * Search interface for Gmail API
+ */
+export interface SearchOptions {
+  maxResults?: number;
+  query: string;
+}
+
+/**
+ * Searches for emails matching the given query
+ * @param token Access token
+ * @param options Search options
  * @returns Array of Gmail messages
  */
-export async function fetchEmailsByQuery(query: string, maxResults = 10): Promise<GmailMessage[]> {
+export async function searchEmails(token: string, options: SearchOptions): Promise<GmailMessage[]> {
   try {
-    // TODO: Implement proper authentication when dependencies are available
-    const token = await getAuthToken([GMAIL_SCOPE]);
+    const { query, maxResults = 10 } = options;
     
     // Implement pagination and batching for large result sets
     const response = await fetch(
@@ -30,20 +37,25 @@ export async function fetchEmailsByQuery(query: string, maxResults = 10): Promis
     }
     
     const data = await response.json();
-    return Promise.all(data.messages.map((msg: { id: string }) => fetchMessageDetails(msg.id, token)));
+    
+    if (!data.messages || data.messages.length === 0) {
+      return [];
+    }
+    
+    return Promise.all(data.messages.map((msg: { id: string }) => getEmailContent(token, msg.id)));
   } catch (error) {
-    console.error('Failed to fetch emails:', error);
+    console.error('Failed to search emails:', error);
     throw error;
   }
 }
 
 /**
- * Fetches details for a specific message
+ * Gets detailed content for a specific email
+ * @param token Access token
  * @param messageId Gmail message ID
- * @param token Auth token
  * @returns Gmail message details
  */
-async function fetchMessageDetails(messageId: string, token: string): Promise<GmailMessage> {
+export async function getEmailContent(token: string, messageId: string): Promise<GmailMessage> {
   try {
     const response = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`,
@@ -67,15 +79,75 @@ async function fetchMessageDetails(messageId: string, token: string): Promise<Gm
 }
 
 /**
+ * Gets attachments for a specific email
+ * @param token Access token
+ * @param messageId Message ID
+ * @returns Array of Gmail attachments
+ */
+export async function getAttachments(token: string, messageId: string): Promise<GmailAttachment[]> {
+  try {
+    // First get the message to find attachment IDs
+    const message = await getEmailContent(token, messageId);
+    const attachments: GmailAttachment[] = [];
+    
+    // Extract attachment IDs from message parts
+    const extractAttachmentIds = (parts: any[]): void => {
+      if (!parts) return;
+      
+      for (const part of parts) {
+        if (part.mimeType === 'application/pdf' || 
+            (part.filename && part.filename.toLowerCase().endsWith('.pdf'))) {
+          if (part.body && part.body.attachmentId) {
+            attachments.push({
+              attachmentId: part.body.attachmentId,
+              messageId,
+              filename: part.filename || `attachment-${part.body.attachmentId}.pdf`,
+              size: part.body.size || 0,
+              data: ''
+            });
+          }
+        }
+        
+        // Recursively check nested parts
+        if (part.parts) {
+          extractAttachmentIds(part.parts);
+        }
+      }
+    };
+    
+    if (message.payload && message.payload.parts) {
+      extractAttachmentIds(message.payload.parts);
+    }
+    
+    // Fetch each attachment's data
+    return Promise.all(
+      attachments.map(async (attachment) => {
+        const fullAttachment = await fetchAttachment(token, messageId, attachment.attachmentId);
+        return {
+          ...attachment,
+          data: fullAttachment.data
+        };
+      })
+    );
+  } catch (error) {
+    console.error(`Failed to fetch attachments for message ${messageId}:`, error);
+    throw error;
+  }
+}
+
+/**
  * Fetches an attachment from Gmail
+ * @param token Access token
  * @param messageId Message ID
  * @param attachmentId Attachment ID
  * @returns Gmail attachment
  */
-export async function fetchAttachment(messageId: string, attachmentId: string): Promise<GmailAttachment> {
+export async function fetchAttachment(
+  token: string,
+  messageId: string, 
+  attachmentId: string
+): Promise<GmailAttachment> {
   try {
-    const token = await getAuthToken([GMAIL_SCOPE]);
-    
     const response = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`,
       {
@@ -97,7 +169,7 @@ export async function fetchAttachment(messageId: string, attachmentId: string): 
       messageId,
       data: data.data,
       size: data.size,
-      filename: '' // Filename is usually in the message parts, not in the attachment endpoint
+      filename: `attachment-${attachmentId}.pdf` // Default filename
     };
   } catch (error) {
     console.error(`Failed to fetch attachment ${attachmentId} for message ${messageId}:`, error);
@@ -107,13 +179,12 @@ export async function fetchAttachment(messageId: string, attachmentId: string): 
 
 /**
  * Applies a label to a message
+ * @param token Access token
  * @param messageId Message ID
  * @param labelId Label ID to apply
  */
-export async function applyLabel(messageId: string, labelId: string): Promise<void> {
+export async function applyLabel(token: string, messageId: string, labelId: string): Promise<void> {
   try {
-    const token = await getAuthToken([GMAIL_SCOPE, 'https://www.googleapis.com/auth/gmail.modify']);
-    
     const response = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`,
       {
