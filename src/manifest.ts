@@ -1,4 +1,4 @@
-import { defineManifest } from '@plasmohq/messaging';
+import { defineManifest } from './utils/manifest-utils';
 import packageJson from '../package.json';
 
 const { name, displayName, version, description } = packageJson;
@@ -27,6 +27,13 @@ export default defineManifest(() => ({
       '128': 'assets/icon128.png',
     },
   },
+  content_scripts: [
+    {
+      matches: ["https://mail.google.com/*"],
+      js: ["content/index.ts"],
+      run_at: "document_end"
+    }
+  ],
   options_page: 'options.html',
   permissions: ['storage', 'identity'],
   host_permissions: [

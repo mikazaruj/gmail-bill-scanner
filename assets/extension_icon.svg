@@ -1,0 +1,20 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="128" height="128" rx="24" fill="#4285F4"/>
+  
+  <!-- Email Envelope -->
+  <rect x="24" y="32" width="80" height="60" rx="8" fill="white"/>
+  
+  <!-- Gmail Logo Color Stripes -->
+  <rect x="24" y="32" width="80" height="10" fill="#DB4437"/>
+  <rect x="24" y="42" width="80" height="10" fill="#F4B400"/>
+  <rect x="24" y="52" width="80" height="10" fill="#0F9D58"/>
+  <rect x="24" y="62" width="80" height="10" fill="#4285F4"/>
+  
+  <!-- Dollar Sign -->
+  <path d="M64 95C75.0457 95 84 86.0457 84 75C84 63.9543 75.0457 55 64 55C52.9543 55 44 63.9543 44 75C44 86.0457 52.9543 95 64 95Z" fill="#0F9D58"/>
+  <path d="M64 85C69.5228 85 74 80.5228 74 75C74 69.4772 69.5228 65 64 65C58.4772 65 54 69.4772 54 75C54 80.5228 58.4772 85 64 85Z" fill="white"/>
+  <path d="M64 55V95" stroke="white" stroke-width="4" stroke-linecap="round"/>
+  <path d="M70 62H58" stroke="white" stroke-width="4" stroke-linecap="round"/>
+  <path d="M70 88H58" stroke="white" stroke-width="4" stroke-linecap="round"/>
+</svg> 

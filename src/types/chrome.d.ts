@@ -39,6 +39,12 @@ declare namespace chrome {
 
     export const onMessage: RuntimeEvent<MessageCallback>;
     
+    // Send a message to the extension process
+    export function sendMessage<T = any>(
+      message: any,
+      responseCallback?: (response: T) => void
+    ): void;
+    
     // Install and update events
     export interface InstalledDetails {
       reason: 'install' | 'update' | 'chrome_update' | 'shared_module_update';

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import * as ReactDOM from 'react-dom/client';
 import { isAuthenticated, authenticate, signOut } from "../services/auth/googleAuth";
 import { getSpreadsheetId, setSpreadsheetId, listUserSpreadsheets } from "../services/sheets/sheetsService";
 import "../globals.css";
@@ -8,7 +9,7 @@ interface SpreadsheetOption {
   name: string;
 }
 
-export default function Options() {
+const Options = () => {
   const [isAuth, setIsAuth] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [spreadsheetId, setCurrentSpreadsheetId] = useState<string>("");
@@ -23,6 +24,10 @@ export default function Options() {
   });
   const [error, setError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+  const [maxResults, setMaxResults] = useState(20);
+  const [searchDays, setSearchDays] = useState(30);
+  const [isSaving, setIsSaving] = useState(false);
+  const [message, setMessage] = useState('');
 
   useEffect(() => {
     checkAuthStatus();
@@ -35,6 +40,22 @@ export default function Options() {
       loadPreferences();
     }
   }, [isAuth]);
+
+  useEffect(() => {
+    // Load saved options
+    chrome.storage.sync.get(
+      {
+        spreadsheetId: '',
+        maxResults: 20,
+        searchDays: 30
+      }, 
+      (items) => {
+        setCurrentSpreadsheetId(items.spreadsheetId);
+        setMaxResults(items.maxResults);
+        setSearchDays(items.searchDays);
+      }
+    );
+  }, []);
 
   const checkAuthStatus = async () => {
     try {
@@ -130,10 +151,11 @@ export default function Options() {
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) => {
     const { name, value, type } = e.target;
+    const newName = name as keyof typeof scanPreferences;
     
     setScanPreferences(prev => ({
       ...prev,
-      [name]: type === "checkbox" 
+      [newName]: type === "checkbox" 
         ? (e.target as HTMLInputElement).checked 
         : type === "number" 
           ? parseInt(value, 10) 
@@ -158,6 +180,44 @@ export default function Options() {
       setError("Failed to save settings");
       console.error("Error saving settings:", error);
     }
+  };
+
+  const handleSave = () => {
+    setIsSaving(true);
+    setMessage('');
+
+    chrome.storage.sync.set(
+      {
+        spreadsheetId,
+        maxResults,
+        searchDays
+      },
+      () => {
+        setIsSaving(false);
+        setMessage('Settings saved!');
+        
+        // Clear message after 3 seconds
+        setTimeout(() => {
+          setMessage('');
+        }, 3000);
+      }
+    );
+  };
+
+  const handleCreateSheet = () => {
+    setIsSaving(true);
+    setMessage('');
+
+    chrome.runtime.sendMessage({ type: "CREATE_SPREADSHEET" }, (response) => {
+      setIsSaving(false);
+      
+      if (response.success && response.spreadsheetId) {
+        setCurrentSpreadsheetId(response.spreadsheetId);
+        setMessage('New spreadsheet created!');
+      } else {
+        setMessage('Error creating spreadsheet: ' + (response.error || 'Unknown error'));
+      }
+    });
   };
 
   if (loading) {
@@ -216,6 +276,12 @@ export default function Options() {
         {saveSuccess && (
           <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4">
             Settings saved successfully!
+          </div>
+        )}
+        
+        {message && (
+          <div className="mb-4 p-3 bg-green-100 text-green-800 rounded">
+            {message}
           </div>
         )}
         
@@ -349,13 +415,21 @@ export default function Options() {
         
         <div className="mt-6 flex justify-end">
           <button
-            onClick={handleSaveSettings}
+            onClick={handleSave}
+            disabled={isSaving}
             className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded transition-colors"
           >
-            Save Settings
+            {isSaving ? 'Saving...' : 'Save Settings'}
           </button>
         </div>
       </div>
     </div>
   );
+};
+
+// Create root element
+const rootElement = document.getElementById('root');
+if (rootElement) {
+  const root = ReactDOM.createRoot(rootElement as HTMLElement);
+  root.render(<Options />);
 } 
