@@ -20,17 +20,7 @@ export interface Message {
  * Bill data structure
  */
 export interface BillData {
-  id?: string;
-  vendor: string;
-  amount: number;
-  date?: string | Date;
-  accountNumber?: string;
-  category?: string;
-  isPaid?: boolean;
-  emailId?: string;
-  attachmentId?: string;
-  company?: string;
-  type?: string;
+  [key: string]: string | number | Date | undefined;
 }
 
 /**
@@ -38,12 +28,13 @@ export interface BillData {
  */
 export interface ScanEmailsRequest {
   maxResults?: number;
+  searchDays?: number;
 }
 
 export interface ScanEmailsResponse {
   success: boolean;
-  bills?: BillData[];
   error?: string;
+  bills?: BillData[];
 }
 
 export interface AuthResponse {
@@ -56,4 +47,12 @@ export interface ExportResponse {
   success: boolean;
   spreadsheetId?: string;
   error?: string;
+}
+
+export interface BillFieldConfig {
+  id: string;
+  name: string;
+  type: 'string' | 'number' | 'date';
+  required: boolean;
+  description?: string;
 } 

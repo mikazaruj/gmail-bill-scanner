@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Gmail Bill Scanner",
+  "version": "1.0.0",
+  "description": "Automatically scan Gmail for bills and organize them in Google Sheets",
+  "permissions": [
+    "identity",
+    "storage",
+    "alarms",
+    "background"
+  ],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "https://www.googleapis.com/*"
+  ],
+  "oauth2": {
+    "client_id": "${process.env.GOOGLE_CLIENT_ID}",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ]
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.svg"
+  },
+  "options_page": "options.html",
+  "icons": {
+    "128": "icon.svg"
+  }
+} 

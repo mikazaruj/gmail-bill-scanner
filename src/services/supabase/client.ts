@@ -494,23 +494,28 @@ export async function signInWithGoogle(
   try {
     const supabase = await getSupabaseClient();
     
+    // First try to get an ID token from Google
+    const response = await fetch('https://oauth2.googleapis.com/tokeninfo?access_token=' + accessToken);
+    const tokenInfo = await response.json();
+    
+    if (!tokenInfo.email || tokenInfo.email !== email) {
+      throw new Error('Invalid token or email mismatch');
+    }
+    
     // Sign in with Google OAuth token
-    const result = await supabase.auth.signInWithIdToken({
+    const { data: authData, error: authError } = await supabase.auth.signInWithIdToken({
       provider: 'google',
       token: accessToken,
       nonce: generateNonce(),
     });
     
-    // If user doesn't exist but we have their email, we can create them
-    if (result.error && email) {
-      console.warn('Error signing in with Google token, attempting workaround:', result.error);
+    if (authError) {
+      console.warn('Error signing in with Google OAuth:', authError);
       
-      // Alternative approach: create user with email/password
-      // This is a fallback and may not always work depending on Supabase settings
-      const tempPassword = generateSecurePassword();
-      const signUpResult = await supabase.auth.signUp({
+      // If user doesn't exist, create them
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email,
-        password: tempPassword,
+        password: generateSecurePassword(), // They'll never use this password
         options: {
           data: {
             name,
@@ -520,19 +525,45 @@ export async function signInWithGoogle(
         }
       });
       
-      if (signUpResult.error) {
-        console.error('Failed to create user:', signUpResult.error);
-        return signUpResult;
+      if (signUpError) {
+        console.error('Failed to create user:', signUpError);
+        return { data: null, error: signUpError };
       }
       
-      return signUpResult;
+      // Create user profile in public schema
+      if (signUpData?.user) {
+        await upsertUserProfile(signUpData.user.id, {
+          display_name: name,
+          avatar_url: avatarUrl,
+          email: email,
+          provider: 'google'
+        });
+        
+        // Initialize user settings
+        await saveUserSettings(signUpData.user.id, {
+          scan_frequency: 'manual',
+          apply_labels: false
+        });
+      }
+      
+      return { data: signUpData, error: null };
     }
     
-    return result;
+    // User exists and signed in successfully
+    if (authData?.user) {
+      await upsertUserProfile(authData.user.id, {
+        display_name: name,
+        avatar_url: avatarUrl,
+        email: email,
+        provider: 'google'
+      });
+    }
+    
+    return { data: authData, error: null };
   } catch (error) {
     console.error('Error in signInWithGoogle:', error);
     return { 
-      data: { user: null, session: null }, 
+      data: null, 
       error: error instanceof Error ? error : new Error('Unknown error')
     };
   }
@@ -608,4 +639,26 @@ function generateSecurePassword(): string {
   }
   
   return password;
+}
+
+/**
+ * Delete the current user's account and all associated data
+ */
+export async function deleteAccount() {
+  const supabase = await getSupabaseClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  
+  if (!user) {
+    throw new Error('No user found to delete');
+  }
+
+  // Delete user data from public tables
+  await supabase.from('user_settings').delete().eq('user_id', user.id);
+  await supabase.from('google_credentials').delete().eq('user_id', user.id);
+  await supabase.from('email_sources').delete().eq('user_id', user.id);
+  await supabase.from('processed_items').delete().eq('user_id', user.id);
+  
+  // Finally delete the user's auth account
+  const { error } = await supabase.auth.admin.deleteUser(user.id);
+  if (error) throw error;
 } 

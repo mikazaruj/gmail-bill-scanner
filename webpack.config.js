@@ -1,6 +1,7 @@
 const path = require('path');
 const CopyPlugin = require('copy-webpack-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 const webpack = require('webpack');
 const dotenv = require('dotenv');
 
@@ -43,52 +44,60 @@ module.exports = {
               '@babel/preset-react', 
               '@babel/preset-typescript'
             ],
-            // Ensure our code doesn't use any eval
-            compact: true,
+            plugins: [
+              '@babel/plugin-transform-runtime'
+            ]
           },
         },
       },
       {
         test: /\.css$/,
-        use: ['style-loader', 'css-loader', 'postcss-loader'],
+        use: [
+          MiniCssExtractPlugin.loader,
+          {
+            loader: 'css-loader',
+            options: {
+              importLoaders: 1
+            }
+          },
+          'postcss-loader'
+        ],
       },
     ],
   },
   plugins: [
-    new webpack.DefinePlugin(envKeys),
-    new HtmlWebpackPlugin({
-      template: './src/popup/index.html',
-      filename: 'popup.html',
-      chunks: ['popup'],
-      cache: false,
+    new webpack.DefinePlugin({
+      'process.env': JSON.stringify(process.env)
     }),
-    new HtmlWebpackPlugin({
-      template: './src/options/index.html',
-      filename: 'options.html',
-      chunks: ['options'],
-      cache: false,
+    new MiniCssExtractPlugin({
+      filename: '[name].css'
     }),
     new CopyPlugin({
       patterns: [
-        { from: 'assets/extension_icon.svg', to: 'assets/icon16.png' },
-        { from: 'assets/extension_icon.svg', to: 'assets/icon32.png' },
-        { from: 'assets/extension_icon.svg', to: 'assets/icon48.png' },
-        { from: 'assets/extension_icon.svg', to: 'assets/icon128.png' },
-        { 
-          from: 'src/manifest.json', 
-          to: 'manifest.json',
-          transform(content) {
-            return Buffer.from(JSON.stringify({
-              ...JSON.parse(content.toString()),
-              version: process.env.npm_package_version || '0.0.1'
-            }))
+        {
+          from: 'public',
+          to: '.',
+          globOptions: {
+            ignore: ['**/popup.html', '**/options.html']
           }
-        }
+        },
       ],
+    }),
+    new HtmlWebpackPlugin({
+      template: './public/popup.html',
+      filename: 'popup.html',
+      chunks: ['popup'],
+      cache: false
+    }),
+    new HtmlWebpackPlugin({
+      template: './public/options.html',
+      filename: 'options.html',
+      chunks: ['options'],
+      cache: false
     }),
   ],
   resolve: {
-    extensions: ['.js', '.jsx', '.ts', '.tsx'],
+    extensions: ['.ts', '.tsx', '.js', '.jsx', '.css']
   },
   optimization: {
     minimize: true,

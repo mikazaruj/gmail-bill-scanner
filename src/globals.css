@@ -35,7 +35,7 @@
     --card-foreground: 222.2 84% 4.9%;
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
+    --primary: 221.2 83.2% 53.3%;
     --primary-foreground: 210 40% 98%;
     --secondary: 210 40% 96.1%;
     --secondary-foreground: 222.2 47.4% 11.2%;
@@ -47,7 +47,7 @@
     --destructive-foreground: 210 40% 98%;
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --ring: 221.2 83.2% 53.3%;
     --radius: 0.5rem;
   }
 
@@ -95,7 +95,7 @@
     width: 320px; /* Standard extension width */
     max-height: 600px; /* Allow scrolling if needed */
     overflow-y: auto;
-    @apply bg-background;
+    @apply bg-background text-foreground;
   }
 }
 
@@ -503,4 +503,266 @@ input:checked + .toggle-slider:before {
   font-weight: 600;
   margin-right: 8px;
   font-size: 14px;
+}
+
+.bill-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+}
+
+.bill-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.25rem 0;
+}
+
+.field-name {
+  font-weight: 500;
+  color: #4b5563;
+}
+
+.field-value {
+  color: #1f2937;
+}
+
+/* For required fields */
+.field-name.required::after {
+  content: '*';
+  color: #ef4444;
+  margin-left: 0.25rem;
+}
+
+/* Bill item styling */
+.bill-item {
+  background: white;
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+
+.bill-item:hover {
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+/* Base popup container */
+.popup-container {
+  @apply min-w-[400px] min-h-[300px] p-4 bg-background;
+}
+
+.popup-container h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: var(--spacing-md);
+  color: var(--dark-navy);
+}
+
+/* Loading indicator */
+.loading-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-lg);
+}
+
+.spinner {
+  border: 3px solid rgba(0, 0, 0, 0.1);
+  border-radius: 50%;
+  border-top: 3px solid var(--primary-blue);
+  width: 24px;
+  height: 24px;
+  animation: spin 1s linear infinite;
+  margin-bottom: var(--spacing-sm);
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Action containers */
+.action-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  margin: var(--spacing-md) 0;
+}
+
+.nav-container {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--spacing-md);
+}
+
+/* Results container */
+.results-container {
+  margin-top: var(--spacing-md);
+}
+
+.results-container h2 {
+  font-size: 1.1rem;
+  font-weight: 500;
+  margin-bottom: var(--spacing-md);
+  color: var(--dark-navy);
+}
+
+.bills-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+
+/* Bill item styles */
+.bill-item {
+  background-color: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.bill-content {
+  padding: var(--spacing-md);
+}
+
+.bill-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-xs) 0;
+}
+
+.field-name {
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+.field-value {
+  color: var(--foreground);
+}
+
+/* Button styles */
+.primary-button {
+  background-color: var(--primary-blue);
+  color: var(--white);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius);
+  border: none;
+  font-weight: 500;
+  cursor: pointer;
+  width: 100%;
+  transition: background-color 0.2s;
+}
+
+.primary-button:hover {
+  background-color: #0078e7;
+}
+
+.primary-button:disabled {
+  background-color: var(--muted);
+  cursor: not-allowed;
+}
+
+.secondary-button {
+  background-color: var(--secondary);
+  color: var(--secondary-foreground);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius);
+  border: none;
+  font-weight: 500;
+  cursor: pointer;
+  width: 100%;
+  transition: background-color 0.2s;
+}
+
+.secondary-button:hover {
+  background-color: #e9ecef;
+}
+
+.text-button {
+  background: none;
+  border: none;
+  color: var(--muted-foreground);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.text-button:hover {
+  color: var(--foreground);
+}
+
+/* Footer */
+.footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--border);
+}
+
+/* Error message */
+.error-message {
+  background-color: rgba(239, 68, 68, 0.1);
+  border-left: 3px solid var(--error-red);
+  color: var(--error-red);
+  padding: var(--spacing-md);
+  margin: var(--spacing-md) 0;
+  border-radius: var(--radius);
+}
+
+/* Loading description */
+.loading-description {
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+  margin-top: var(--spacing-md);
+}
+
+.options-container {
+  @apply min-w-[600px] min-h-[400px] p-6 bg-background;
+}
+
+.button {
+  @apply inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2;
+}
+
+.input {
+  @apply flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.label {
+  @apply text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70;
+}
+
+.card {
+  @apply rounded-lg border bg-card text-card-foreground shadow-sm;
+}
+
+.card-header {
+  @apply flex flex-col space-y-1.5 p-6;
+}
+
+.card-title {
+  @apply text-2xl font-semibold leading-none tracking-tight;
+}
+
+.card-description {
+  @apply text-sm text-muted-foreground;
+}
+
+.card-content {
+  @apply p-6 pt-0;
+}
+
+.card-footer {
+  @apply flex items-center p-6 pt-0;
+}
+
+.loading {
+  @apply animate-spin h-5 w-5 text-primary;
 } 

@@ -1,7 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import * as ReactDOM from 'react-dom/client';
 import '../globals.css';
-import { BillData } from '../types/Message';
+import { BillData, BillFieldConfig } from '../types/Message';
+
+interface ScanEmailsResponse {
+  success: boolean;
+  error?: string;
+  bills?: BillData[];
+}
 
 const Popup = () => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
@@ -50,11 +56,21 @@ const Popup = () => {
     D: 'Category'
   };
 
-  const [scanResults, setScanResults] = useState<BillData[] | null>(null);
+  const [scanResults, setScanResults] = useState<BillData[]>([]);
   const [scanInProgress, setScanInProgress] = useState<boolean>(false);
   const [scanProgressMessage, setScanProgressMessage] = useState<string>('');
   const [exportInProgress, setExportInProgress] = useState<boolean>(false);
   const [backgroundReady, setBackgroundReady] = useState<boolean>(false);
+  const [billFields, setBillFields] = useState<BillFieldConfig[]>([]);
+
+  // Load bill fields configuration
+  useEffect(() => {
+    chrome.storage.sync.get(['billFields'], (result) => {
+      if (result.billFields) {
+        setBillFields(result.billFields);
+      }
+    });
+  }, []);
 
   // Check if background script is ready
   useEffect(() => {
@@ -186,7 +202,7 @@ const Popup = () => {
       if (response?.success) {
         setIsAuthenticated(false);
         setError(null);
-        setScanResults(null);
+        setScanResults([]);
       } else {
         setError(response?.error || 'Sign out failed');
       }
@@ -198,7 +214,7 @@ const Popup = () => {
   const handleScan = async () => {
     setScanInProgress(true);
     setScanProgressMessage('Starting scan...');
-    setScanResults(null);
+    setScanResults([]);
     setError(null);
 
     // Get scan settings from storage
@@ -217,7 +233,7 @@ const Popup = () => {
         maxResults: settings.maxResults,
         searchDays: settings.searchDays
       }
-    }, (response) => {
+    }, (response: ScanEmailsResponse) => {
       setScanInProgress(false);
       
       if (chrome.runtime.lastError) {
@@ -227,7 +243,7 @@ const Popup = () => {
       }
       
       if (response?.success) {
-        setScanResults(response.bills);
+        setScanResults(response.bills || []);
         console.log('Scan results:', response.bills);
       } else {
         setError(response?.error || 'Scan failed');
@@ -294,6 +310,20 @@ const Popup = () => {
     }
   };
 
+  const renderBillValue = (bill: BillData, field: BillFieldConfig) => {
+    const value = bill[field.id];
+    if (value === undefined) return 'N/A';
+
+    switch (field.type) {
+      case 'number':
+        return typeof value === 'number' ? `$${value.toFixed(2)}` : value;
+      case 'date':
+        return value instanceof Date ? value.toLocaleDateString() : value;
+      default:
+        return String(value);
+    }
+  };
+
   if (!backgroundReady) {
     return (
       <div className="popup-container">
@@ -324,23 +354,27 @@ const Popup = () => {
         <h1>Gmail Bill Scanner</h1>
         <div className="error-message">
           <p>{error}</p>
-          <button onClick={() => setError(null)}>Dismiss</button>
         </div>
         
-        {isAuthenticated === false && (
-          <div className="action-container">
-            <button onClick={handleLogin}>Sign in with Google</button>
-            <button onClick={handleOpenOptions}>Options</button>
-          </div>
-        )}
-        
-        {isAuthenticated && (
-          <div className="action-container">
-            <button onClick={handleScan}>Try Scanning Again</button>
-            <button onClick={handleLogout}>Sign Out</button>
-            <button onClick={handleOpenOptions}>Options</button>
-          </div>
-        )}
+        <div className="action-container">
+          {isAuthenticated === false && (
+            <button onClick={handleLogin} className="primary-button">
+              Sign in with Google
+            </button>
+          )}
+          {isAuthenticated && (
+            <button onClick={handleScan} className="primary-button">
+              Try Scanning Again
+            </button>
+          )}
+        </div>
+
+        <div className="footer">
+          {isAuthenticated && (
+            <button onClick={handleLogout} className="text-button">Sign Out</button>
+          )}
+          <button onClick={handleOpenOptions} className="text-button">Options</button>
+        </div>
       </div>
     );
   }
@@ -349,10 +383,14 @@ const Popup = () => {
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
-        <p>Sign in to scan your emails for bills</p>
+        <p className="text-center text-gray-600 mb-4">Sign in to scan your emails for bills</p>
         <div className="action-container">
-          <button onClick={handleLogin} className="primary-button">Sign in with Google</button>
-          <button onClick={handleOpenOptions}>Options</button>
+          <button onClick={handleLogin} className="primary-button">
+            Sign in with Google
+          </button>
+        </div>
+        <div className="footer">
+          <button onClick={handleOpenOptions} className="text-button">Options</button>
         </div>
       </div>
     );
@@ -383,7 +421,7 @@ const Popup = () => {
     );
   }
 
-  if (scanResults) {
+  if (scanResults && scanResults.length > 0) {
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
@@ -391,23 +429,28 @@ const Popup = () => {
           <h2>Found {scanResults.length} bill{scanResults.length !== 1 ? 's' : ''}</h2>
           
           <div className="bills-list">
-            {scanResults.map((bill, index) => (
+            {scanResults.map((bill: BillData, index: number) => (
               <div key={index} className="bill-item">
-                <div className="bill-header">
-                  <span className="bill-company">{bill.company || bill.vendor || 'Unknown'}</span>
-                  <span className="bill-amount">${bill.amount?.toFixed(2) || '?'}</span>
-                </div>
-                <div className="bill-details">
-                  <span className="bill-date">{bill.date || 'Unknown date'}</span>
-                  <span className="bill-type">{bill.type || 'Bill'}</span>
+                <div className="bill-content">
+                  {billFields.map((field) => (
+                    <div key={field.id} className="bill-field">
+                      <span className="field-name">{field.name}:</span>
+                      <span className="field-value">{renderBillValue(bill, field)}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}
           </div>
           
           <div className="action-container">
-            <button onClick={handleExport} className="primary-button">Export to Sheets</button>
-            <button onClick={handleScan}>Scan Again</button>
+            <button 
+              onClick={handleExport}
+              disabled={exportInProgress}
+              className="secondary-button"
+            >
+              Export to Sheets
+            </button>
           </div>
         </div>
         
@@ -419,16 +462,24 @@ const Popup = () => {
     );
   }
 
+  // Main authenticated view
   return (
     <div className="popup-container">
       <h1>Gmail Bill Scanner</h1>
-      <p>Click the button below to scan your emails for bills</p>
+      
       <div className="action-container">
-        <button onClick={handleScan} className="primary-button">Scan Emails</button>
-        <button onClick={handleOpenOptions}>Options</button>
+        <button 
+          onClick={handleScan} 
+          className="primary-button"
+          disabled={scanInProgress || exportInProgress}
+        >
+          Scan Emails
+        </button>
       </div>
+
       <div className="footer">
         <button onClick={handleLogout} className="text-button">Sign Out</button>
+        <button onClick={handleOpenOptions} className="text-button">Options</button>
       </div>
     </div>
   );
@@ -437,6 +488,6 @@ const Popup = () => {
 // Create root element
 const rootElement = document.getElementById('root');
 if (rootElement) {
-  const root = ReactDOM.createRoot(rootElement as HTMLElement);
+  const root = ReactDOM.createRoot(rootElement);
   root.render(<Popup />);
 } 

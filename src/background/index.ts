@@ -4,72 +4,224 @@
  * Handles communication between content scripts, popup, and Google APIs
  */
 
-import { getAccessToken, authenticate, signOut, isAuthenticated } from '../services/auth/googleAuth';
+/// <reference lib="webworker" />
+
+// Import types and external functions
 import { searchEmails, getEmailContent, getAttachments } from '../services/gmail/gmailApi';
 import { createSpreadsheet, appendBillData } from '../services/sheets/sheetsApi';
 import { extractBillsFromEmails } from '../services/extractors/emailBillExtractor';
 import { extractBillsFromPdfs } from '../services/extractors/pdfBillExtractor';
 import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../types/Message';
 
-// Log that the service worker is starting
+// Background service worker for Gmail Bill Scanner
 console.log('=== Gmail Bill Scanner background service worker starting up... ===');
 console.warn('Background worker started - this log should be visible');
 
-// Important for service worker initialization in Manifest V3
-self.addEventListener('install', (event) => {
+// Service worker for Gmail Bill Scanner
+declare const self: ServiceWorkerGlobalScope;
+
+// Service worker lifecycle
+self.addEventListener('install', (event: ExtendableEvent) => {
   console.warn('Service worker install event');
-  // Skip waiting makes the service worker activate immediately
-  (self as any).skipWaiting();
+  self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
+self.addEventListener('activate', (event: ExtendableEvent) => {
   console.warn('Service worker activate event');
-  // Claim any clients immediately
-  (self as any).clients.claim();
+  event.waitUntil(self.clients.claim());
 });
 
-// Set up an alarm to keep the service worker alive
-chrome.alarms.create('keepAlive', { periodInMinutes: 0.5 });
-
+// Keep the service worker alive
+chrome.alarms.create('keepAlive', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'keepAlive') {
-    console.log('Background service worker is alive');
+    console.warn('Background service worker is alive');
   }
 });
 
-// Make sure to clear the interval if the service worker is terminated
 self.addEventListener('unload', () => {
   chrome.alarms.clear('keepAlive');
   console.log('Gmail Bill Scanner background service worker shutting down');
 });
 
-// Handle messages from popup and content scripts
+// Required OAuth scopes
+const SCOPES = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile"
+];
+
+// Token storage key
+const TOKEN_STORAGE_KEY = "gmail_bill_scanner_auth_token";
+
+// Get access token using Chrome identity API
+async function getAccessToken(): Promise<string | null> {
+  try {
+    console.warn('Getting access token using chrome.identity.getAuthToken...');
+    
+    return new Promise((resolve) => {
+      chrome.identity.getAuthToken({ 
+        interactive: false,
+        scopes: SCOPES
+      }, (token) => {
+        if (chrome.runtime.lastError) {
+          console.warn("Error getting auth token (this is expected if not authenticated):", chrome.runtime.lastError.message);
+          resolve(null);
+          return;
+        }
+        
+        if (!token) {
+          console.warn('No token received, user may need to authenticate');
+          resolve(null);
+          return;
+        }
+        
+        console.warn('Valid token retrieved from Chrome identity');
+        resolve(token);
+      });
+    });
+  } catch (error) {
+    console.error("Error getting access token:", error);
+    return null;
+  }
+}
+
+// Check if user is authenticated
+async function isAuthenticated(): Promise<boolean> {
+  try {
+    console.warn('Checking if user is authenticated...');
+    
+    return new Promise((resolve) => {
+      chrome.identity.getAuthToken({ 
+        interactive: false,
+        scopes: SCOPES
+      }, (token) => {
+        if (chrome.runtime.lastError) {
+          console.warn("Auth check failed:", chrome.runtime.lastError.message);
+          resolve(false);
+          return;
+        }
+        
+        const isAuth = !!token;
+        console.warn('Authentication status:', isAuth ? 'Authenticated' : 'Not authenticated');
+        resolve(isAuth);
+      });
+    });
+  } catch (error) {
+    console.error("Error checking authentication status:", error);
+    return false;
+  }
+}
+
+// Authenticate user with Google
+async function authenticate(): Promise<{ success: boolean; error?: string; isAuthenticated?: boolean }> {
+  try {
+    console.warn('Starting Chrome extension Google authentication process...');
+    console.warn('Using chrome.identity API for authentication');
+    
+    return new Promise((resolve) => {
+      chrome.identity.getAuthToken({ 
+        interactive: true,
+        scopes: SCOPES
+      }, async (token) => {
+        if (chrome.runtime.lastError) {
+          console.error("OAuth error:", chrome.runtime.lastError.message);
+          resolve({ 
+            success: false, 
+            error: `OAuth error: ${chrome.runtime.lastError.message}`,
+            isAuthenticated: false
+          });
+          return;
+        }
+        
+        if (!token) {
+          console.error('No token received');
+          resolve({ 
+            success: false, 
+            error: "Authentication failed. No token received.",
+            isAuthenticated: false
+          });
+          return;
+        }
+        
+        console.warn('Token received, authentication successful');
+        
+        // Store the token
+        await chrome.storage.local.set({
+          [TOKEN_STORAGE_KEY]: {
+            access_token: token,
+            expires_at: Date.now() + 3600 * 1000, // Default expiry of 1 hour
+            token_type: 'Bearer',
+            scope: SCOPES.join(' ')
+          }
+        });
+        
+        resolve({ 
+          success: true,
+          isAuthenticated: true
+        });
+      });
+    });
+  } catch (error) {
+    console.error("Authentication error:", error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : "Unknown error",
+      isAuthenticated: false
+    };
+  }
+}
+
+// Sign out user
+async function signOut(): Promise<void> {
+  try {
+    return new Promise((resolve) => {
+      chrome.identity.getAuthToken({ interactive: false }, (token) => {
+        if (chrome.runtime.lastError || !token) {
+          console.warn('No token to remove or error:', chrome.runtime.lastError?.message);
+          resolve();
+          return;
+        }
+        
+        chrome.identity.removeCachedAuthToken({ token }, () => {
+          console.warn('Token removed from Chrome identity');
+          chrome.storage.local.remove(TOKEN_STORAGE_KEY, () => {
+            console.warn('Token removed from local storage');
+            resolve();
+          });
+        });
+      });
+    });
+  } catch (error) {
+    console.error("Error signing out:", error);
+  }
+}
+
+// Message handlers
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.warn(`Background received message: ${message?.type}`);
-
-  // Handle ping immediately without async processing
+  
   if (message?.type === 'PING') {
     console.warn('Received PING from popup, sending PONG response');
     sendResponse({ type: 'PONG', success: true });
     return true;
   }
-
-  // We need to return true to use asynchronous sendResponse
-  const handleMessageAsync = async () => {
+  
+  (async () => {
     try {
-      // Handle different message types
       switch (message?.type) {
         case 'AUTH_STATUS':
           try {
             console.warn('Checking auth status...');
-            const authStatus = await isAuthenticated();
-            console.warn(`Auth status result: ${authStatus}`);
-            sendResponse({ success: true, isAuthenticated: authStatus });
+            const isAuth = await isAuthenticated();
+            console.warn(`Auth status result: ${isAuth}`);
+            sendResponse({ success: true, isAuthenticated: isAuth });
           } catch (error) {
             console.error('Error checking authentication status:', error);
-            sendResponse({ 
-              success: false, 
-              error: error instanceof Error ? error.message : 'Failed to check authentication status' 
+            sendResponse({
+              success: false,
+              error: error instanceof Error ? error.message : 'Failed to check authentication status'
             });
           }
           break;
@@ -77,33 +229,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'AUTHENTICATE':
           try {
             const authResult = await authenticate();
-            sendResponse({ 
-              success: authResult.success, 
+            sendResponse({
+              success: authResult.success,
               error: authResult.error,
-              isAuthenticated: authResult.success 
+              isAuthenticated: authResult.isAuthenticated
             });
           } catch (error) {
             console.error('Authentication error:', error);
-            sendResponse({ 
-              success: false, 
-              error: error instanceof Error ? error.message : 'Authentication failed' 
+            sendResponse({
+              success: false,
+              error: error instanceof Error ? error.message : 'Authentication failed'
             });
           }
           break;
-
+          
         case 'SIGN_OUT':
           try {
             await signOut();
             sendResponse({ success: true });
           } catch (error) {
             console.error('Sign out error:', error);
-            sendResponse({ 
-              success: false, 
-              error: error instanceof Error ? error.message : 'Sign out failed' 
+            sendResponse({
+              success: false,
+              error: error instanceof Error ? error.message : 'Sign out failed'
             });
           }
           break;
-
+          
         case 'SCAN_EMAILS':
           await handleScanEmails(message.payload, sendResponse);
           break;
@@ -132,25 +284,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
 
         default:
-          console.warn(`Unknown message type: ${message?.type}`);
+          console.warn('Unknown message type:', message?.type);
           sendResponse({ success: false, error: 'Unknown message type' });
       }
     } catch (error) {
       console.error('Error handling message:', error);
-      sendResponse({ 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'Error handling message'
       });
     }
-  };
-
-  // Start async handling for non-ping messages
-  if (message?.type !== 'PING') {
-    handleMessageAsync();
-  }
+  })();
   
-  // Return true to indicate we'll send a response asynchronously
-  return true;
+  return true; // Keep the message channel open for async response
 });
 
 /**

@@ -220,29 +220,30 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
  */
 export async function signOut(): Promise<void> {
   try {
-    // First get the current token
-    return new Promise((resolve) => {
-      chrome.identity.getAuthToken({ interactive: false }, (token) => {
-        if (chrome.runtime.lastError || !token) {
-          console.warn("No token to remove or error:", chrome.runtime.lastError?.message);
-          resolve();
-          return;
-        }
-        
-        // Now remove it
-        chrome.identity.removeCachedAuthToken({ token }, () => {
-          console.warn('Token removed from Chrome identity');
-          
-          // Clear the local storage token as well
-          chrome.storage.local.remove(TOKEN_STORAGE_KEY, () => {
-            console.warn('Token removed from local storage');
-            resolve();
-          });
-        });
-      });
+    console.warn('Signing out...');
+    
+    // Clear local storage token
+    chrome.storage.local.remove(TOKEN_STORAGE_KEY, () => {
+      if (chrome.runtime.lastError) {
+        console.warn('Error clearing token from storage:', chrome.runtime.lastError);
+      }
     });
+    
+    // Clear Supabase session if configured
+    try {
+      const { signOut: supabaseSignOut } = await import('../supabase/client');
+      await supabaseSignOut();
+    } catch (error) {
+      console.warn('Error signing out of Supabase (this is expected if Supabase is not configured):', error);
+    }
+    
+    // Note: We intentionally do NOT revoke the Chrome identity token
+    // This allows users to stay signed in to their Google account while signed out of our app
+    
+    console.warn('Sign out complete');
   } catch (error) {
-    console.error("Error signing out:", error);
+    console.error('Error during sign out:', error);
+    throw error;
   }
 }
 

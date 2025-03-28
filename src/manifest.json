@@ -36,6 +36,15 @@
     "https://www.googleapis.com/*",
     "https://accounts.google.com/*"
   ],
+  "oauth2": {
+    "client_id": "1022770158705-tnrgdf3u758g4ovpm2n5vti8bke9kuh4.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ]
+  },
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   }
