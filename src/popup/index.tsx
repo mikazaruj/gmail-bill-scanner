@@ -9,6 +9,26 @@ interface ScanEmailsResponse {
   bills?: BillData[];
 }
 
+interface Settings {
+  automaticProcessing: boolean;
+  weeklySchedule: boolean;
+  processAttachments: boolean;
+  maxResults: number;
+  searchDays: number;
+}
+
+interface UserProfile {
+  name: string;
+  email: string;
+  avatar: string;
+}
+
+interface DashboardStats {
+  processed: number;
+  billsFound: number;
+  errors: number;
+}
+
 const Popup = () => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -16,52 +36,35 @@ const Popup = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [showUpgradeBanner, setShowUpgradeBanner] = useState(true);
   const [scanningStatus, setScanningStatus] = useState('idle'); // idle, scanning, completed
-  
-  // State for collapsible sections
-  const [expandedSections, setExpandedSections] = useState({
-    connectedServices: true,
-    trustedSources: true,
-    processingOptions: false,
-    fieldMapping: false
-  });
-  
-  // State for showing profile page
-  const [showProfile, setShowProfile] = useState(false);
-  
-  // State for expanded plan cards
-  const [expandedPlans, setExpandedPlans] = useState({
-    freePlan: false,
-    premiumPlan: false
-  });
-  
-  // Trusted email sources
-  const [trustedSources, setTrustedSources] = useState([
-    'electric-bills@example.com',
-    'internet-service@example.net',
-    'water-utility@example.org'
-  ]);
-  
-  // Processing options
-  const [processingOptions, setProcessingOptions] = useState({
-    automaticProcessing: true,
-    weeklySchedule: false,
-    processAttachments: true
-  });
-  
-  // Field mapping
-  const fieldMapping = {
-    A: 'Vendor',
-    B: 'Amount',
-    C: 'Due Date',
-    D: 'Category'
-  };
-
   const [scanResults, setScanResults] = useState<BillData[]>([]);
   const [scanInProgress, setScanInProgress] = useState<boolean>(false);
   const [scanProgressMessage, setScanProgressMessage] = useState<string>('');
   const [exportInProgress, setExportInProgress] = useState<boolean>(false);
   const [backgroundReady, setBackgroundReady] = useState<boolean>(false);
   const [billFields, setBillFields] = useState<BillFieldConfig[]>([]);
+
+  // Dashboard stats
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats>({
+    processed: 0,
+    billsFound: 0,
+    errors: 0
+  });
+
+  // Settings state
+  const [settings, setSettings] = useState<Settings>({
+    automaticProcessing: true,
+    weeklySchedule: false,
+    processAttachments: true,
+    maxResults: 50,
+    searchDays: 30
+  });
+
+  // Profile state
+  const [userProfile, setUserProfile] = useState<UserProfile>({
+    name: '',
+    email: '',
+    avatar: ''
+  });
 
   // Load bill fields configuration
   useEffect(() => {
@@ -79,22 +82,18 @@ const Popup = () => {
       
       try {
         chrome.runtime.sendMessage({ type: 'PING' }, (response) => {
-          // First check for runtime errors (disconnected runtime)
           if (chrome.runtime.lastError) {
             console.warn('Background not ready yet:', chrome.runtime.lastError);
-            setTimeout(checkBackgroundReady, 1000); // Retry after 1 second
+            setTimeout(checkBackgroundReady, 1000);
             return;
           }
           
-          console.warn('Ping response:', response);
-          
-          // Check for valid response
           if (response?.success) {
             console.warn('Background script is ready!');
             setBackgroundReady(true);
           } else {
             console.warn('Background not responding properly, retrying...');
-            setTimeout(checkBackgroundReady, 1000); // Retry after 1 second
+            setTimeout(checkBackgroundReady, 1000);
           }
         });
       } catch (error) {
@@ -103,45 +102,43 @@ const Popup = () => {
       }
     };
 
-    console.warn('Starting ping check...');
     checkBackgroundReady();
     
-    // Add an additional timeout as a fallback
-    // This prevents the UI from being stuck if something is wrong with the background script
     const fallbackTimer = setTimeout(() => {
       console.warn('Fallback timeout reached - forcing backgroundReady to true');
       setBackgroundReady(true);
-    }, 10000); // 10 seconds fallback
+    }, 10000);
     
     return () => clearTimeout(fallbackTimer);
   }, []);
 
-  // Check authentication status once background is ready
+  // Check authentication status
   useEffect(() => {
     if (!backgroundReady) return;
 
     const checkAuthStatus = () => {
-      console.warn('Checking authentication status...');
       setIsLoading(true);
       
       try {
         chrome.runtime.sendMessage({ type: 'AUTH_STATUS' }, (response) => {
           if (chrome.runtime.lastError) {
-            console.error('Error checking auth status:', chrome.runtime.lastError);
             setError('Failed to check authentication status. Please refresh and try again.');
             setIsLoading(false);
-            setIsAuthenticated(false); // Default to not authenticated on error
+            setIsAuthenticated(false);
             return;
           }
           
-          console.warn('Auth status response:', JSON.stringify(response));
-          
           if (response?.success) {
             setIsAuthenticated(response.isAuthenticated);
+            if (response.isAuthenticated && response.profile) {
+              setUserProfile({
+                name: response.profile.name || '',
+                email: response.profile.email || '',
+                avatar: response.profile.picture || ''
+              });
+            }
             setError(null);
           } else {
-            // Handle the case where response exists but success is false
-            console.error('Authentication check failed:', response?.error || 'Unknown error');
             setError(response?.error || 'Failed to check authentication status');
             setIsAuthenticated(false);
           }
@@ -149,7 +146,6 @@ const Popup = () => {
           setIsLoading(false);
         });
       } catch (error) {
-        // Catch any JavaScript errors in the useEffect
         console.error('Exception in auth status check:', error);
         setError('An unexpected error occurred. Please refresh and try again.');
         setIsLoading(false);
@@ -161,21 +157,24 @@ const Popup = () => {
   }, [backgroundReady]);
 
   const handleLogin = () => {
-    console.log('Starting authentication process...');
     setIsLoading(true);
     
     chrome.runtime.sendMessage({ type: 'AUTHENTICATE' }, (response) => {
       if (chrome.runtime.lastError) {
-        console.error('Auth error:', chrome.runtime.lastError);
         setError('Authentication failed. Please try again.');
-        setIsLoading(false);
+      setIsLoading(false);
         return;
       }
       
-      console.log('Auth response:', response);
-      
       if (response?.success) {
         setIsAuthenticated(true);
+        if (response.profile) {
+          setUserProfile({
+            name: response.profile.name || '',
+            email: response.profile.email || '',
+            avatar: response.profile.picture || ''
+          });
+        }
         setError(null);
       } else {
         setError(response?.error || 'Authentication failed');
@@ -186,23 +185,20 @@ const Popup = () => {
   };
 
   const handleLogout = () => {
-    console.log('Starting sign out process...');
     setIsLoading(true);
     
     chrome.runtime.sendMessage({ type: 'SIGN_OUT' }, (response) => {
       if (chrome.runtime.lastError) {
-        console.error('Logout error:', chrome.runtime.lastError);
         setError('Sign out failed. Please try again.');
-        setIsLoading(false);
+      setIsLoading(false);
         return;
       }
-      
-      console.log('Sign out response:', response);
       
       if (response?.success) {
         setIsAuthenticated(false);
         setError(null);
         setScanResults([]);
+        setUserProfile({ name: '', email: '', avatar: '' });
       } else {
         setError(response?.error || 'Sign out failed');
       }
@@ -216,16 +212,7 @@ const Popup = () => {
     setScanProgressMessage('Starting scan...');
     setScanResults([]);
     setError(null);
-
-    // Get scan settings from storage
-    const settings = await new Promise<{maxResults?: number, searchDays?: number}>((resolve) => {
-      chrome.storage.sync.get(['maxResults', 'searchDays'], (result) => {
-        resolve({
-          maxResults: result.maxResults || 50,  // Default to 50
-          searchDays: result.searchDays || 30,  // Default to 30 days
-        });
-      });
-    });
+    setDashboardStats({ processed: 0, billsFound: 0, errors: 0 });
 
     chrome.runtime.sendMessage({
       type: 'SCAN_EMAILS',
@@ -237,21 +224,22 @@ const Popup = () => {
       setScanInProgress(false);
       
       if (chrome.runtime.lastError) {
-        console.error('Scan error:', chrome.runtime.lastError);
         setError('Scan failed: ' + chrome.runtime.lastError.message);
         return;
       }
       
       if (response?.success) {
         setScanResults(response.bills || []);
-        console.log('Scan results:', response.bills);
+        setDashboardStats(prev => ({
+          ...prev,
+          billsFound: (response.bills || []).length
+        }));
       } else {
         setError(response?.error || 'Scan failed');
       }
     });
 
     // Simulate progress updates
-    // In a real implementation, the background would send progress updates
     const messages = [
       'Fetching emails...',
       'Processing emails...',
@@ -263,6 +251,10 @@ const Popup = () => {
     for (const msg of messages) {
       await new Promise(resolve => setTimeout(resolve, 1500));
       setScanProgressMessage(msg);
+      setDashboardStats(prev => ({
+        ...prev,
+        processed: prev.processed + Math.floor(Math.random() * 5) + 1
+      }));
     }
   };
 
@@ -284,15 +276,11 @@ const Popup = () => {
       setExportInProgress(false);
       
       if (chrome.runtime.lastError) {
-        console.error('Export error:', chrome.runtime.lastError);
         setError('Export failed: ' + chrome.runtime.lastError.message);
         return;
       }
       
       if (response?.success) {
-        console.log('Export successful:', response);
-        
-        // Open the spreadsheet in a new tab
         if (response.spreadsheetUrl) {
           chrome.tabs.create({ url: response.spreadsheetUrl });
         }
@@ -310,6 +298,16 @@ const Popup = () => {
     }
   };
 
+  const handleSaveSettings = () => {
+    chrome.storage.sync.set(settings, () => {
+      if (chrome.runtime.lastError) {
+        setError('Failed to save settings: ' + chrome.runtime.lastError.message);
+      } else {
+        setError(null);
+      }
+    });
+  };
+
   const renderBillValue = (bill: BillData, field: BillFieldConfig) => {
     const value = bill[field.id];
     if (value === undefined) return 'N/A';
@@ -324,25 +322,177 @@ const Popup = () => {
     }
   };
 
-  if (!backgroundReady) {
-    return (
-      <div className="popup-container">
-        <h1>Gmail Bill Scanner</h1>
-        <div className="loading-indicator">
-          <div className="spinner"></div>
-          <p>Connecting to background service...</p>
+  const renderDashboard = () => (
+    <div className="dashboard-container">
+      <div className="stats-grid">
+        <div className="stat-card">
+          <h3>Processed</h3>
+          <p className="stat-value">{dashboardStats.processed}</p>
+        </div>
+        <div className="stat-card">
+          <h3>Bills Found</h3>
+          <p className="stat-value">{dashboardStats.billsFound}</p>
+        </div>
+        <div className="stat-card">
+          <h3>Errors</h3>
+          <p className="stat-value">{dashboardStats.errors}</p>
         </div>
       </div>
-    );
-  }
 
-  if (isLoading) {
+      <div className="action-container">
+        <button 
+          onClick={handleScan}
+          disabled={scanInProgress}
+          className="primary-button"
+        >
+          {scanInProgress ? 'Scanning...' : 'Scan Emails'}
+        </button>
+        {scanResults.length > 0 && (
+          <button
+            onClick={handleExport}
+            disabled={exportInProgress}
+            className="secondary-button"
+          >
+            Export to Sheets
+          </button>
+        )}
+      </div>
+
+      {scanResults.length > 0 && (
+        <div className="bills-list">
+          <h2>Recent Bills</h2>
+          {scanResults.map((bill, index) => (
+            <div key={index} className="bill-item">
+              <div className="bill-content">
+                {billFields.map((field) => (
+                  <div key={field.id} className="bill-field">
+                    <span className="field-name">{field.name}:</span>
+                    <span className="field-value">{renderBillValue(bill, field)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderSettings = () => (
+    <div className="settings-container">
+      <h2>Settings</h2>
+      <div className="settings-form">
+        <div className="setting-item">
+          <label>
+            <input
+              type="checkbox"
+              checked={settings.automaticProcessing}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                const checked = Boolean(e.target.checked);
+                setSettings({
+                  ...settings,
+                  automaticProcessing: checked
+                });
+              }}
+            />
+            Enable automatic processing
+          </label>
+        </div>
+        <div className="setting-item">
+          <label>
+            <input
+              type="checkbox"
+              checked={settings.weeklySchedule}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                const checked = Boolean(e.target.checked);
+                setSettings({
+                  ...settings,
+                  weeklySchedule: checked
+                });
+              }}
+            />
+            Weekly scan schedule
+          </label>
+        </div>
+        <div className="setting-item">
+          <label>
+            <input
+              type="checkbox"
+              checked={settings.processAttachments}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                const checked = Boolean(e.target.checked);
+                setSettings({
+                  ...settings,
+                  processAttachments: checked
+                });
+              }}
+            />
+            Process email attachments
+          </label>
+        </div>
+        <div className="setting-item">
+          <label>
+            Max results:
+            <input
+              type="number"
+              value={settings.maxResults}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSettings({
+                ...settings,
+                maxResults: parseInt(e.target.value) || 50
+              })}
+              min="1"
+              max="100"
+            />
+          </label>
+        </div>
+        <div className="setting-item">
+          <label>
+            Search days:
+            <input
+              type="number"
+              value={settings.searchDays}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSettings({
+                ...settings,
+                searchDays: parseInt(e.target.value) || 30
+              })}
+              min="1"
+              max="365"
+            />
+          </label>
+        </div>
+        <button onClick={handleSaveSettings} className="primary-button">
+          Save Settings
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderProfile = () => (
+    <div className="profile-container">
+      <div className="profile-header">
+        {userProfile.avatar && (
+          <img src={userProfile.avatar} alt="Profile" className="profile-avatar" />
+        )}
+        <div className="profile-info">
+          <h2>{userProfile.name}</h2>
+          <p>{userProfile.email}</p>
+        </div>
+      </div>
+      <div className="action-container">
+        <button onClick={handleLogout} className="secondary-button">
+          Sign Out
+        </button>
+      </div>
+    </div>
+  );
+
+  if (!backgroundReady || isLoading) {
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
         <div className="loading-indicator">
           <div className="spinner"></div>
-          <p>Loading...</p>
+          <p>{!backgroundReady ? 'Connecting to background service...' : 'Loading...'}</p>
         </div>
       </div>
     );
@@ -351,7 +501,7 @@ const Popup = () => {
   if (error) {
     return (
       <div className="popup-container">
-        <h1>Gmail Bill Scanner</h1>
+            <h1>Gmail Bill Scanner</h1>
         <div className="error-message">
           <p>{error}</p>
         </div>
@@ -405,7 +555,7 @@ const Popup = () => {
           <p>{scanProgressMessage}</p>
         </div>
         <p className="loading-description">This may take a few minutes depending on your settings...</p>
-      </div>
+          </div>
     );
   }
 
@@ -421,66 +571,45 @@ const Popup = () => {
     );
   }
 
-  if (scanResults && scanResults.length > 0) {
-    return (
-      <div className="popup-container">
-        <h1>Gmail Bill Scanner</h1>
-        <div className="results-container">
-          <h2>Found {scanResults.length} bill{scanResults.length !== 1 ? 's' : ''}</h2>
-          
-          <div className="bills-list">
-            {scanResults.map((bill: BillData, index: number) => (
-              <div key={index} className="bill-item">
-                <div className="bill-content">
-                  {billFields.map((field) => (
-                    <div key={field.id} className="bill-field">
-                      <span className="field-name">{field.name}:</span>
-                      <span className="field-value">{renderBillValue(bill, field)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-          
-          <div className="action-container">
-            <button 
-              onClick={handleExport}
-              disabled={exportInProgress}
-              className="secondary-button"
-            >
-              Export to Sheets
-            </button>
-          </div>
-        </div>
-        
-        <div className="footer">
-          <button onClick={handleLogout} className="text-button">Sign Out</button>
-          <button onClick={handleOpenOptions} className="text-button">Options</button>
-        </div>
-      </div>
-    );
-  }
-
-  // Main authenticated view
   return (
     <div className="popup-container">
-      <h1>Gmail Bill Scanner</h1>
+          <h1>Gmail Bill Scanner</h1>
       
-      <div className="action-container">
-        <button 
-          onClick={handleScan} 
-          className="primary-button"
-          disabled={scanInProgress || exportInProgress}
+      <div className="tabs">
+        <button
+          className={`tab-button ${activeTab === 'dashboard' ? 'active' : ''}`}
+          onClick={() => setActiveTab('dashboard')}
         >
-          Scan Emails
+          Dashboard
+        </button>
+          <button 
+          className={`tab-button ${activeTab === 'settings' ? 'active' : ''}`}
+          onClick={() => setActiveTab('settings')}
+          >
+          Settings
+          </button>
+        <button
+          className={`tab-button ${activeTab === 'profile' ? 'active' : ''}`}
+          onClick={() => setActiveTab('profile')}
+        >
+          Profile
         </button>
       </div>
-
-      <div className="footer">
-        <button onClick={handleLogout} className="text-button">Sign Out</button>
-        <button onClick={handleOpenOptions} className="text-button">Options</button>
+      
+      <div className="tab-content">
+        {activeTab === 'dashboard' && renderDashboard()}
+        {activeTab === 'settings' && renderSettings()}
+        {activeTab === 'profile' && renderProfile()}
       </div>
+      
+      {showUpgradeBanner && (
+        <div className="upgrade-banner">
+          <p>Upgrade to Pro for unlimited scans and advanced features!</p>
+          <button onClick={() => setShowUpgradeBanner(false)} className="text-button">
+            Dismiss
+          </button>
+        </div>
+      )}
     </div>
   );
 };

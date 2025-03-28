@@ -17,8 +17,8 @@ const envKeys = Object.keys(env).reduce((prev, next) => {
 module.exports = {
   mode: 'production',
   entry: {
-    popup: './src/popup/index.tsx',
-    options: './src/options/index.tsx',
+    popup: ['./src/popup/index.tsx', './src/globals.css'],
+    options: ['./src/options/index.tsx', './src/globals.css'],
     content: './src/content/index.ts',
     background: './src/background/index.ts'
   },
@@ -53,24 +53,37 @@ module.exports = {
       {
         test: /\.css$/,
         use: [
-          MiniCssExtractPlugin.loader,
+          {
+            loader: MiniCssExtractPlugin.loader,
+            options: {
+              publicPath: '',
+            },
+          },
           {
             loader: 'css-loader',
             options: {
               importLoaders: 1
             }
           },
-          'postcss-loader'
+          {
+            loader: 'postcss-loader',
+            options: {
+              postcssOptions: {
+                plugins: [
+                  'tailwindcss',
+                  'autoprefixer',
+                ]
+              }
+            }
+          }
         ],
       },
     ],
   },
   plugins: [
-    new webpack.DefinePlugin({
-      'process.env': JSON.stringify(process.env)
-    }),
+    new webpack.DefinePlugin(envKeys),
     new MiniCssExtractPlugin({
-      filename: '[name].css'
+      filename: 'styles.css'
     }),
     new CopyPlugin({
       patterns: [
@@ -78,21 +91,32 @@ module.exports = {
           from: 'public',
           to: '.',
           globOptions: {
-            ignore: ['**/popup.html', '**/options.html']
+            ignore: ['**/popup.html', '**/options.html', '**/manifest.json']
           }
         },
+        {
+          from: 'public/manifest.json',
+          to: 'manifest.json',
+          transform(content) {
+            const manifest = JSON.parse(content.toString());
+            manifest.oauth2.client_id = env.GOOGLE_CLIENT_ID;
+            return JSON.stringify(manifest, null, 2);
+          },
+        }
       ],
     }),
     new HtmlWebpackPlugin({
       template: './public/popup.html',
       filename: 'popup.html',
       chunks: ['popup'],
+      inject: true,
       cache: false
     }),
     new HtmlWebpackPlugin({
       template: './public/options.html',
       filename: 'options.html',
       chunks: ['options'],
+      inject: true,
       cache: false
     }),
   ],
