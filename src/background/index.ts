@@ -210,8 +210,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   (async () => {
     try {
-      switch (message?.type) {
-        case 'AUTH_STATUS':
+  switch (message?.type) {
+    case 'AUTH_STATUS':
           try {
             console.warn('Checking auth status...');
             const isAuth = await isAuthenticated();
@@ -224,9 +224,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               error: error instanceof Error ? error.message : 'Failed to check authentication status'
             });
           }
-          break;
-          
-        case 'AUTHENTICATE':
+      break;
+
+    case 'AUTHENTICATE':
           try {
             const authResult = await authenticate();
             sendResponse({
@@ -241,12 +241,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               error: error instanceof Error ? error.message : 'Authentication failed'
             });
           }
-          break;
-          
-        case 'SIGN_OUT':
+      break;
+
+    case 'SIGN_OUT':
           try {
             await signOut();
-            sendResponse({ success: true });
+      sendResponse({ success: true });
           } catch (error) {
             console.error('Sign out error:', error);
             sendResponse({
@@ -254,17 +254,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               error: error instanceof Error ? error.message : 'Sign out failed'
             });
           }
-          break;
-          
-        case 'SCAN_EMAILS':
+      break;
+
+    case 'SCAN_EMAILS':
           await handleScanEmails(message.payload, sendResponse);
-          break;
+      break;
 
-        case 'EXPORT_TO_SHEETS':
+    case 'EXPORT_TO_SHEETS':
           await handleExportToSheets(message.payload, sendResponse);
-          break;
+      break;
 
-        case 'CREATE_SPREADSHEET':
+    case 'CREATE_SPREADSHEET':
           const token = await getAccessToken();
           if (!token) {
             sendResponse({ success: false, error: 'Not authenticated' });
@@ -281,12 +281,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               error: error instanceof Error ? error.message : 'Unknown error' 
             });
           }
-          break;
+      break;
 
-        default:
+    default:
           console.warn('Unknown message type:', message?.type);
-          sendResponse({ success: false, error: 'Unknown message type' });
-      }
+      sendResponse({ success: false, error: 'Unknown message type' });
+  }
     } catch (error) {
       console.error('Error handling message:', error);
       sendResponse({

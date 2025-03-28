@@ -350,12 +350,12 @@ const Options = () => {
                       <p className="mb-4">Let's get you set up in a few quick steps.</p>
                       <p className="mb-4">First, you'll need to sign in with your Google account to allow access to Gmail and Google Sheets.</p>
                       {!isAuth ? (
-                        <button
-                          onClick={handleLogin}
+          <button
+            onClick={handleLogin}
                           className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
-                        >
-                          Sign in with Google
-                        </button>
+          >
+            Sign in with Google
+          </button>
                       ) : (
                         <button
                           onClick={handleNextStep}
@@ -461,14 +461,14 @@ const Options = () => {
         >
           Settings
         </button>
-        <button 
+          <button
           className={activeTab === 'account' ? 'active' : ''} 
           onClick={() => setActiveTab('account')}
-        >
+          >
           Account
-        </button>
-      </div>
-      
+          </button>
+        </div>
+        
       {activeTab === 'settings' ? (
         <div className="settings-section">
           <div className="min-h-screen bg-gray-100 py-6 flex flex-col justify-center sm:py-12">
@@ -497,11 +497,11 @@ const Options = () => {
                             >
                               Sign Out
                             </button>
-                          </div>
-                        )}
-                      </div>
-                      
-                      <div className="mb-6">
+          </div>
+        )}
+          </div>
+        
+        <div className="mb-6">
                         <h2 className="text-xl font-semibold mb-4">Google Sheets Integration</h2>
                         {isAuth ? (
                           <div>
@@ -509,31 +509,31 @@ const Options = () => {
                               <p>Loading spreadsheets...</p>
                             ) : (
                               <>
-                                <div className="mb-4">
+          <div className="mb-4">
                                   <label className="block text-gray-700 text-sm font-bold mb-2">
                                     Select a Google Sheet
-                                  </label>
-                                  <select
+            </label>
+              <select
                                     className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
-                                    value={spreadsheetId}
-                                    onChange={handleSpreadsheetChange}
-                                  >
-                                    <option value="">-- Select a spreadsheet --</option>
+                value={spreadsheetId}
+                onChange={handleSpreadsheetChange}
+              >
+                <option value="">-- Select a spreadsheet --</option>
                                     {spreadsheets.map((sheet) => (
-                                      <option key={sheet.id} value={sheet.id}>
-                                        {sheet.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </div>
-                                
-                                <div className="mb-4">
+                  <option key={sheet.id} value={sheet.id}>
+                    {sheet.name}
+                  </option>
+                ))}
+              </select>
+          </div>
+          
+          <div className="mb-4">
                                   <label className="block text-gray-700 text-sm font-bold mb-2">
                                     Or create a new spreadsheet
-                                  </label>
+            </label>
                                   <div className="flex gap-2">
-                                    <input
-                                      type="text"
+            <input
+              type="text"
                                       value={newSheetName}
                                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewSheetName(e.target.value)}
                                       placeholder="Enter spreadsheet name"
@@ -546,9 +546,9 @@ const Options = () => {
                                     >
                                       {isCreatingSheet ? 'Creating...' : 'Create'}
                                     </button>
-                                  </div>
-                                </div>
-                                
+          </div>
+        </div>
+        
                                 {spreadsheetId && (
                                   <div className="mt-4 p-4 bg-green-100 rounded">
                                     <p className="text-green-700">✓ Spreadsheet selected and ready for bill data</p>
@@ -561,15 +561,15 @@ const Options = () => {
                         ) : (
                           <p className="text-gray-500">Please sign in to configure Google Sheets integration</p>
                         )}
-                      </div>
-                      
+            </div>
+            
                       {error && (
                         <div className="text-red-500 mt-4">{error}</div>
                       )}
-                    </div>
-                  </div>
-                </div>
-              </div>
+            </div>
+            </div>
+          </div>
+            </div>
             </div>
           </div>
         </div>
@@ -584,4 +584,4 @@ const Options = () => {
 };
 
 const root = ReactDOM.createRoot(document.getElementById('root')!);
-root.render(<Options />); 
+  root.render(<Options />);

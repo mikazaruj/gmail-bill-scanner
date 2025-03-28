@@ -2,6 +2,42 @@ import React, { useState, useEffect } from 'react';
 import * as ReactDOM from 'react-dom/client';
 import '../globals.css';
 import { BillData, BillFieldConfig } from '../types/Message';
+import { 
+  Shield, Settings, Mail, ChevronDown, ChevronUp, X,
+  FileSpreadsheet, Clock, RefreshCcw, BarChart2,
+  AlertTriangle, Check, User, Calendar, PieChart
+} from 'lucide-react';
+
+interface CollapsibleSectionProps {
+  title: string;
+  children: JSX.Element | JSX.Element[];
+  defaultOpen?: boolean;
+}
+
+const CollapsibleSection = ({ title, children, defaultOpen = false }: CollapsibleSectionProps) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  
+  return (
+    <div className="collapsible-section">
+      <div 
+        onClick={() => setIsOpen(!isOpen)}
+        className="collapsible-header"
+      >
+        <span className="collapsible-title">{title}</span>
+        {isOpen ? (
+          <ChevronUp size={18} className="text-gray-500" />
+        ) : (
+          <ChevronDown size={18} className="text-gray-500" />
+        )}
+      </div>
+      {isOpen && (
+        <div className="collapsible-content">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+};
 
 interface ScanEmailsResponse {
   success: boolean;
@@ -324,163 +360,415 @@ const Popup = () => {
 
   const renderDashboard = () => (
     <div className="dashboard-container">
-      <div className="stats-grid">
-        <div className="stat-card">
-          <h3>Processed</h3>
-          <p className="stat-value">{dashboardStats.processed}</p>
+      {/* Stats Dashboard */}
+      <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-base font-semibold text-gray-900">Dashboard</h2>
+          <div className="flex items-center text-xs text-gray-500">
+            <Clock size={12} className="mr-1" />
+            <span>Last run: 2d ago</span>
+          </div>
         </div>
-        <div className="stat-card">
-          <h3>Bills Found</h3>
-          <p className="stat-value">{dashboardStats.billsFound}</p>
+        
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          <div className="bg-blue-50 p-2 rounded-lg border border-blue-100">
+            <div className="flex items-center mb-1">
+              <BarChart2 size={12} className="text-blue-600 mr-1" />
+              <span className="text-xs text-gray-500">Success Rate</span>
+            </div>
+            <div className="text-base font-bold text-blue-900">96%</div>
+            <div className="text-xs text-blue-700">
+              <span className="font-medium">{dashboardStats.processed}</span> emails processed
+            </div>
+          </div>
+          
+          <div className="bg-green-50 p-2 rounded-lg border border-green-100">
+            <div className="flex items-center mb-1">
+              <Clock size={12} className="text-green-600 mr-1" />
+              <span className="text-xs text-gray-500">Time Saved</span>
+            </div>
+            <div className="text-base font-bold text-green-900">3.7 hrs</div>
+            <div className="text-xs text-green-700">
+              <span className="font-medium">{dashboardStats.billsFound}</span> bills extracted
+            </div>
+          </div>
+          
+          <div className="bg-indigo-50 p-2 rounded-lg border border-indigo-100">
+            <div className="flex items-center mb-1">
+              <PieChart size={12} className="text-indigo-600 mr-1" />
+              <span className="text-xs text-gray-500">This Month</span>
+            </div>
+            <div className="text-base font-bold text-indigo-900">5.6 hrs</div>
+            <div className="text-xs text-indigo-700">total time saved</div>
+          </div>
+          
+          <div className="bg-amber-50 p-2 rounded-lg border border-amber-100">
+            <div className="flex items-center mb-1">
+              <Calendar size={12} className="text-amber-600 mr-1" />
+              <span className="text-xs text-gray-500">Per Bill</span>
+            </div>
+            <div className="text-base font-bold text-amber-900">2.4 min</div>
+            <div className="text-xs text-amber-700">avg. time saved</div>
+          </div>
         </div>
-        <div className="stat-card">
-          <h3>Errors</h3>
-          <p className="stat-value">{dashboardStats.errors}</p>
+        
+        <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+          <div className="h-full bg-blue-600" style={{ width: '96%' }}></div>
         </div>
       </div>
-
-      <div className="action-container">
-        <button 
-          onClick={handleScan}
-          disabled={scanInProgress}
-          className="primary-button"
-        >
-          {scanInProgress ? 'Scanning...' : 'Scan Emails'}
-        </button>
-        {scanResults.length > 0 && (
-          <button
-            onClick={handleExport}
-            disabled={exportInProgress}
-            className="secondary-button"
-          >
-            Export to Sheets
-          </button>
-        )}
-      </div>
-
-      {scanResults.length > 0 && (
-        <div className="bills-list">
-          <h2>Recent Bills</h2>
-          {scanResults.map((bill, index) => (
-            <div key={index} className="bill-item">
-              <div className="bill-content">
-                {billFields.map((field) => (
-                  <div key={field.id} className="bill-field">
-                    <span className="field-name">{field.name}:</span>
-                    <span className="field-value">{renderBillValue(bill, field)}</span>
+      
+      {/* Recent Activity */}
+      <CollapsibleSection title="Recent Activity" defaultOpen={true}>
+        <div className="space-y-1.5">
+          <div className="p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+            <div className="flex justify-between items-start">
+              <div className="flex">
+                <Check size={14} className="text-green-500 mr-1.5 mt-0.5" />
+                <div>
+                  <div className="text-sm font-medium text-gray-900">Auto-processed {dashboardStats.processed} emails</div>
+                  <div className="text-xs text-gray-500">{dashboardStats.billsFound} bills found, {dashboardStats.errors} errors</div>
+                </div>
+              </div>
+              <div className="text-xs text-gray-500">2d ago</div>
+            </div>
+          </div>
+          
+          {dashboardStats.errors > 0 && (
+            <div className="p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+              <div className="flex justify-between items-start">
+                <div className="flex">
+                  <AlertTriangle size={14} className="text-amber-500 mr-1.5 mt-0.5" />
+                  <div>
+                    <div className="text-sm font-medium text-gray-900">{dashboardStats.errors} extraction failures</div>
+                    <div className="text-xs text-gray-500">Format not recognized</div>
                   </div>
-                ))}
+                </div>
+                <div className="text-xs text-gray-500">2d ago</div>
               </div>
             </div>
-          ))}
+          )}
         </div>
+      </CollapsibleSection>
+      
+      <button 
+        onClick={handleScan}
+        disabled={scanInProgress}
+        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
+      >
+        <RefreshCcw size={14} className="mr-2" />
+        {scanInProgress ? 'Scanning...' : 'Run Manual Processing'}
+      </button>
+      
+      {scanResults.length > 0 && (
+        <button
+          onClick={handleExport}
+          disabled={exportInProgress}
+          className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
+        >
+          <FileSpreadsheet size={14} className="mr-2" />
+          Export to Sheets
+        </button>
       )}
     </div>
   );
 
   const renderSettings = () => (
-    <div className="settings-container">
-      <h2>Settings</h2>
-      <div className="settings-form">
-        <div className="setting-item">
-          <label>
-            <input
-              type="checkbox"
-              checked={settings.automaticProcessing}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                const checked = Boolean(e.target.checked);
-                setSettings({
-                  ...settings,
-                  automaticProcessing: checked
-                });
-              }}
-            />
-            Enable automatic processing
-          </label>
+    <div className="space-y-3">
+      <CollapsibleSection title="Connected Services" defaultOpen={true}>
+        <div className="space-y-1.5">
+          <div className="p-2.5 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center">
+                <div className="w-7 h-7 bg-red-100 rounded-full flex items-center justify-center mr-2">
+                  <Mail size={14} className="text-red-600" />
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-gray-900">Gmail</div>
+                  <div className="text-xs text-gray-500">{userProfile.email || 'user@gmail.com'}</div>
+                </div>
+              </div>
+              <div className="px-2 py-0.5 text-xs bg-green-100 text-green-800 rounded-full font-medium">
+                Connected
+              </div>
+            </div>
+          </div>
+          
+          <div className="p-2.5 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center">
+                <div className="w-7 h-7 bg-green-100 rounded-full flex items-center justify-center mr-2">
+                  <FileSpreadsheet size={14} className="text-green-600" />
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-gray-900">Google Sheets</div>
+                  <div className="text-xs text-gray-500">Bills Tracker</div>
+                </div>
+              </div>
+              <button className="px-2 py-0.5 text-xs bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg font-medium transition-colors">
+                Change
+              </button>
+            </div>
+          </div>
         </div>
-        <div className="setting-item">
-          <label>
-            <input
-              type="checkbox"
-              checked={settings.weeklySchedule}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                const checked = Boolean(e.target.checked);
-                setSettings({
-                  ...settings,
-                  weeklySchedule: checked
-                });
-              }}
-            />
-            Weekly scan schedule
-          </label>
+      </CollapsibleSection>
+      
+      <CollapsibleSection title="Trusted Email Sources" defaultOpen={true}>
+        <div className="space-y-1.5 mb-1.5">
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+            <span className="text-sm text-gray-900">electric-bills@example.com</span>
+            <button className="text-gray-400 hover:text-red-500 transition-colors">
+              <X size={14} />
+            </button>
+          </div>
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+            <span className="text-sm text-gray-900">internet-service@example.net</span>
+            <button className="text-gray-400 hover:text-red-500 transition-colors">
+              <X size={14} />
+            </button>
+          </div>
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+            <span className="text-sm text-gray-900">water-utility@example.org</span>
+            <button className="text-gray-400 hover:text-red-500 transition-colors">
+              <X size={14} />
+            </button>
+          </div>
         </div>
-        <div className="setting-item">
-          <label>
-            <input
-              type="checkbox"
-              checked={settings.processAttachments}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                const checked = Boolean(e.target.checked);
-                setSettings({
-                  ...settings,
-                  processAttachments: checked
-                });
-              }}
-            />
-            Process email attachments
-          </label>
-        </div>
-        <div className="setting-item">
-          <label>
-            Max results:
-            <input
-              type="number"
-              value={settings.maxResults}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSettings({
-                ...settings,
-                maxResults: parseInt(e.target.value) || 50
-              })}
-              min="1"
-              max="100"
-            />
-          </label>
-        </div>
-        <div className="setting-item">
-          <label>
-            Search days:
-            <input
-              type="number"
-              value={settings.searchDays}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSettings({
-                ...settings,
-                searchDays: parseInt(e.target.value) || 30
-              })}
-              min="1"
-              max="365"
-            />
-          </label>
-        </div>
-        <button onClick={handleSaveSettings} className="primary-button">
-          Save Settings
+        
+        <button className="w-full p-2 border border-dashed border-gray-300 hover:border-gray-400 bg-white rounded-lg text-sm flex items-center justify-center text-gray-700 hover:text-gray-900 transition-colors">
+          + Add trusted source
         </button>
-      </div>
+        
+        <div className="flex items-center justify-between text-xs text-gray-500 mt-2">
+          <span>3 of 3 sources used</span>
+          <span className="text-blue-600 hover:text-blue-800 cursor-pointer transition-colors">Upgrade for unlimited</span>
+        </div>
+      </CollapsibleSection>
+      
+      <CollapsibleSection title="Processing Options" defaultOpen={true}>
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+            <span className="text-sm text-gray-900">Automatic processing</span>
+            <div className="relative inline-block w-8 align-middle select-none">
+              <input 
+                type="checkbox" 
+                className="sr-only" 
+                checked={settings.automaticProcessing}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  const checked = Boolean(e.target.checked);
+                  setSettings({
+                    ...settings,
+                    automaticProcessing: checked
+                  });
+                }}
+              />
+              <div className="block bg-gray-300 w-8 h-5 rounded-full"></div>
+              <div className={`dot absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition transform ${settings.automaticProcessing ? 'translate-x-3' : ''} shadow-sm`}></div>
+            </div>
+          </div>
+          
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+            <div className="flex items-center">
+              <span className="text-sm text-gray-900">Weekly schedule</span>
+              <span className="ml-1.5 px-1.5 py-0.5 bg-purple-100 text-purple-800 text-xs font-medium rounded">PRO</span>
+            </div>
+            <div className="relative inline-block w-8 align-middle select-none opacity-50">
+              <input 
+                type="checkbox" 
+                className="sr-only" 
+                checked={settings.weeklySchedule}
+                disabled
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  const checked = Boolean(e.target.checked);
+                  setSettings({
+                    ...settings,
+                    weeklySchedule: checked
+                  });
+                }}
+              />
+              <div className="block bg-gray-300 w-8 h-5 rounded-full"></div>
+              <div className={`dot absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition ${settings.weeklySchedule ? 'translate-x-3' : ''} shadow-sm`}></div>
+            </div>
+          </div>
+          
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+            <span className="text-sm text-gray-900">Process attachments</span>
+            <div className="relative inline-block w-8 align-middle select-none">
+              <input 
+                type="checkbox" 
+                className="sr-only"
+                checked={settings.processAttachments}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  const checked = Boolean(e.target.checked);
+                  setSettings({
+                    ...settings,
+                    processAttachments: checked
+                  });
+                }}
+              />
+              <div className="block bg-gray-300 w-8 h-5 rounded-full"></div>
+              <div className={`dot absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition transform ${settings.processAttachments ? 'translate-x-3' : ''} shadow-sm`}></div>
+            </div>
+          </div>
+          
+          <div className="space-y-1.5 mt-3">
+            <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+              <span className="text-sm text-gray-900">Max results:</span>
+              <input
+                type="number"
+                className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
+                value={settings.maxResults}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSettings({
+                  ...settings,
+                  maxResults: parseInt(e.target.value) || 50
+                })}
+                min="1"
+                max="100"
+              />
+            </div>
+            
+            <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+              <span className="text-sm text-gray-900">Search days:</span>
+              <input
+                type="number"
+                className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
+                value={settings.searchDays}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSettings({
+                  ...settings,
+                  searchDays: parseInt(e.target.value) || 30
+                })}
+                min="1"
+                max="365"
+              />
+            </div>
+          </div>
+        </div>
+      </CollapsibleSection>
+      
+      <CollapsibleSection title="Field Mapping" defaultOpen={false}>
+        <div className="mb-2">
+          <div className="text-xs text-gray-500 mb-1.5">Current mapping:</div>
+          <div className="grid grid-cols-2 gap-1.5">
+            <div className="bg-white p-1.5 rounded-lg border border-gray-200 text-xs flex items-center">
+              <div className="w-4 h-4 rounded-full bg-gray-100 flex items-center justify-center mr-1.5 text-gray-800 font-medium">
+                A
+              </div>
+              <span className="text-gray-900">Vendor</span>
+            </div>
+            <div className="bg-white p-1.5 rounded-lg border border-gray-200 text-xs flex items-center">
+              <div className="w-4 h-4 rounded-full bg-gray-100 flex items-center justify-center mr-1.5 text-gray-800 font-medium">
+                B
+              </div>
+              <span className="text-gray-900">Amount</span>
+            </div>
+            <div className="bg-white p-1.5 rounded-lg border border-gray-200 text-xs flex items-center">
+              <div className="w-4 h-4 rounded-full bg-gray-100 flex items-center justify-center mr-1.5 text-gray-800 font-medium">
+                C
+              </div>
+              <span className="text-gray-900">Due Date</span>
+            </div>
+            <div className="bg-white p-1.5 rounded-lg border border-gray-200 text-xs flex items-center">
+              <div className="w-4 h-4 rounded-full bg-gray-100 flex items-center justify-center mr-1.5 text-gray-800 font-medium">
+                D
+              </div>
+              <span className="text-gray-900">Category</span>
+            </div>
+          </div>
+        </div>
+        <button className="w-full p-1.5 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg text-sm font-medium transition-colors">
+          Edit Field Mapping
+        </button>
+      </CollapsibleSection>
+
+      <button 
+        onClick={handleSaveSettings}
+        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
+      >
+        Save Settings
+      </button>
+      
+      <button 
+        onClick={() => setActiveTab('dashboard')}
+        className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
+      >
+        Back to Dashboard
+      </button>
     </div>
   );
 
   const renderProfile = () => (
-    <div className="profile-container">
-      <div className="profile-header">
-        {userProfile.avatar && (
-          <img src={userProfile.avatar} alt="Profile" className="profile-avatar" />
-        )}
-        <div className="profile-info">
-          <h2>{userProfile.name}</h2>
-          <p>{userProfile.email}</p>
+    <div className="space-y-3">
+      <div className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm">
+        <div className="flex items-center gap-3">
+          {userProfile.avatar ? (
+            <img src={userProfile.avatar} alt="Profile" className="w-12 h-12 rounded-full object-cover border-2 border-gray-200" />
+          ) : (
+            <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
+              <User size={24} />
+            </div>
+          )}
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">{userProfile.name || 'User Name'}</h2>
+            <p className="text-gray-600">{userProfile.email || 'user@example.com'}</p>
+          </div>
         </div>
       </div>
-      <div className="action-container">
-        <button onClick={handleLogout} className="secondary-button">
+      
+      <CollapsibleSection title="Account Details" defaultOpen={true}>
+        <div className="space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-600">Account Type</span>
+            <span className="text-sm font-medium">Free Plan</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-600">Usage</span>
+            <span className="text-sm font-medium">23/50 scans</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-600">Joined</span>
+            <span className="text-sm font-medium">March 12, 2023</span>
+          </div>
+        </div>
+      </CollapsibleSection>
+      
+      <CollapsibleSection title="Subscription" defaultOpen={true}>
+        <div>
+          <div className="bg-blue-50 p-3 rounded-lg mb-2 border border-blue-100">
+            <div className="text-sm font-medium text-blue-900 mb-1">Free Plan</div>
+            <p className="text-xs text-blue-700 mb-2">Access to basic scanning features</p>
+            <ul className="text-xs space-y-1 text-blue-800 mb-2">
+              <li className="flex items-center">
+                <Check size={10} className="mr-1 flex-shrink-0" />
+                <span>Up to 50 emails per month</span>
+              </li>
+              <li className="flex items-center">
+                <Check size={10} className="mr-1 flex-shrink-0" />
+                <span>Basic data extraction</span>
+              </li>
+              <li className="flex items-center">
+                <Check size={10} className="mr-1 flex-shrink-0" />
+                <span>Google Sheets export</span>
+              </li>
+            </ul>
+            <button className="w-full py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-md transition-colors">
+              Upgrade to Pro
+            </button>
+          </div>
+        </div>
+      </CollapsibleSection>
+      
+      <div className="space-y-2">
+        <button 
+          onClick={handleLogout}
+          className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
+        >
           Sign Out
+        </button>
+        
+        <button 
+          onClick={() => setActiveTab('dashboard')}
+          className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
+        >
+          Back to Dashboard
         </button>
       </div>
     </div>
@@ -573,43 +861,62 @@ const Popup = () => {
 
   return (
     <div className="popup-container">
-          <h1>Gmail Bill Scanner</h1>
-      
-      <div className="tabs">
-        <button
-          className={`tab-button ${activeTab === 'dashboard' ? 'active' : ''}`}
-          onClick={() => setActiveTab('dashboard')}
-        >
-          Dashboard
-        </button>
+      {/* Header */}
+      <div className="p-3 flex items-center justify-between border-b border-gray-200 mb-2">
+        <div className="flex items-center gap-2">
+          <div className="bg-blue-600 p-1.5 rounded-lg">
+            <Shield size={16} className="text-white" />
+          </div>
+          <h1 className="text-xl font-bold text-gray-900">Gmail Bill Scanner</h1>
+        </div>
+        <div className="flex items-center gap-2">
           <button 
-          className={`tab-button ${activeTab === 'settings' ? 'active' : ''}`}
-          onClick={() => setActiveTab('settings')}
+            onClick={() => setActiveTab('settings')}
+            className={`text-gray-600 hover:text-gray-900 transition-colors ${activeTab === 'settings' ? 'text-blue-600' : ''}`}
           >
-          Settings
+            <Settings size={18} />
           </button>
-        <button
-          className={`tab-button ${activeTab === 'profile' ? 'active' : ''}`}
-          onClick={() => setActiveTab('profile')}
-        >
-          Profile
-        </button>
+          <button 
+            onClick={() => setActiveTab('profile')}
+            className={`w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors ${activeTab === 'profile' ? 'border-2 border-blue-600' : ''}`}
+          >
+            <User size={16} className="text-gray-700" />
+          </button>
+        </div>
       </div>
       
-      <div className="tab-content">
+      {/* Free Plan Banner (Dismissible) */}
+      {showUpgradeBanner && (
+        <div className="mx-2 mb-3 bg-blue-50 rounded-lg p-2 flex items-center justify-between border border-blue-100">
+          <div>
+            <div className="text-sm font-medium text-blue-900">Free Plan</div>
+            <div className="text-xs text-blue-700">5 days left in trial</div>
+          </div>
+          <div className="flex items-center">
+            <button className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg text-xs transition-colors mr-1">
+              Upgrade
+            </button>
+            <button 
+              onClick={() => setShowUpgradeBanner(false)}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+      
+      {/* Main Content with Tabs */}
+      <div className="px-2">
         {activeTab === 'dashboard' && renderDashboard()}
         {activeTab === 'settings' && renderSettings()}
         {activeTab === 'profile' && renderProfile()}
       </div>
       
-      {showUpgradeBanner && (
-        <div className="upgrade-banner">
-          <p>Upgrade to Pro for unlimited scans and advanced features!</p>
-          <button onClick={() => setShowUpgradeBanner(false)} className="text-button">
-            Dismiss
-          </button>
-        </div>
-      )}
+      {/* Footer */}
+      <div className="px-3 py-2 text-xs text-gray-500 text-center border-t border-gray-200 bg-gray-50 mt-2">
+        Secure client-side processing • v1.0.0
+      </div>
     </div>
   );
 };
