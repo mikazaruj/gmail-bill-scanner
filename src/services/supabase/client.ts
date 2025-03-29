@@ -3,6 +3,14 @@
 
 import { createClient } from '@supabase/supabase-js';
 
+// Initialize the Supabase client
+// These values should come from environment variables in a production app
+const supabaseUrl = 'https://your-supabase-url.supabase.co';
+const supabaseKey = 'your-supabase-anon-key';
+
+// Create and export the Supabase client
+export const supabase = createClient(supabaseUrl, supabaseKey);
+
 // Environment variables for Supabase connection (from .env.local)
 const SUPABASE_URL = process.env.SUPABASE_URL || 'YOUR_SUPABASE_URL';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';

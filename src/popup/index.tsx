@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, ReactNode } from 'react';
 import * as ReactDOM from 'react-dom/client';
 import '../globals.css';
 import { BillData, BillFieldConfig } from '../types/Message';
@@ -265,17 +265,15 @@ const PopupContent = () => {
   );
 };
 
-const Popup = () => {
-  return (
-    <AuthProvider>
-      <ScanProvider>
-        <SettingsProvider>
-          <PopupContent />
-        </SettingsProvider>
-      </ScanProvider>
-    </AuthProvider>
-  );
-};
+const Popup = () => (
+  <AuthProvider>
+    <ScanProvider>
+      <SettingsProvider>
+        <PopupContent />
+      </SettingsProvider>
+    </ScanProvider>
+  </AuthProvider>
+);
 
 // Create root element
 const rootElement = document.getElementById('root');

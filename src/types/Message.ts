@@ -25,6 +25,7 @@ export interface Settings {
 }
 
 export interface UserProfile {
+  id?: string;  // User ID from Supabase
   name: string;
   email: string;
   avatar: string;
