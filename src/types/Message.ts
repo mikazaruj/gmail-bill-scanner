@@ -1,58 +1,39 @@
-/**
- * Types for message passing within the extension
- */
-
-// Define message types for type safety
-export type MessageType = 
-  | "AUTH_STATUS" 
-  | "AUTHENTICATE" 
-  | "SIGN_OUT" 
-  | "SCAN_EMAILS" 
-  | "EXPORT_TO_SHEETS"
-  | "CREATE_SPREADSHEET";
-
-export interface Message {
-  type: MessageType;
-  payload?: any;
-}
-
-/**
- * Bill data structure
- */
 export interface BillData {
-  [key: string]: string | number | Date | undefined;
-}
-
-/**
- * Request params for scanning emails
- */
-export interface ScanEmailsRequest {
-  maxResults?: number;
-  searchDays?: number;
-}
-
-export interface ScanEmailsResponse {
-  success: boolean;
-  error?: string;
-  bills?: BillData[];
-}
-
-export interface AuthResponse {
-  success: boolean;
-  isAuthenticated?: boolean;
-  error?: string;
-}
-
-export interface ExportResponse {
-  success: boolean;
-  spreadsheetId?: string;
-  error?: string;
+  [key: string]: any;
+  vendor?: string;
+  amount?: number;
+  dueDate?: Date | string;
+  category?: string;
+  emailId?: string;
+  date?: Date | string;
 }
 
 export interface BillFieldConfig {
   id: string;
-  name: string;
+  label: string;
   type: 'string' | 'number' | 'date';
-  required: boolean;
-  description?: string;
-} 
+  required?: boolean;
+  enabled: boolean;
+}
+
+export interface Settings {
+  automaticProcessing: boolean;
+  weeklySchedule: boolean;
+  processAttachments: boolean;
+  maxResults: number;
+  searchDays: number;
+}
+
+export interface UserProfile {
+  name: string;
+  email: string;
+  avatar: string;
+}
+
+export interface DashboardStats {
+  processed: number;
+  billsFound: number;
+  errors: number;
+}
+
+export type ScanningStatus = 'idle' | 'scanning' | 'completed'; 
