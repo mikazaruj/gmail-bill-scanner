@@ -15,7 +15,7 @@ interface AccountManagementProps {
   isAuthenticated: boolean;
   userEmail?: string;
   userProfile?: UserProfile | null;
-  onSignIn: () => Promise<void>;
+  onSignIn: (isSignUp: boolean) => Promise<void>;
   onSignOut: () => Promise<void>;
 }
 
@@ -50,7 +50,7 @@ export const AccountManagement = ({
   const handleSignUp = async () => {
     try {
       setSignUpLoading(true);
-      await onSignIn(); // Use the same function for both sign in and sign up since OAuth flow handles both
+      await onSignIn(true); // Pass true to indicate sign up
     } catch (error) {
       console.error('Failed to sign up:', error);
     } finally {
@@ -61,7 +61,7 @@ export const AccountManagement = ({
   const handleSignIn = async () => {
     try {
       setSignInLoading(true);
-      await onSignIn();
+      await onSignIn(false); // Pass false to indicate sign in
     } catch (error) {
       console.error('Failed to sign in:', error);
     } finally {

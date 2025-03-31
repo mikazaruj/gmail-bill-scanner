@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Authentication Successful</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      background-color: #f5f7fa;
+      color: #333;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      padding: 20px;
+      text-align: center;
+    }
+    .card {
+      background-color: white;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      padding: 40px;
+      max-width: 500px;
+      width: 100%;
+    }
+    .icon {
+      margin-bottom: 20px;
+      color: #4CAF50;
+      font-size: 48px;
+    }
+    h1 {
+      margin: 0 0 16px;
+      color: #2E3A59;
+      font-size: 24px;
+    }
+    p {
+      margin: 0 0 24px;
+      color: #546E7A;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .button {
+      background-color: #4285F4;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 12px 24px;
+      font-size: 16px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.2s;
+      text-decoration: none;
+    }
+    .button:hover {
+      background-color: #3367D6;
+    }
+    .arrow {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      font-size: 28px;
+      color: #555;
+      transform: rotate(-45deg);
+    }
+  </style>
+</head>
+<body>
+  <div class="arrow">↗️</div>
+  <div class="card">
+    <div class="icon">✓</div>
+    <h1>Authentication Successful!</h1>
+    <p>You have successfully logged in to the Gmail Bill Scanner extension. You can now close this tab and return to the extension.</p>
+    <p>Click on the extension icon in your browser toolbar to continue.</p>
+    <button class="button" onclick="window.close()">Close This Tab</button>
+  </div>
+
+  <script>
+    // Notify the extension that login is complete
+    try {
+      chrome.runtime.sendMessage({ type: 'AUTH_STATUS_UPDATE' });
+    } catch (e) {
+      console.log('Could not communicate with extension');
+    }
+  </script>
+</body>
+</html> 

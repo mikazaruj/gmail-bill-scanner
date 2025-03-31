@@ -192,6 +192,33 @@ export const PopupContent = () => {
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
         <p className="text-center text-gray-600 mb-4">Connect your Google account to scan emails for bills</p>
+        
+        {/* Authentication status message */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-md p-3 mb-4">
+            <p className="text-sm text-red-800">
+              {error}
+            </p>
+            {error.includes('already exists') && (
+              <div className="mt-2">
+                <button 
+                  onClick={async () => {
+                    // Set flag to force token clearing - the background will check for this
+                    await chrome.storage.local.set({ force_clear_tokens: true });
+                    handleSignUp();
+                  }}
+                  className="text-xs bg-red-100 hover:bg-red-200 text-red-800 font-semibold py-1 px-2 rounded"
+                >
+                  Force create new account
+                </button>
+                <p className="text-xs text-gray-500 mt-1">
+                  Only use this if you're sure you want to create a separate account
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+        
         <div className="action-container space-y-3">
           <button onClick={handleSignUp} className={`primary-button bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md flex justify-center items-center w-full`}>
             {isSigningUp ? "Creating Account..." : "Sign Up with Google"}

@@ -1,13 +1,15 @@
-// This is a placeholder for the Supabase client
-// Once we have the required dependencies installed, this will use the Supabase JS client
+// This is a simplified Supabase client that focuses on direct database operations
+// Rather than using Supabase Auth, we'll use Chrome's Identity API and manage sessions manually
 
-import { createClient } from '@supabase/supabase-js';
+import { createClient, Session } from '@supabase/supabase-js';
+// We'll use the full interface definition below
+// type Database = any;
 
-// Environment variables for Supabase connection (from .env.local)
-const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL || 'https://eipfspwyqzejhmybpofk.supabase.co';
-const SUPABASE_ANON_KEY = process.env.REACT_APP_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMwNjgyOTgsImV4cCI6MjA1ODY0NDI5OH0.tKDn1KvM8hk-95DvuzuaG2wra__u2Jc3t5xK-FPutbs';
+// Environment variables - loaded from .env.local
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://eipfspwyqzejhmybpofk.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTE0NzQ2MTAsImV4cCI6MjAyNzA1MDYxMH0.RKGuiOWMG1igzPYTbXJa1wRsaTiPxXy_9r5JCEZ5BNQ';
 
-// Chrome extension URL for OAuth redirects
+// Chrome extension URL for OAuth redirects (no longer used but kept for reference)
 const EXTENSION_URL = chrome.runtime.getURL('');
 
 // Log config for debugging
@@ -17,16 +19,43 @@ console.log('Supabase config:', {
   extensionUrl: EXTENSION_URL
 });
 
-// Create and export the Supabase client with the correct configuration
+// Create a custom storage adapter for Chrome
+const chromeStorageAdapter = {
+  getItem: (key: string) => {
+    return new Promise<string | null>((resolve) => {
+      chrome.storage.local.get([key], (result) => {
+        console.log(`Getting storage item ${key}:`, result[key] ? 'exists' : 'null');
+        resolve(result[key] || null);
+      });
+    });
+  },
+  setItem: (key: string, value: string) => {
+    return new Promise<void>((resolve) => {
+      console.log(`Setting storage item ${key}:`, value ? 'value exists' : 'null');
+      chrome.storage.local.set({ [key]: value }, () => {
+        resolve();
+      });
+    });
+  },
+  removeItem: (key: string) => {
+    return new Promise<void>((resolve) => {
+      console.log(`Removing storage item ${key}`);
+      chrome.storage.local.remove(key, () => {
+        resolve();
+      });
+    });
+  },
+};
+
+// Create and export the Supabase client - we only need database operations
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
-    autoRefreshToken: true,
+    autoRefreshToken: false,
     persistSession: true,
-    storageKey: 'gmail-bill-scanner-auth',
-    // Set up proper flow type for OAuth
-    flowType: 'pkce'
+    detectSessionInUrl: false,
+    storage: chromeStorageAdapter,
+    storageKey: 'gmail-bill-scanner-auth'
   },
-  // Move redirectTo to the global options
   global: {
     headers: {
       'x-application-name': 'gmail-bill-scanner'
@@ -34,11 +63,132 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   }
 });
 
-// Handle redirect during OAuth flow
-supabase.auth.onAuthStateChange((event, session) => {
-  console.log('Auth state changed:', event, session ? 'User authenticated' : 'No session');
-});
+// Export the function to get the client
+export async function getSupabaseClient() {
+  return supabase;
+}
 
+/**
+ * Gets the stored session from Chrome storage
+ * @returns The stored session
+ */
+export async function getStoredSession(): Promise<Session | null> {
+  try {
+    // Try to get session from Chrome storage
+    const data = await chrome.storage.local.get('gmail-bill-scanner-auth');
+    const sessionString = data['gmail-bill-scanner-auth'];
+    
+    if (!sessionString) {
+      console.log('No stored session found in Chrome storage');
+      return null;
+    }
+    
+    try {
+      const sessionData = JSON.parse(sessionString);
+      
+      // Check if session is expired
+      if (sessionData.expires_at && sessionData.expires_at < Date.now()) {
+        console.warn('Session has expired, attempting to refresh');
+        
+        // Attempt to refresh the token using Chrome Identity
+        try {
+          const newToken = await new Promise<string>((resolve, reject) => {
+            chrome.identity.getAuthToken({ 
+              interactive: false, // Non-interactive so it only uses cached tokens
+              scopes: ['https://www.googleapis.com/auth/gmail.readonly', 
+                      'https://www.googleapis.com/auth/drive.file',
+                      'https://www.googleapis.com/auth/userinfo.email',
+                      'https://www.googleapis.com/auth/userinfo.profile']
+            }, (token) => {
+              if (chrome.runtime.lastError || !token) {
+                reject(chrome.runtime.lastError || new Error('No token received'));
+                return;
+              }
+              resolve(token);
+            });
+          });
+          
+          // Update the session data with the new token
+          sessionData.access_token = newToken;
+          sessionData.refresh_token = newToken;
+          sessionData.expires_at = Date.now() + 3600 * 1000; // 1 hour expiry
+          
+          // Update the stored session
+          await chrome.storage.local.set({ 
+            'gmail-bill-scanner-auth': JSON.stringify(sessionData)
+          });
+          
+          console.log('Session refreshed successfully with new token');
+        } catch (refreshError) {
+          console.error('Failed to refresh session token:', refreshError);
+          // Continue with the expired session and let the caller handle it
+        }
+      }
+      
+      // Try to set the session in the Supabase client
+      const { error } = await supabase.auth.setSession({
+        access_token: sessionData.access_token,
+        refresh_token: sessionData.refresh_token || sessionData.access_token,
+      });
+      
+      if (error) {
+        console.warn('Failed to set Supabase session:', error);
+        // Continue anyway, as we mainly use our stored session
+      }
+      
+      return sessionData;
+    } catch (error) {
+      console.error('Error parsing stored session:', error);
+      return null;
+    }
+  } catch (error) {
+    console.error('Error fetching stored session:', error);
+    return null;
+  }
+}
+
+/**
+ * Manually set a session in Chrome storage
+ */
+export async function setStoredSession(sessionData: any) {
+  return new Promise<void>((resolve) => {
+    chrome.storage.local.set({
+      'gmail-bill-scanner-auth': JSON.stringify(sessionData)
+    }, () => {
+      resolve();
+    });
+  });
+}
+
+/**
+ * Clear the stored session from Chrome storage
+ */
+export async function clearStoredSession() {
+  return new Promise<void>((resolve) => {
+    chrome.storage.local.remove('gmail-bill-scanner-auth', () => {
+      resolve();
+    });
+  });
+}
+
+/**
+ * Check if user is authenticated by checking storage
+ */
+export async function isAuthenticated() {
+  const session = await getStoredSession();
+  return !!session;
+}
+
+/**
+ * Sign out the current user by clearing the session
+ */
+export async function signOut() {
+  await clearStoredSession();
+  return { success: true };
+}
+
+// The Database interface is kept for type safety with queries
+// Simplified to only include what we need
 export interface Database {
   public: {
     Tables: {
@@ -206,54 +356,30 @@ export interface Database {
   };
 }
 
-// Create and initialize Supabase client
-let supabaseClient: ReturnType<typeof createClient<Database>> | null = null;
-let initPromise: Promise<ReturnType<typeof createClient<Database>>> | null = null;
-
 /**
- * Get or create a Supabase client instance
- * @returns Initialized Supabase client
+ * Manually set a session in the Supabase client and Chrome storage
+ * This can be used to bypass the standard OAuth flow
  */
-export async function getSupabaseClient() {
-  // Return existing client if already initialized
-  if (supabaseClient) {
-    return supabaseClient;
-  }
-
-  // If initialization is in progress, wait for it
-  if (initPromise) {
-    return initPromise;
-  }
-
-  // Initialize the client (with promise caching to prevent multiple initializations)
-  initPromise = (async () => {
-    try {
-      // Use environment variables - don't try to get from storage
-      const url = SUPABASE_URL;
-      const key = SUPABASE_ANON_KEY;
-
-      // Create new client
-      supabaseClient = createClient<Database>(url, key, {
-        auth: {
-          autoRefreshToken: true,
-          persistSession: true,
-          storageKey: 'gmail-bill-scanner-auth'
-        }
-      });
-      
-      // Log successful client initialization
-      console.warn('Supabase client initialized with URL:', url.substring(0, 10) + '...');
-      
-      return supabaseClient;
-    } catch (error) {
-      console.error('Error initializing Supabase client:', error);
-      // Reset promise so we can try again later
-      initPromise = null;
+export async function manuallySetSession(sessionData: any) {
+  try {
+    console.log('Manually setting session in Supabase client');
+    const supabase = await getSupabaseClient();
+    
+    // Store session in Chrome storage
+    const storageKey = 'gmail-bill-scanner-auth';
+    await chrome.storage.local.set({ [storageKey]: JSON.stringify(sessionData) });
+    
+    // Set session in Supabase client
+    const { error } = await supabase.auth.setSession(sessionData);
+    if (error) {
       throw error;
     }
-  })();
-  
-  return initPromise;
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error manually setting session:', error);
+    return { success: false, error };
+  }
 }
 
 /**
@@ -282,14 +408,6 @@ export async function signIn(email: string, password: string) {
     email,
     password
   });
-}
-
-/**
- * Sign out the current user
- */
-export async function signOut() {
-  const supabase = await getSupabaseClient();
-  return await supabase.auth.signOut();
 }
 
 /**
@@ -504,88 +622,181 @@ export async function saveUserSettings(
 }
 
 /**
- * Sign in with Google using access token (creates a user if doesn't exist)
+ * Sign in with Google using access token
  * @param accessToken Google OAuth access token
  * @param email User's email from Google
  * @param name User's name from Google
  * @param avatarUrl User's avatar URL from Google
+ * @param isSignUp Whether this is a sign up (true) or sign in (false) attempt
  * @returns Response with user data or error
  */
 export async function signInWithGoogle(
   accessToken: string,
   email: string,
   name: string,
-  avatarUrl: string
+  avatarUrl: string,
+  isSignUp: boolean = false
 ) {
   try {
+    console.log(`Attempting to ${isSignUp ? 'sign up' : 'sign in'} with Google:`, { email, name });
     const supabase = await getSupabaseClient();
     
-    // First try to get an ID token from Google
-    const response = await fetch('https://oauth2.googleapis.com/tokeninfo?access_token=' + accessToken);
-    const tokenInfo = await response.json();
+    // First, check if there's already a valid session
+    const { data: { session: existingSession } } = await supabase.auth.getSession();
     
-    if (!tokenInfo.email || tokenInfo.email !== email) {
-      throw new Error('Invalid token or email mismatch');
+    if (existingSession && existingSession.user) {
+      console.log('User already has a valid session:', existingSession.user.id);
+      
+      // Update profile information
+      await updateUserProfile(existingSession.user.id, name, avatarUrl, email);
+      
+      return { 
+        data: { user: existingSession.user }, 
+        error: null,
+        existingUser: true,
+        message: 'Already authenticated.'
+      };
     }
     
-    // Sign in with Google OAuth token
-    const { data: authData, error: authError } = await supabase.auth.signInWithIdToken({
-      provider: 'google',
-      token: accessToken,
-      nonce: generateNonce(),
-    });
-    
-    if (authError) {
-      console.warn('Error signing in with Google OAuth:', authError);
+    // Try to sign in with an ID token from Google
+    // Note: In a Chrome extension we don't get an ID token, so we need to use email/password
+    if (!isSignUp) {
+      // For sign in flow, attempt to sign in with credentials
+      console.log("Attempting sign in with email-password (external auth)");
       
-      // If user doesn't exist, create them
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      // Create a random password - in real auth we validate with Google token
+      const tempPassword = generateSecurePassword();
+      
+      // Try to sign in
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
         email,
-        password: generateSecurePassword(), // They'll never use this password
-        options: {
-          data: {
-            name,
-            avatar_url: avatarUrl,
-            provider: 'google',
-          }
-        }
+        password: tempPassword
       });
       
-      if (signUpError) {
-        console.error('Failed to create user:', signUpError);
-        return { data: null, error: signUpError };
+      // If successful login, user already exists
+      if (signInData?.user) {
+        console.log('Sign in successful:', signInData.user.id);
+        
+        // Update profile information
+        await updateUserProfile(signInData.user.id, name, avatarUrl, email);
+        
+        return { 
+          data: signInData, 
+          error: null,
+          existingUser: true,
+          message: 'Signed in successfully.'
+        };
       }
       
-      // Create user profile in public schema
-      if (signUpData?.user) {
-        await upsertUserProfile(signUpData.user.id, {
-          display_name: name,
+      console.log('Sign in failed, attempting to create user:', signInError?.message);
+    }
+    
+    // If we reach here, we need to create a new user (either sign up mode or sign in failed)
+    console.log("Creating a new user account");
+    
+    // Create a secure password (user will never need to remember this)
+    const securePassword = generateSecurePassword();
+    
+    // Sign up with email and password
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      email,
+      password: securePassword,
+      options: {
+        data: {
+          name,
+          full_name: name,
           avatar_url: avatarUrl,
-          email: email,
-          provider: 'google'
-        });
+          picture: avatarUrl,
+          provider: 'google',
+        }
+      }
+    });
+    
+    if (signUpError) {
+      console.error('Failed to create user:', signUpError);
+      
+      // Special handling for "User already registered" error
+      if (signUpError.message.includes("already registered") || signUpError.message.includes("already taken")) {
+        // If user exists but we couldn't sign in with the random password,
+        // we need to use admin functions to reset their password
+        // This is a limitation of using Supabase auth in a Chrome extension
         
-        // Initialize user settings
+        return { 
+          data: null, 
+          error: new Error('Account exists but authentication failed. Please try again.'),
+          existingUser: true,
+          message: 'Account exists but authentication failed. Please try again.'
+        };
+      }
+      
+      return { data: null, error: signUpError };
+    }
+    
+    // New user created successfully
+    if (signUpData?.user) {
+      console.log('New user created:', signUpData.user.id);
+      
+      // Create user record in public.users table
+      try {
+        const { error: insertError } = await supabase
+          .from('users')
+          .insert({
+            id: signUpData.user.id,
+            email: email,
+            auth_id: signUpData.user.id,
+            plan: 'free',
+            quota_bills_monthly: 50,
+            quota_bills_used: 0
+          });
+          
+        if (insertError) {
+          console.error('Error creating user record:', insertError);
+        }
+      } catch (dbError) {
+        console.error('Database error creating user record:', dbError);
+      }
+      
+      // Create profile record
+      try {
+        await supabase
+          .from('profiles')
+          .upsert({
+            id: signUpData.user.id,
+            full_name: name,
+            avatar_url: avatarUrl,
+            username: email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, ''),
+            first_name: name.split(' ')[0] || '',
+            last_name: name.split(' ').slice(1).join(' ') || '',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+      } catch (profileError) {
+        console.error("Error creating profile:", profileError);
+      }
+      
+      // Initialize user settings
+      try {
         await saveUserSettings(signUpData.user.id, {
           scan_frequency: 'manual',
           apply_labels: false
         });
+      } catch (settingsError) {
+        console.error("Error creating user settings:", settingsError);
       }
       
-      return { data: signUpData, error: null };
+      return { 
+        data: signUpData, 
+        error: null,
+        newUser: true,
+        message: 'Account created successfully!'
+      };
     }
     
-    // User exists and signed in successfully
-    if (authData?.user) {
-      await upsertUserProfile(authData.user.id, {
-        display_name: name,
-        avatar_url: avatarUrl,
-        email: email,
-        provider: 'google'
-      });
-    }
-    
-    return { data: authData, error: null };
+    return { 
+      data: null, 
+      error: new Error('Failed to authenticate with Google'),
+      message: 'Authentication failed. Please try again.'
+    };
   } catch (error) {
     console.error('Error in signInWithGoogle:', error);
     return { 
@@ -596,51 +807,50 @@ export async function signInWithGoogle(
 }
 
 /**
- * Update or insert user profile data
- * @param userId User ID
- * @param profile Profile data
+ * Helper function to update a user's profile information
  */
-export async function upsertUserProfile(
-  userId: string, 
-  profile: {
-    display_name: string;
-    avatar_url: string;
-    email: string;
-    provider: string;
-  }
-) {
+async function updateUserProfile(userId: string, name: string, avatarUrl: string, email: string) {
   const supabase = await getSupabaseClient();
   
-  // First check if a profile exists
-  const { data } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .maybeSingle();
-  
-  if (data) {
-    // Update existing profile
-    return await supabase
+  try {
+    // Check if user exists in public.users table
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle();
+    
+    // If user doesn't exist in public.users, create the record
+    if (!userData) {
+      console.log("Creating user record in public.users");
+      await supabase
+        .from('users')
+        .insert({
+          id: userId,
+          email: email,
+          auth_id: userId,
+          plan: 'free',
+          quota_bills_monthly: 50,
+          quota_bills_used: 0
+        });
+    }
+    
+    // Update or create profile
+    await supabase
       .from('profiles')
-      .update({
-        display_name: profile.display_name,
-        avatar_url: profile.avatar_url,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', userId);
-  } else {
-    // Insert new profile
-    return await supabase
-      .from('profiles')
-      .insert({
+      .upsert({
         id: userId,
-        display_name: profile.display_name,
-        avatar_url: profile.avatar_url,
-        email: profile.email,
-        provider: profile.provider,
-        created_at: new Date().toISOString(),
+        full_name: name,
+        avatar_url: avatarUrl,
+        username: email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, ''),
+        first_name: name.split(' ')[0] || '',
+        last_name: name.split(' ').slice(1).join(' ') || '',
         updated_at: new Date().toISOString()
       });
+    
+    console.log("User profile updated successfully");
+  } catch (error) {
+    console.error("Error updating user profile:", error);
   }
 }
 
@@ -768,4 +978,26 @@ export const setupAuthListener = () => {
     console.error('Error setting up auth listener:', error);
     return null;
   }
-}; 
+};
+
+/**
+ * Update or insert user profile data
+ * @param userId User ID
+ * @param profile Profile data
+ */
+export async function upsertUserProfile(
+  userId: string, 
+  profile: {
+    display_name: string;
+    avatar_url: string;
+    email: string;
+    provider: string;
+  }
+) {
+  return updateUserProfile(
+    userId, 
+    profile.display_name, 
+    profile.avatar_url, 
+    profile.email
+  );
+}

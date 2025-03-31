@@ -80,8 +80,16 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     setError(null);
     
     try {
+      // Use our custom authentication through the background script
+      // This will use Chrome's Identity API directly
+      const authMode = await chrome.storage.local.get('auth_mode');
+      const isSignUp = authMode?.auth_mode === 'signup';
+      
       const response = await new Promise<any>((resolve) => {
-        chrome.runtime.sendMessage({ type: 'AUTHENTICATE' }, (response) => {
+        chrome.runtime.sendMessage({ 
+          type: 'AUTHENTICATE',
+          isSignUp: isSignUp
+        }, (response) => {
           if (chrome.runtime.lastError) {
             throw new Error(chrome.runtime.lastError.message);
           }
@@ -98,6 +106,10 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
             avatar: response.profile.picture || ''
           });
         }
+        setError(null);
+        
+        // Clear the auth_mode
+        await chrome.storage.local.remove('auth_mode');
       } else {
         throw new Error(response?.error || 'Authentication failed');
       }
