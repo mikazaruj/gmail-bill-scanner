@@ -3,22 +3,40 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-// Initialize the Supabase client
-// These values should come from environment variables in a production app
-const supabaseUrl = 'https://your-supabase-url.supabase.co';
-const supabaseKey = 'your-supabase-anon-key';
-
-// Create and export the Supabase client
-export const supabase = createClient(supabaseUrl, supabaseKey);
-
 // Environment variables for Supabase connection (from .env.local)
-const SUPABASE_URL = process.env.SUPABASE_URL || 'YOUR_SUPABASE_URL';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';
+const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL || 'https://eipfspwyqzejhmybpofk.supabase.co';
+const SUPABASE_ANON_KEY = process.env.REACT_APP_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMwNjgyOTgsImV4cCI6MjA1ODY0NDI5OH0.tKDn1KvM8hk-95DvuzuaG2wra__u2Jc3t5xK-FPutbs';
+
+// Chrome extension URL for OAuth redirects
+const EXTENSION_URL = chrome.runtime.getURL('');
 
 // Log config for debugging
 console.log('Supabase config:', { 
-  url: SUPABASE_URL.substring(0, 10) + '...',  // Only log part of URL for security
-  hasKey: !!SUPABASE_ANON_KEY
+  url: SUPABASE_URL.substring(0, 20) + '...',  // Only log part of URL for security
+  hasKey: !!SUPABASE_ANON_KEY,
+  extensionUrl: EXTENSION_URL
+});
+
+// Create and export the Supabase client with the correct configuration
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    autoRefreshToken: true,
+    persistSession: true,
+    storageKey: 'gmail-bill-scanner-auth',
+    // Set up proper flow type for OAuth
+    flowType: 'pkce'
+  },
+  // Move redirectTo to the global options
+  global: {
+    headers: {
+      'x-application-name': 'gmail-bill-scanner'
+    }
+  }
+});
+
+// Handle redirect during OAuth flow
+supabase.auth.onAuthStateChange((event, session) => {
+  console.log('Auth state changed:', event, session ? 'User authenticated' : 'No session');
 });
 
 export interface Database {
@@ -669,4 +687,85 @@ export async function deleteAccount() {
   // Finally delete the user's auth account
   const { error } = await supabase.auth.admin.deleteUser(user.id);
   if (error) throw error;
-} 
+}
+
+/**
+ * Sync authentication state between popup and options
+ * @returns Current authentication state
+ */
+export const syncAuthState = async () => {
+  try {
+    // Get current session
+    const { data: { session } } = await supabase.auth.getSession();
+    
+    // Get user information
+    if (session) {
+      // First, check if user exists in Chrome storage
+      let user = session.user;
+      
+      // Save authenticated state in Chrome storage
+      await chrome.storage.local.set({ 
+        auth_state: {
+          isAuthenticated: !!user,
+          userId: user?.id,
+          email: user?.email,
+          lastSynced: new Date().toISOString()
+        }
+      });
+      
+      return { isAuthenticated: !!user, user };
+    } else {
+      // No session, clear Chrome storage
+      await chrome.storage.local.set({ 
+        auth_state: {
+          isAuthenticated: false,
+          lastSynced: new Date().toISOString()
+        }
+      });
+      
+      return { isAuthenticated: false, user: null };
+    }
+  } catch (error) {
+    console.error('Error syncing auth state:', error);
+    return { isAuthenticated: false, user: null };
+  }
+};
+
+/**
+ * Listen for Supabase auth changes
+ */
+export const setupAuthListener = () => {
+  try {
+    // Set up the auth state change listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        console.log('Auth state changed:', event, !!session);
+        
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+          if (session) {
+            await chrome.storage.local.set({ 
+              auth_state: {
+                isAuthenticated: true,
+                userId: session.user?.id,
+                email: session.user?.email,
+                lastSynced: new Date().toISOString()
+              }
+            });
+          }
+        } else if (event === 'SIGNED_OUT') {
+          await chrome.storage.local.set({ 
+            auth_state: {
+              isAuthenticated: false,
+              lastSynced: new Date().toISOString()
+            }
+          });
+        }
+      }
+    );
+    
+    return subscription;
+  } catch (error) {
+    console.error('Error setting up auth listener:', error);
+    return null;
+  }
+}; 

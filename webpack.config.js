@@ -14,13 +14,16 @@ const envKeys = Object.keys(env).reduce((prev, next) => {
   return prev;
 }, {});
 
+// Add NODE_ENV to the environment variables
+envKeys['process.env.NODE_ENV'] = JSON.stringify(process.env.NODE_ENV || 'development');
+
 module.exports = {
-  mode: 'production',
+  mode: process.env.NODE_ENV === 'production' ? 'production' : 'development',
   entry: {
-    popup: ['./src/popup/index.tsx', './src/globals.css'],
-    options: ['./src/options/index.tsx', './src/globals.css'],
-    content: './src/content/index.ts',
-    background: './src/background/index.ts'
+    popup: './src/index.js',
+    options: './src/options/index.tsx',
+    background: './src/background/index.ts',
+    content: './src/content/index.ts'
   },
   output: {
     path: path.resolve(__dirname, 'dist'),
@@ -32,38 +35,29 @@ module.exports = {
       {
         test: /\.(js|jsx|ts|tsx)$/,
         exclude: /node_modules/,
-        use: {
-          loader: 'babel-loader',
-          options: {
-            presets: [
-              ['@babel/preset-env', {
-                targets: {
-                  chrome: '88', // Target Chrome 88+
-                },
-              }],
-              '@babel/preset-react', 
-              '@babel/preset-typescript'
-            ],
-            plugins: [
-              '@babel/plugin-transform-runtime'
-            ]
-          },
-        },
+        use: [
+          {
+            loader: 'babel-loader',
+            options: {
+              presets: [
+                '@babel/preset-env',
+                '@babel/preset-react',
+                '@babel/preset-typescript'
+              ],
+              plugins: []
+            }
+          }
+        ]
       },
       {
         test: /\.css$/,
         use: [
-          {
-            loader: MiniCssExtractPlugin.loader,
-            options: {
-              publicPath: '',
-            },
-          },
+          MiniCssExtractPlugin.loader,
           {
             loader: 'css-loader',
             options: {
-              importLoaders: 1
-            }
+              importLoaders: 1,
+            },
           },
           {
             loader: 'postcss-loader',
@@ -71,65 +65,77 @@ module.exports = {
               postcssOptions: {
                 plugins: [
                   'tailwindcss',
-                  'autoprefixer',
-                ]
-              }
-            }
-          }
-        ],
+                  ['autoprefixer', {
+                    grid: true,
+                    flexbox: true
+                  }],
+                ],
+              },
+            },
+          },
+        ]
       },
-    ],
+      {
+        test: /\.(png|jpg|jpeg|gif|svg)$/,
+        type: 'asset/resource',
+        generator: {
+          filename: 'assets/[name][ext]'
+        }
+      }
+    ]
   },
   plugins: [
-    new webpack.DefinePlugin(envKeys),
+    new webpack.DefinePlugin({
+      ...envKeys,
+      'process': JSON.stringify({
+        env: {
+          NODE_ENV: process.env.NODE_ENV || 'development',
+          ...env
+        }
+      })
+    }),
     new MiniCssExtractPlugin({
-      filename: 'styles.css'
+      filename: '[name].css'
     }),
     new CopyPlugin({
       patterns: [
-        {
-          from: 'public',
-          to: '.',
-          globOptions: {
-            ignore: ['**/popup.html', '**/options.html', '**/manifest.json']
+        { 
+          from: 'public/manifest.json',
+          transform: (content) => {
+            const manifest = JSON.parse(content.toString());
+            if (manifest.oauth2 && manifest.oauth2.client_id) {
+              manifest.oauth2.client_id = process.env.GOOGLE_CLIENT_ID || 'YOUR_CLIENT_ID';
+            }
+            return JSON.stringify(manifest, null, 2);
           }
         },
-        {
-          from: 'public/manifest.json',
-          to: 'manifest.json',
-          transform(content) {
-            const manifest = JSON.parse(content.toString());
-            manifest.oauth2.client_id = env.GOOGLE_CLIENT_ID;
-            return JSON.stringify(manifest, null, 2);
-          },
-        }
+        { from: 'public/icon.svg', to: 'icon.svg' },
+        { from: 'public/icon128.png', to: 'icon128.png' }
       ],
     }),
     new HtmlWebpackPlugin({
       template: './public/popup.html',
       filename: 'popup.html',
       chunks: ['popup'],
-      inject: true,
       cache: false
     }),
     new HtmlWebpackPlugin({
       template: './public/options.html',
       filename: 'options.html',
       chunks: ['options'],
-      inject: true,
       cache: false
     }),
   ],
   resolve: {
-    extensions: ['.ts', '.tsx', '.js', '.jsx', '.css']
+    extensions: ['.js', '.jsx', '.ts', '.tsx', '.css'],
+    alias: {
+      '~': path.resolve(__dirname, 'src'),
+    }
   },
   optimization: {
-    minimize: true,
-    splitChunks: {
-      chunks: 'all',
-      name: false,
-    },
+    minimize: process.env.NODE_ENV === 'production',
+    // Disable code splitting for extension to avoid messaging issues
+    splitChunks: false
   },
-  // Don't use source maps for more secure code
-  devtool: false,
+  devtool: process.env.NODE_ENV === 'production' ? false : 'inline-source-map'
 }; 

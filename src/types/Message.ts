@@ -37,4 +37,21 @@ export interface DashboardStats {
   errors: number;
 }
 
-export type ScanningStatus = 'idle' | 'scanning' | 'completed'; 
+export type ScanningStatus = 'idle' | 'scanning' | 'completed';
+
+// Add missing types for background service worker
+export interface Message {
+  type: string;
+  payload?: any;
+}
+
+export interface ScanEmailsRequest {
+  maxResults?: number;
+  searchDays?: number;
+}
+
+export interface ScanEmailsResponse {
+  success: boolean;
+  error?: string;
+  bills?: BillData[];
+} 

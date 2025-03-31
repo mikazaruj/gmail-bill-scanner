@@ -1,145 +1,285 @@
-import React, { useState } from 'react';
+import React, { useState, ChangeEvent } from 'react';
+import { supabase } from '../services/supabase/client';
+
+// User profile information
+interface UserProfile {
+  id: string;
+  email: string;
+  plan: string;
+  quota_used: number;
+  quota_total: number;
+  joined_date: string;
+}
 
 interface AccountManagementProps {
-  onDeleteAccount: () => Promise<void>;
-  onRevokeAccess: () => Promise<void>;
+  isAuthenticated: boolean;
+  userEmail?: string;
+  userProfile?: UserProfile | null;
+  onSignIn: () => Promise<void>;
+  onSignOut: () => Promise<void>;
 }
 
 export const AccountManagement = ({
-  onDeleteAccount,
-  onRevokeAccess
+  isAuthenticated,
+  userEmail,
+  userProfile,
+  onSignIn,
+  onSignOut,
 }: AccountManagementProps) => {
+  const [signInLoading, setSignInLoading] = useState(false);
+  const [signUpLoading, setSignUpLoading] = useState(false);
+  const [signOutLoading, setSignOutLoading] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [showRevokeConfirm, setShowRevokeConfirm] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const handleDeleteAccount = async () => {
+  // These are the scopes we request from Google
+  const googleScopes = [
+    {
+      scope: 'https://www.googleapis.com/auth/gmail.readonly',
+      description: 'View your email messages and settings',
+      detail: 'Allows the extension to read your email to identify bill-related emails. We never store the full content of your emails.'
+    },
+    {
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      description: 'See, edit, create, and delete your spreadsheets in Google Drive',
+      detail: 'Allows the extension to create and update Google Sheets with your bill data.'
+    }
+  ];
+
+  const handleSignUp = async () => {
     try {
-      setIsProcessing(true);
-      setError(null);
-      await onDeleteAccount();
-      setShowDeleteConfirm(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete account');
+      setSignUpLoading(true);
+      await onSignIn(); // Use the same function for both sign in and sign up since OAuth flow handles both
+    } catch (error) {
+      console.error('Failed to sign up:', error);
     } finally {
-      setIsProcessing(false);
+      setSignUpLoading(false);
     }
   };
 
-  const handleRevokeAccess = async () => {
+  const handleSignIn = async () => {
     try {
-      setIsProcessing(true);
-      setError(null);
-      await onRevokeAccess();
-      setShowRevokeConfirm(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke access');
+      setSignInLoading(true);
+      await onSignIn();
+    } catch (error) {
+      console.error('Failed to sign in:', error);
     } finally {
-      setIsProcessing(false);
+      setSignInLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      setSignOutLoading(true);
+      await onSignOut();
+      setShowDeleteConfirm(false); // Reset delete confirmation if open
+    } catch (error) {
+      console.error('Failed to sign out:', error);
+    } finally {
+      setSignOutLoading(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    try {
+      setDeleteLoading(true);
+      setDeleteError(null);
+      
+      // Call Supabase RPC function to soft delete user
+      const { error } = await supabase.rpc('soft_delete_user');
+      
+      if (error) throw error;
+      
+      // Clean up any OAuth tokens from storage
+      try {
+        if (chrome.storage) {
+          await chrome.storage.local.remove(['gmail_token', 'sheets_token']);
+        }
+      } catch (storageErr) {
+        console.warn('Failed to clear token storage:', storageErr);
+      }
+      
+      // Sign out after successful deletion
+      await onSignOut();
+      setShowDeleteConfirm(false);
+    } catch (error) {
+      console.error('Failed to delete account:', error);
+      setDeleteError((error as Error).message || 'Failed to delete account. Please try again.');
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
   return (
-    <div className="account-management">
-      <h2>Account Management</h2>
-      
-      {error && (
-        <div className="error-message">
-          {error}
-          <button onClick={() => setError(null)}>Dismiss</button>
-        </div>
+    <div className="space-y-6">
+      {isAuthenticated && userProfile && (
+        <section className="space-y-4">
+          <h2 className="text-xl font-semibold mb-4">Account Details</h2>
+          <div className="bg-white border rounded-lg p-4 space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Account Type</span>
+              <span className="font-medium">{userProfile.plan} Plan</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Usage</span>
+              <span className="font-medium">{userProfile.quota_used}/{userProfile.quota_total} scans</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Joined</span>
+              <span className="font-medium">{userProfile.joined_date}</span>
+            </div>
+          </div>
+        </section>
       )}
 
-      <div className="account-section">
-        <h3>Google Account Access</h3>
-        <p>
-          Manage your Google account access and permissions for Gmail Bill Scanner.
-        </p>
+      <section>
+        <h2 className="text-xl font-semibold mb-4">Authentication</h2>
         
-        {!showRevokeConfirm ? (
-          <button 
-            onClick={() => setShowRevokeConfirm(true)}
-            className="warning-button"
-            disabled={isProcessing}
-          >
-            Revoke Google Access
-          </button>
-        ) : (
-          <div className="confirmation-dialog">
-            <p>
-              Are you sure you want to revoke Gmail Bill Scanner's access to your Google account?
-              This will:
-            </p>
-            <ul>
-              <li>Remove access to your Gmail and Google Sheets</li>
-              <li>Require re-authorization if you want to use the extension again</li>
-              <li>Not delete any data you've already exported</li>
-            </ul>
-            <div className="button-group">
-              <button 
-                onClick={handleRevokeAccess}
-                className="danger-button"
-                disabled={isProcessing}
-              >
-                {isProcessing ? 'Revoking...' : 'Yes, Revoke Access'}
-              </button>
-              <button 
-                onClick={() => setShowRevokeConfirm(false)}
-                disabled={isProcessing}
-              >
-                Cancel
-              </button>
+        {isAuthenticated ? (
+          <div className="space-y-4">
+            <div className="flex items-center space-x-2">
+              <span className="text-green-600">✓</span>
+              <span>Signed in as {userEmail || 'a Google user'}</span>
             </div>
-          </div>
-        )}
-      </div>
+            
+            <div className="space-y-3">
+              <h3 className="font-medium">OAuth Permissions</h3>
+              <p className="text-sm text-gray-600">
+                Gmail Bill Scanner has been granted the following permissions:
+              </p>
+              
+              {googleScopes.map((scope, index) => (
+                <div key={index} className="border rounded p-3 bg-gray-50">
+                  <div className="font-medium">{scope.description}</div>
+                  <div className="text-sm text-gray-600 mt-1">{scope.detail}</div>
+                </div>
+              ))}
+            </div>
 
-      <div className="account-section danger-zone">
-        <h3>Danger Zone</h3>
-        <p>
-          Permanently delete your account and all associated data.
-          This action cannot be undone.
-        </p>
-        
-        {!showDeleteConfirm ? (
-          <button 
-            onClick={() => setShowDeleteConfirm(true)}
-            className="danger-button"
-            disabled={isProcessing}
-          >
-            Delete Account
-          </button>
-        ) : (
-          <div className="confirmation-dialog">
-            <p>
-              Are you absolutely sure you want to delete your account?
-              This will:
-            </p>
-            <ul>
-              <li>Permanently delete your account</li>
-              <li>Remove all your settings and preferences</li>
-              <li>Revoke access to Google services</li>
-              <li>Cannot be undone</li>
-            </ul>
-            <div className="button-group">
-              <button 
-                onClick={handleDeleteAccount}
-                className="danger-button"
-                disabled={isProcessing}
+            {isAuthenticated && userProfile && (
+              <section className="mt-6 mb-4">
+                <h3 className="font-medium mb-3">Subscription</h3>
+                <div className="bg-blue-50 rounded-lg p-4 space-y-3">
+                  <div className="font-medium text-blue-800">{userProfile.plan} Plan</div>
+                  <p className="text-sm text-blue-700">Access to basic scanning features</p>
+                  <ul className="space-y-1 text-sm text-blue-700">
+                    <li className="flex items-center">
+                      <span className="text-blue-500 mr-2">✓</span>
+                      Up to {userProfile.quota_total} emails per month
+                    </li>
+                    <li className="flex items-center">
+                      <span className="text-blue-500 mr-2">✓</span>
+                      Basic data extraction
+                    </li>
+                    <li className="flex items-center">
+                      <span className="text-blue-500 mr-2">✓</span>
+                      Google Sheets export
+                    </li>
+                  </ul>
+                  
+                  {userProfile.plan === 'Free' && (
+                    <button
+                      className="w-full py-2 mt-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                    >
+                      Upgrade to Pro
+                    </button>
+                  )}
+                </div>
+              </section>
+            )}
+            
+            <div className="flex flex-col sm:flex-row gap-3 pt-4">
+              <button
+                onClick={handleSignOut}
+                disabled={signOutLoading || deleteLoading}
+                className="px-4 py-2 bg-gray-200 text-gray-800 border border-gray-300 rounded-md hover:bg-gray-300 disabled:opacity-50"
               >
-                {isProcessing ? 'Deleting...' : 'Yes, Delete My Account'}
+                {signOutLoading ? "Signing Out..." : "Sign Out"}
               </button>
-              <button 
-                onClick={() => setShowDeleteConfirm(false)}
-                disabled={isProcessing}
+              
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                disabled={deleteLoading || showDeleteConfirm || signOutLoading}
+                className="px-4 py-2 bg-red-100 text-red-800 border border-red-200 rounded-md hover:bg-red-200 disabled:opacity-50"
               >
-                Cancel
+                Delete Account
               </button>
             </div>
+            
+            {showDeleteConfirm && (
+              <div className="mt-4 p-4 border border-red-200 rounded-md bg-red-50">
+                <h4 className="font-medium text-red-800 mb-2">Confirm Account Deletion</h4>
+                <p className="text-sm text-gray-700 mb-3">
+                  This will mark your account as deleted. Any data in Google Sheets will remain,
+                  but the extension will no longer have access to your Gmail or Google Sheets.
+                </p>
+                
+                {deleteError && (
+                  <div className="mb-3 p-2 bg-red-100 border border-red-300 rounded text-red-800 text-sm">
+                    {deleteError}
+                  </div>
+                )}
+                
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleDeleteAccount}
+                    disabled={deleteLoading}
+                    className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {deleteLoading ? "Deleting..." : "Confirm Delete"}
+                  </button>
+                  <button
+                    onClick={() => setShowDeleteConfirm(false)}
+                    disabled={deleteLoading}
+                    className="px-3 py-1 bg-gray-200 text-gray-800 text-sm rounded hover:bg-gray-300 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-6">
+            <div className="space-y-4">
+              <p className="text-gray-600">
+                Connect your Google account to use Gmail Bill Scanner. 
+                The extension needs the following permissions:
+              </p>
+              
+              {googleScopes.map((scope, index) => (
+                <div key={index} className="border rounded p-3 bg-gray-50">
+                  <div className="font-medium">{scope.description}</div>
+                  <div className="text-sm text-gray-600 mt-1">{scope.detail}</div>
+                </div>
+              ))}
+            </div>
+            
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={handleSignUp}
+                disabled={signUpLoading || signInLoading}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+              >
+                {signUpLoading ? "Creating Account..." : "Sign Up with Google"}
+              </button>
+              
+              <button
+                onClick={handleSignIn}
+                disabled={signInLoading || signUpLoading}
+                className="px-4 py-2 border border-blue-600 bg-white text-blue-600 rounded-md hover:bg-blue-50 disabled:opacity-50"
+              >
+                {signInLoading ? "Signing In..." : "Sign In"}
+              </button>
+            </div>
+            
+            <p className="text-sm text-gray-500 italic">
+              Note: Both options use Google OAuth. Sign Up is for new users, Sign In for returning users.
+            </p>
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 }; 

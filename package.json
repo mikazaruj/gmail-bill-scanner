@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "webpack --watch --mode=development",
     "build": "webpack --mode=production",
-    "package": "npm run build && zip -r extension.zip dist"
+    "postbuild": "node fix-csp.js",
+    "package": "npm run build && cd dist && zip -r ../extension.zip *",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.3",

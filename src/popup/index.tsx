@@ -79,10 +79,11 @@ interface DashboardStats {
   errors: number;
 }
 
-const PopupContent = () => {
+export const PopupContent = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [showUpgradeBanner, setShowUpgradeBanner] = useState(true);
   const [backgroundReady, setBackgroundReady] = useState<boolean>(false);
+  const [isSigningUp, setIsSigningUp] = useState<boolean>(false);
   
   const { isAuthenticated, isLoading, error, login } = useAuth();
   const { scanStatus, scanProgressMessage, exportInProgress } = useScan();
@@ -117,6 +118,31 @@ const PopupContent = () => {
     
     return () => clearTimeout(fallbackTimer);
   }, []);
+
+  const handleLogin = async () => {
+    try {
+      setIsSigningUp(false);
+      await login();
+    } catch (error) {
+      console.error('Failed to login:', error);
+    }
+  };
+
+  const handleSignUp = async () => {
+    try {
+      setIsSigningUp(true);
+      
+      // Store that we're in signup mode in local storage
+      // This will be used to show appropriate messages after OAuth redirect
+      await chrome.storage.local.set({ auth_mode: 'signup' });
+      
+      await login(); // Use the same login function as it handles OAuth flow
+    } catch (error) {
+      console.error('Failed to sign up:', error);
+    } finally {
+      setIsSigningUp(false);
+    }
+  };
 
   const handleOpenOptions = () => {
     if (chrome.runtime.openOptionsPage) {
@@ -165,11 +191,20 @@ const PopupContent = () => {
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
-        <p className="text-center text-gray-600 mb-4">Sign in to scan your emails for bills</p>
-        <div className="action-container">
-          <button onClick={login} className="primary-button">
-            Sign in with Google
+        <p className="text-center text-gray-600 mb-4">Connect your Google account to scan emails for bills</p>
+        <div className="action-container space-y-3">
+          <button onClick={handleSignUp} className={`primary-button bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md flex justify-center items-center w-full`}>
+            {isSigningUp ? "Creating Account..." : "Sign Up with Google"}
           </button>
+          <button onClick={handleLogin} className="secondary-button border border-blue-500 text-blue-600 bg-white hover:bg-blue-50 py-2 rounded-md flex justify-center items-center w-full">
+            Sign In with Google
+          </button>
+          <div className="text-xs text-center text-gray-500 mt-2 p-2 bg-gray-50 rounded">
+            <p className="font-medium mb-1">What's the difference?</p>
+            <p>Both use Google OAuth for authentication.</p>
+            <p><strong>Sign Up</strong>: First time creating an account</p>
+            <p><strong>Sign In</strong>: You've used this extension before</p>
+          </div>
         </div>
         <div className="footer">
           <button onClick={handleOpenOptions} className="text-button">Options</button>
@@ -265,19 +300,15 @@ const PopupContent = () => {
   );
 };
 
-const Popup = () => (
-  <AuthProvider>
-    <ScanProvider>
-      <SettingsProvider>
-        <PopupContent />
-      </SettingsProvider>
-    </ScanProvider>
-  </AuthProvider>
-);
-
-// Create root element
-const rootElement = document.getElementById('root');
-if (rootElement) {
-  const root = ReactDOM.createRoot(rootElement);
-  root.render(<Popup />);
-} 
+// Component used for exporting for external use
+export const Popup = () => {
+  return (
+    <AuthProvider>
+      <ScanProvider>
+        <SettingsProvider>
+          <PopupContent />
+        </SettingsProvider>
+      </ScanProvider>
+    </AuthProvider>
+  );
+}; 

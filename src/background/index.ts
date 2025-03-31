@@ -12,6 +12,8 @@ import { createSpreadsheet, appendBillData } from '../services/sheets/sheetsApi'
 import { extractBillsFromEmails } from '../services/extractors/emailBillExtractor';
 import { extractBillsFromPdfs } from '../services/extractors/pdfBillExtractor';
 import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../types/Message';
+import { fetchGoogleUserInfo } from '../services/auth/googleApi';
+import { signInWithGoogle, syncAuthState } from '../services/supabase/client';
 
 // Background service worker for Gmail Bill Scanner
 console.log('=== Gmail Bill Scanner background service worker starting up... ===');
@@ -115,7 +117,7 @@ async function isAuthenticated(): Promise<boolean> {
 }
 
 // Authenticate user with Google
-async function authenticate(): Promise<{ success: boolean; error?: string; isAuthenticated?: boolean }> {
+async function authenticate(): Promise<{ success: boolean; error?: string; isAuthenticated?: boolean; profile?: any }> {
   try {
     console.warn('Starting Chrome extension Google authentication process...');
     console.warn('Using chrome.identity API for authentication');
@@ -157,10 +159,47 @@ async function authenticate(): Promise<{ success: boolean; error?: string; isAut
           }
         });
         
-        resolve({ 
-          success: true,
-          isAuthenticated: true
-        });
+        // Get user info from Google
+        try {
+          const userInfo = await fetchGoogleUserInfo(token);
+          
+          if (userInfo && userInfo.email) {
+            // Sign in with Supabase to create a user if it doesn't exist
+            console.warn('Signing in or creating user in Supabase with Google credentials');
+            const { data, error } = await signInWithGoogle(
+              token,
+              userInfo.email,
+              userInfo.name || '',
+              userInfo.picture || ''
+            );
+            
+            if (error) {
+              console.error('Supabase sign-in error:', error);
+            } else {
+              console.warn('Supabase sign-in successful:', data?.user?.id);
+              // Sync auth state to make sure popup and options page have the latest state
+              await syncAuthState();
+            }
+            
+            resolve({
+              success: true,
+              isAuthenticated: true,
+              profile: userInfo
+            });
+          } else {
+            console.error('Failed to get user info from Google');
+            resolve({
+              success: true, // Still successful with Chrome auth, just no user info
+              isAuthenticated: true
+            });
+          }
+        } catch (userInfoError) {
+          console.error('Error getting user info:', userInfoError);
+          resolve({ 
+            success: true, // Still successful with Chrome auth, just no user info
+            isAuthenticated: true
+          });
+        }
       });
     });
   } catch (error) {

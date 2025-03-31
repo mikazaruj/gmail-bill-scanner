@@ -1,587 +1,506 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useEffect } from 'react';
 import * as ReactDOM from 'react-dom/client';
-import { isAuthenticated, authenticate, signOut } from "../services/auth/googleAuth";
-import { getSpreadsheetId, setSpreadsheetId, listUserSpreadsheets, createBillsSpreadsheet } from "../services/sheets/sheetsService";
+import { supabase, syncAuthState, setupAuthListener } from '../services/supabase/client';
 import "../globals.css";
-import { AccountManagement } from './AccountManagement';
-import { BillFieldConfig } from '../types/Message';
 
-interface SpreadsheetOption {
-  id: string;
-  name: string;
-}
+// OAuth scopes definition
+type OAuthScope = {
+  scope: string;
+  description: string;
+  detail: string;
+  isAuthorized?: boolean;
+};
 
-// Default bill fields
-const DEFAULT_BILL_FIELDS: BillFieldConfig[] = [
+// Define the Google OAuth scopes with descriptions
+const googleOAuthScopes: OAuthScope[] = [
   {
-    id: 'company',
-    name: 'Company',
-    type: 'string',
-    required: true,
-    description: 'Company or vendor name'
+    scope: 'https://www.googleapis.com/auth/gmail.readonly',
+    description: 'View your email messages and settings',
+    detail: 'Allows the extension to read your email to identify bill-related emails. We never store the full content of your emails.'
   },
   {
-    id: 'amount',
-    name: 'Amount',
-    type: 'number',
-    required: true,
-    description: 'Bill amount'
-  },
-  {
-    id: 'dueDate',
-    name: 'Due Date',
-    type: 'date',
-    required: true,
-    description: 'Date when payment is due'
-  },
-  {
-    id: 'category',
-    name: 'Category',
-    type: 'string',
-    required: false,
-    description: 'Bill category (e.g., Utilities, Internet)'
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    description: 'See, edit, create, and delete your spreadsheets in Google Drive',
+    detail: 'Allows the extension to create and update Google Sheets with your bill data.'
   }
 ];
 
-const Options = () => {
-  const [isAuth, setIsAuth] = useState<boolean>(false);
+export const OptionsPageContent = () => {
+  const [activeTab, setActiveTab] = useState<'settings' | 'account'>('account');
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [spreadsheetId, setSpreadsheetIdState] = useState<string>("");
-  const [spreadsheets, setSpreadsheets] = useState<SpreadsheetOption[]>([]);
-  const [loadingSpreadsheets, setLoadingSpreadsheets] = useState<boolean>(false);
-  const [newSheetName, setNewSheetName] = useState<string>("");
-  const [isCreatingSheet, setIsCreatingSheet] = useState<boolean>(false);
-  const [error, setError] = useState<string>("");
-  const [showFirstRun, setShowFirstRun] = useState<boolean>(true);
-  const [currentStep, setCurrentStep] = useState<number>(1);
-  const [activeTab, setActiveTab] = useState('settings');
-  const [billFields, setBillFields] = useState<BillFieldConfig[]>([]);
-  const [newField, setNewField] = useState<Partial<BillFieldConfig>>({
-    type: 'string',
-    required: false
-  });
-  const [status, setStatus] = useState<string>('');
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [userEmail, setUserEmail] = useState<string>('');
+  const [userAvatar, setUserAvatar] = useState<string>('');
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState<boolean>(false);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [revokeLoading, setRevokeLoading] = useState<boolean>(false);
+  const [grantLoading, setGrantLoading] = useState<boolean>(false);
+  const [oauthScopes, setOauthScopes] = useState<OAuthScope[]>(googleOAuthScopes);
+  const [oauthError, setOauthError] = useState<string | null>(null);
 
+  // Load authentication status on mount
   useEffect(() => {
-    checkAuth();
-  }, []);
-
-  useEffect(() => {
-    if (isAuth) {
-      loadSpreadsheets();
-    }
-  }, [isAuth]);
-
-  useEffect(() => {
-    // Load saved fields on mount
-    chrome.storage.sync.get(['billFields'], (result) => {
-      if (result.billFields) {
-        setBillFields(result.billFields);
-      } else {
-        // Initialize with default fields if none exist
-        chrome.storage.sync.set({ billFields: DEFAULT_BILL_FIELDS }, () => {
-          setBillFields(DEFAULT_BILL_FIELDS);
-        });
-      }
-    });
-  }, []);
-
-  const checkAuth = async () => {
-    try {
-      const authStatus = await isAuthenticated();
-      setIsAuth(authStatus);
-      setIsLoading(false);
-      
-      // Check if this is first run
-      const firstRun = await chrome.storage.local.get('firstRun');
-      if (firstRun.firstRun === undefined) {
-        setShowFirstRun(true);
-        await chrome.storage.local.set({ firstRun: true });
-      } else {
-        setShowFirstRun(false);
-      }
-    } catch (error) {
-      console.error('Error checking auth:', error);
-      setIsLoading(false);
-    }
-  };
-
-  const handleLogin = async () => {
-    try {
-      const result = await authenticate();
-      if (result.success) {
-        setIsAuth(true);
-        await loadSpreadsheets();
-      } else {
-        setError(result.error || 'Authentication failed');
-      }
-    } catch (error) {
-      console.error('Login error:', error);
-      setError('Failed to authenticate');
-    }
-  };
-
-  const handleLogout = async () => {
-    try {
-      await signOut();
-      setIsAuth(false);
-      setSpreadsheetIdState("");
-      setSpreadsheets([]);
-    } catch (error) {
-      console.error('Logout error:', error);
-      setError('Failed to sign out');
-    }
-  };
-
-  const loadSpreadsheets = async () => {
-    try {
-      setLoadingSpreadsheets(true);
-      const sheets = await listUserSpreadsheets();
-      setSpreadsheets(sheets);
-      
-      const currentId = await getSpreadsheetId();
-      if (currentId) {
-        setSpreadsheetIdState(currentId);
-      }
-      
-      setLoadingSpreadsheets(false);
-    } catch (error) {
-      console.error('Error loading spreadsheets:', error);
-      setError('Failed to load spreadsheets');
-      setLoadingSpreadsheets(false);
-    }
-  };
-
-  const handleSpreadsheetChange = async (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const newId = event.target.value;
-    try {
-      await setSpreadsheetId(newId);
-      setSpreadsheetIdState(newId);
-      setError("");
-    } catch (error) {
-      console.error('Error setting spreadsheet:', error);
-      setError('Failed to set spreadsheet');
-    }
-  };
-
-  const handleCreateNewSheet = async () => {
-    if (!newSheetName) {
-      setError('Please enter a name for the new spreadsheet');
-      return;
-    }
-    
-    try {
-      setIsCreatingSheet(true);
-      const spreadsheetId = await createBillsSpreadsheet();
-      await loadSpreadsheets();
-      setSpreadsheetIdState(spreadsheetId);
-      await setSpreadsheetId(spreadsheetId);
-      setNewSheetName("");
-      setError("");
-      setIsCreatingSheet(false);
-      
-      if (showFirstRun) {
-        setCurrentStep(3);
-      }
-    } catch (error) {
-      console.error('Error creating spreadsheet:', error);
-      setError(error instanceof Error ? error.message : 'Failed to create spreadsheet');
-      setIsCreatingSheet(false);
-    }
-  };
-
-  const handleNextStep = () => {
-    setCurrentStep(prev => prev + 1);
-  };
-
-  const handleFinishSetup = async () => {
-    setShowFirstRun(false);
-    await chrome.storage.local.set({ firstRun: false });
-  };
-
-  const createNewSheet = async () => {
-    setIsCreatingSheet(true);
-    setError("");
-    try {
-      const spreadsheetId = await createBillsSpreadsheet();
-      setSpreadsheetIdState(spreadsheetId);
-      await setSpreadsheetId(spreadsheetId);
-      setNewSheetName("");
-      setError("");
-      await loadSpreadsheets();
-      setIsCreatingSheet(false);
-    } catch (error) {
-      console.error('Error creating spreadsheet:', error);
-      setError(error instanceof Error ? error.message : 'Failed to create spreadsheet');
-      setIsCreatingSheet(false);
-    }
-  };
-
-  const handleDeleteAccount = async () => {
-    try {
-      // First get the current token
-      const token = await new Promise<string>((resolve, reject) => {
-        chrome.identity.getAuthToken({ interactive: false }, (token) => {
-          if (chrome.runtime.lastError) {
-            reject(chrome.runtime.lastError);
+    const loadAuthStatus = async () => {
+      try {
+        setIsLoading(true);
+        setOauthError(null);
+        
+        // Use syncAuthState to get the latest auth state
+        const { isAuthenticated: isAuth, user } = await syncAuthState();
+        
+        if (isAuth && user) {
+          setIsAuthenticated(true);
+          setUserEmail(user.email || '');
+          
+          // Get user profile to get avatar
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('avatar_url')
+            .eq('id', user.id)
+            .single();
+            
+          if (profileData && profileData.avatar_url) {
+            setUserAvatar(profileData.avatar_url);
+          }
+          
+          // Check for authorized scopes
+          const { data: credentials } = await supabase
+            .from('google_credentials')
+            .select('scopes')
+            .eq('user_id', user.id)
+            .single();
+            
+          if (credentials && credentials.scopes) {
+            // Update scope authorization status
+            const updatedScopes = oauthScopes.map(scope => ({
+              ...scope,
+              isAuthorized: credentials.scopes.includes(scope.scope)
+            }));
+            setOauthScopes(updatedScopes);
+          }
+        } else {
+          // Also check Chrome storage as a fallback
+          const { auth_state } = await chrome.storage.local.get('auth_state');
+          
+          if (auth_state?.isAuthenticated) {
+            setIsAuthenticated(true);
+            setUserEmail(auth_state.email || '');
           } else {
-            resolve(token || '');
+            setIsAuthenticated(false);
+          }
+        }
+      } catch (error) {
+        console.error('Error checking auth status:', error);
+        setIsAuthenticated(false);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    loadAuthStatus();
+    
+    // Set up auth state change listener
+    setupAuthListener();
+  }, []);
+
+  // Handle granting access to Google account
+  const handleGrantAccess = async () => {
+    try {
+      setGrantLoading(true);
+      setOauthError(null);
+      
+      // Use try/catch to handle runtime errors with Chrome's APIs
+      try {
+        // First, ensure we have the proper redirect URL
+        const redirectUrl = chrome.runtime.getURL('options.html');
+        console.log('Using redirect URL:', redirectUrl);
+        
+        // Sign in with Google OAuth
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            scopes: googleOAuthScopes.map(scope => scope.scope).join(' '),
+            redirectTo: redirectUrl
           }
         });
-      });
-
-      // Call Supabase to delete account
-      const { signOut, deleteAccount } = await import('../services/supabase/client');
-      await deleteAccount();
-      await signOut();
-      
-      // Revoke Google access if we have a token
-      if (token) {
-        await chrome.identity.removeCachedAuthToken({ token });
+        
+        if (error) {
+          console.error('OAuth error:', error);
+          
+          // Check for specific error messages related to missing configurations
+          if (error.message.includes('missing OAuth secret') || 
+              error.message.includes('Unsupported provider') ||
+              error.message.includes('validation_failed')) {
+            setOauthError(
+              'OAuth configuration error: The Supabase project is missing proper Google OAuth credentials. ' +
+              'Please ensure Google OAuth is properly configured in the Supabase dashboard.'
+            );
+          } else {
+            setOauthError(error.message);
+          }
+          throw error;
+        }
+      } catch (chromeError) {
+        console.error('Chrome runtime error:', chromeError);
+        setOauthError('Error connecting to Google services. Please check your Chrome extension permissions.');
+        throw chromeError;
       }
-      
-      // Clear extension storage
-      await chrome.storage.local.clear();
-      await chrome.storage.sync.clear();
-      
-      // Close options page
-      window.close();
     } catch (error) {
-      console.error('Error deleting account:', error);
-      setError(error instanceof Error ? error.message : 'Failed to delete account');
+      console.error('Error granting access:', error);
+      if (!oauthError) {
+        setOauthError((error as Error).message || 'Failed to authenticate with Google');
+      }
+    } finally {
+      setGrantLoading(false);
     }
   };
 
+  // Handle revoking access 
   const handleRevokeAccess = async () => {
     try {
-      // First get the current token
-      const token = await new Promise<string>((resolve, reject) => {
-        chrome.identity.getAuthToken({ interactive: false }, (token) => {
-          if (chrome.runtime.lastError) {
-            reject(chrome.runtime.lastError);
-          } else {
-            resolve(token || '');
-          }
-        });
-      });
-
-      // Revoke Google access if we have a token
-      if (token) {
-        await chrome.identity.removeCachedAuthToken({ token });
+      setRevokeLoading(true);
+      // Sign out from Supabase
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      
+      // Clear OAuth tokens from Chrome's storage if needed
+      try {
+        if (chrome.storage) {
+          await chrome.storage.local.remove(['gmail_token', 'sheets_token', 'user_settings']);
+        }
+      } catch (storageErr) {
+        console.warn('Failed to clear token storage:', storageErr);
       }
       
-      // Clear Google-related storage
-      await chrome.storage.local.remove(['gmail_bill_scanner_auth_token']);
-      
-      // Sign out of Supabase but keep account
-      const { signOut } = await import('../services/supabase/client');
-      await signOut();
-      
-      // Close options page
-      window.close();
+      setIsAuthenticated(false);
+      setUserEmail('');
+      setUserAvatar('');
+      setOauthScopes(googleOAuthScopes.map(scope => ({ ...scope, isAuthorized: false })));
     } catch (error) {
       console.error('Error revoking access:', error);
-      setError(error instanceof Error ? error.message : 'Failed to revoke access');
+    } finally {
+      setRevokeLoading(false);
     }
   };
 
-  const handleAddField = () => {
-    if (!newField.name || !newField.id) {
-      setError('Name and ID are required');
-      return;
+  // Handle account deletion
+  const handleDeleteAccount = async () => {
+    try {
+      setIsDeleting(true);
+      setDeleteError(null);
+      
+      // Call Supabase RPC function to soft delete user
+      const { error } = await supabase.rpc('soft_delete_user');
+      
+      if (error) throw error;
+      
+      // Clear OAuth tokens from storage
+      try {
+        if (chrome.storage) {
+          await chrome.storage.local.remove(['gmail_token', 'sheets_token', 'user_settings']);
+        }
+      } catch (storageErr) {
+        console.warn('Failed to clear token storage:', storageErr);
+      }
+      
+      // Sign out after successful deletion
+      await supabase.auth.signOut();
+      
+      setIsAuthenticated(false);
+      setUserEmail('');
+      setUserAvatar('');
+      setDeleteConfirmOpen(false);
+    } catch (error) {
+      console.error('Failed to delete account:', error);
+      setDeleteError((error as Error).message || 'Failed to delete account. Please try again.');
+    } finally {
+      setIsDeleting(false);
     }
-
-    const updatedFields = [...billFields, newField as BillFieldConfig];
-    chrome.storage.sync.set({ billFields: updatedFields }, () => {
-      setBillFields(updatedFields);
-      setNewField({ type: 'string', required: false });
-      setStatus('Field added successfully');
-      setTimeout(() => setStatus(''), 3000);
-    });
-  };
-
-  const handleRemoveField = (id: string) => {
-    const updatedFields = billFields.filter(field => field.id !== id);
-    chrome.storage.sync.set({ billFields: updatedFields }, () => {
-      setBillFields(updatedFields);
-      setStatus('Field removed successfully');
-      setTimeout(() => setStatus(''), 3000);
-    });
-  };
-
-  const handleResetFields = () => {
-    chrome.storage.sync.set({ billFields: DEFAULT_BILL_FIELDS }, () => {
-      setBillFields(DEFAULT_BILL_FIELDS);
-      setStatus('Fields reset to default');
-      setTimeout(() => setStatus(''), 3000);
-    });
   };
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-100 py-6 flex flex-col justify-center sm:py-12">
-        <div className="relative py-3 sm:max-w-xl sm:mx-auto">
-          <div className="relative px-4 py-10 bg-white shadow-lg sm:rounded-3xl sm:p-20">
-            <div className="max-w-md mx-auto">
-              <div className="divide-y divide-gray-200">
-                <div className="py-8 text-base leading-6 space-y-4 text-gray-700 sm:text-lg sm:leading-7">
-                  <p className="text-center">Loading...</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (showFirstRun) {
-    return (
-      <div className="min-h-screen bg-gray-100 py-6 flex flex-col justify-center sm:py-12">
-        <div className="relative py-3 sm:max-w-xl sm:mx-auto">
-          <div className="relative px-4 py-10 bg-white shadow-lg sm:rounded-3xl sm:p-20">
-            <div className="max-w-md mx-auto">
-              <div className="divide-y divide-gray-200">
-                <div className="py-8 text-base leading-6 space-y-4 text-gray-700 sm:text-lg sm:leading-7">
-                  <h1 className="text-2xl font-bold mb-4">Welcome to Gmail Bill Scanner!</h1>
-                  
-                  {currentStep === 1 && (
-                    <div>
-                      <p className="mb-4">Let's get you set up in a few quick steps.</p>
-                      <p className="mb-4">First, you'll need to sign in with your Google account to allow access to Gmail and Google Sheets.</p>
-                      {!isAuth ? (
-          <button
-            onClick={handleLogin}
-                          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
-          >
-            Sign in with Google
-          </button>
-                      ) : (
-                        <button
-                          onClick={handleNextStep}
-                          className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-                        >
-                          Continue
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  
-                  {currentStep === 2 && (
-                    <div>
-                      <p className="mb-4">Great! Now let's set up a Google Sheet to store your bill data.</p>
-                      <p className="mb-4">You can either select an existing spreadsheet or create a new one.</p>
-                      
-                      {loadingSpreadsheets ? (
-                        <p>Loading spreadsheets...</p>
-                      ) : (
-                        <div>
-                          <select
-                            className="w-full p-2 border rounded mb-4"
-                            value={spreadsheetId}
-                            onChange={handleSpreadsheetChange}
-                          >
-                            <option value="">-- Select an existing spreadsheet --</option>
-                            {spreadsheets.map((sheet) => (
-                              <option key={sheet.id} value={sheet.id}>
-                                {sheet.name}
-                              </option>
-                            ))}
-                          </select>
-                          
-                          <p className="mb-2">Or create a new spreadsheet:</p>
-                          <div className="flex gap-2">
-                            <input
-                              type="text"
-                              value={newSheetName}
-                              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewSheetName(e.target.value)}
-                              placeholder="Enter spreadsheet name"
-                              className="flex-1 p-2 border rounded"
-                            />
-                            <button
-                              onClick={handleCreateNewSheet}
-                              disabled={isCreatingSheet}
-                              className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:bg-gray-400"
-                            >
-                              {isCreatingSheet ? 'Creating...' : 'Create'}
-                            </button>
-                          </div>
-                          
-                          {spreadsheetId && (
-                            <button
-                              onClick={handleNextStep}
-                              className="mt-4 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-                            >
-                              Continue
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  {currentStep === 3 && (
-                    <div>
-                      <p className="mb-4">Perfect! You're all set up and ready to start scanning bills.</p>
-                      <p className="mb-4">You can now:</p>
-                      <ul className="list-disc list-inside mb-4">
-                        <li>Scan your Gmail for bills</li>
-                        <li>Export bill data to your selected spreadsheet</li>
-                        <li>Configure scanning preferences</li>
-                      </ul>
-                      <button
-                        onClick={handleFinishSetup}
-                        className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-                      >
-                        Get Started
-                      </button>
-                    </div>
-                  )}
-                  
-                  {error && (
-                    <p className="text-red-500 mt-4">{error}</p>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
+      <div className="w-full max-w-4xl mx-auto p-6">
+        <div className="text-center py-12">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-lg">Loading...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="options-container">
-      <h1>Gmail Bill Scanner Settings</h1>
-      
-      <div className="tabs">
-        <button 
-          className={activeTab === 'settings' ? 'active' : ''} 
-          onClick={() => setActiveTab('settings')}
-        >
-          Settings
-        </button>
+    <div className="w-full max-w-4xl mx-auto p-6">
+      <header className="mb-8 text-center">
+        <h1 className="text-2xl font-bold">Gmail Bill Scanner Settings</h1>
+      </header>
+
+      <div className="mb-8 border-b">
+        <div className="flex space-x-4 justify-center">
           <button
-          className={activeTab === 'account' ? 'active' : ''} 
-          onClick={() => setActiveTab('account')}
+            onClick={() => setActiveTab('settings')}
+            className={`px-4 py-2 -mb-px ${
+              activeTab === 'settings'
+                ? 'border-b-2 border-blue-600 font-medium text-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
           >
-          Account
+            Settings
+          </button>
+          <button
+            onClick={() => setActiveTab('account')}
+            className={`px-4 py-2 -mb-px ${
+              activeTab === 'account'
+                ? 'border-b-2 border-blue-600 font-medium text-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Account
           </button>
         </div>
-        
-      {activeTab === 'settings' ? (
-        <div className="settings-section">
-          <div className="min-h-screen bg-gray-100 py-6 flex flex-col justify-center sm:py-12">
-            <div className="relative py-3 sm:max-w-xl sm:mx-auto">
-              <div className="relative px-4 py-10 bg-white shadow-lg sm:rounded-3xl sm:p-20">
-                <div className="max-w-md mx-auto">
-                  <div className="divide-y divide-gray-200">
-                    <div className="py-8 text-base leading-6 space-y-4 text-gray-700 sm:text-lg sm:leading-7">
-                      <h1 className="text-2xl font-bold mb-4">Gmail Bill Scanner Settings</h1>
+      </div>
+
+      <main className="bg-white rounded-lg shadow-sm">
+        {activeTab === 'account' && (
+          <div className="p-6 space-y-6">
+            <section>
+              <h2 className="text-xl font-semibold mb-4">Authentication</h2>
+              
+              {isAuthenticated ? (
+                <>
+                  <div className="flex items-center mb-4 bg-gray-50 p-3 rounded-lg border">
+                    {userAvatar ? (
+                      <img src={userAvatar} alt="User avatar" className="w-10 h-10 rounded-full mr-3" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center mr-3">
+                        <span className="text-blue-800 font-bold">{userEmail.charAt(0).toUpperCase()}</span>
+                      </div>
+                    )}
+                    <div>
+                      <div className="flex items-center">
+                        <div className="h-2 w-2 rounded-full bg-green-500 mr-2"></div>
+                        <span className="font-medium">Signed in</span>
+                      </div>
+                      <div className="text-gray-600">{userEmail}</div>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-3 mb-6">
+                    <h3 className="font-medium">OAuth Permissions</h3>
+                    <p className="text-sm text-gray-600">
+                      Gmail Bill Scanner needs these permissions:
+                    </p>
+                    
+                    {oauthScopes.map((scope, index) => (
+                      <div key={index} className="border rounded p-3 bg-gray-50">
+                        <div className="flex items-center">
+                          {scope.isAuthorized ? (
+                            <div className="h-3 w-3 rounded-full bg-green-500 mr-2" title="Authorized"></div>
+                          ) : (
+                            <div className="h-3 w-3 rounded-full bg-red-500 mr-2" title="Not authorized"></div>
+                          )}
+                          <div className="font-medium">{scope.description}</div>
+                        </div>
+                        <div className="text-sm text-gray-600 mt-1 ml-5">{scope.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  <div className="pt-4 border-t">
+                    <h3 className="font-medium mb-3">Manage Access</h3>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <button
+                        onClick={handleRevokeAccess}
+                        disabled={revokeLoading || isDeleting}
+                        className="px-4 py-2 bg-amber-100 text-amber-800 border border-amber-200 rounded-md hover:bg-amber-200 disabled:opacity-50"
+                      >
+                        {revokeLoading ? "Revoking Access..." : "Revoke Access"}
+                      </button>
                       
-                      <div className="mb-6">
-                        <h2 className="text-xl font-semibold mb-4">Authentication</h2>
-                        {!isAuth ? (
-                          <button
-                            onClick={handleLogin}
-                            className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
-                          >
-                            Sign in with Google
-                          </button>
-                        ) : (
-                          <div>
-                            <p className="mb-2">✓ Signed in to Google</p>
-                            <button
-                              onClick={handleLogout}
-                              className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
-                            >
-                              Sign Out
-                            </button>
+                      <button
+                        onClick={() => setDeleteConfirmOpen(true)}
+                        disabled={deleteConfirmOpen || isDeleting || revokeLoading}
+                        className="px-4 py-2 bg-red-100 text-red-800 border border-red-200 rounded-md hover:bg-red-200 disabled:opacity-50"
+                      >
+                        Delete Account
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {deleteConfirmOpen && (
+                    <div className="mt-4 p-4 border border-red-200 rounded-md bg-red-50">
+                      <h4 className="font-medium text-red-800 mb-2">Confirm Account Deletion</h4>
+                      <p className="text-sm text-gray-700 mb-3">
+                        This will mark your account as deleted. Any data in Google Sheets will remain,
+                        but the extension will no longer have access to your Gmail or Google Sheets.
+                      </p>
+                      
+                      {deleteError && (
+                        <div className="mb-3 p-2 bg-red-100 border border-red-300 rounded text-red-800 text-sm">
+                          {deleteError}
+                        </div>
+                      )}
+                      
+                      <div className="flex gap-3">
+                        <button
+                          onClick={handleDeleteAccount}
+                          disabled={isDeleting}
+                          className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:opacity-50"
+                        >
+                          {isDeleting ? "Deleting..." : "Delete My Account"}
+                        </button>
+                        
+                        <button
+                          onClick={() => setDeleteConfirmOpen(false)}
+                          disabled={isDeleting}
+                          className="px-3 py-1 bg-gray-200 text-gray-800 text-sm rounded"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="mb-4 p-3 bg-gray-50 rounded-lg border">
+                    <div className="flex items-center">
+                      <div className="h-2 w-2 rounded-full bg-red-500 mr-2"></div>
+                      <span className="font-medium">Not signed in</span>
+                    </div>
+                    <p className="text-sm text-gray-600 mt-1">
+                      Connect your Google account to scan emails for bills
+                    </p>
+                  </div>
+                  
+                  <div className="space-y-3 mb-6">
+                    <h3 className="font-medium">Required Permissions</h3>
+                    
+                    {oauthScopes.map((scope, index) => (
+                      <div key={index} className="border rounded p-3 bg-gray-50">
+                        <div className="font-medium">{scope.description}</div>
+                        <div className="text-sm text-gray-600 mt-1">{scope.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {oauthError && (
+                    <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-red-800 text-sm">
+                      <p className="font-medium">Error connecting to Google</p>
+                      <p>{oauthError}</p>
+                    </div>
+                  )}
+                  
+                  <div className="pt-4 border-t">
+                    <button
+                      onClick={handleGrantAccess}
+                      disabled={grantLoading}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {grantLoading ? "Connecting..." : "Connect Google Account"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </section>
           </div>
         )}
-          </div>
         
-        <div className="mb-6">
-                        <h2 className="text-xl font-semibold mb-4">Google Sheets Integration</h2>
-                        {isAuth ? (
-                          <div>
-                            {loadingSpreadsheets ? (
-                              <p>Loading spreadsheets...</p>
-                            ) : (
-                              <>
-          <div className="mb-4">
-                                  <label className="block text-gray-700 text-sm font-bold mb-2">
-                                    Select a Google Sheet
-            </label>
-              <select
-                                    className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
-                value={spreadsheetId}
-                onChange={handleSpreadsheetChange}
+        {activeTab === 'settings' && (
+          <div className="p-6 space-y-6">
+            <section className="space-y-4">
+              <h2 className="text-xl font-semibold border-b pb-2">Scanning Options</h2>
+              
+              <div className="space-y-2">
+                <label className="block font-medium">Scan Frequency</label>
+                <select
+                  name="scanFrequency"
+                  className="w-full p-2 border rounded-md bg-background"
+                  disabled={!isAuthenticated}
+                >
+                  <option value="manual">Manual (Scan when I click the button)</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+                <p className="text-sm text-muted-foreground">
+                  How often should the extension automatically scan your emails
+                </p>
+              </div>
+            </section>
+
+            <section className="space-y-4">
+              <h2 className="text-xl font-semibold border-b pb-2">Gmail Integration</h2>
+              
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="applyLabels"
+                  name="applyLabels"
+                  className="h-4 w-4"
+                  disabled={!isAuthenticated}
+                />
+                <label htmlFor="applyLabels" className="font-medium">
+                  Apply labels to processed emails
+                </label>
+              </div>
+              
+              <div className="ml-6 space-y-2">
+                <label className="block font-medium">Label Name</label>
+                <input
+                  type="text"
+                  name="labelName"
+                  className="w-full p-2 border rounded-md bg-background"
+                  placeholder="e.g., Bills/Processed"
+                  disabled={!isAuthenticated}
+                />
+                <p className="text-sm text-muted-foreground">
+                  Gmail will create this label if it doesn't exist
+                </p>
+              </div>
+            </section>
+
+            <section className="space-y-4">
+              <h2 className="text-xl font-semibold border-b pb-2">Google Sheets Integration</h2>
+              
+              <div className="space-y-2">
+                <label className="block font-medium">Sheet Name</label>
+                <input
+                  type="text"
+                  name="sheetName"
+                  className="w-full p-2 border rounded-md bg-background"
+                  placeholder="e.g., Gmail Bill Tracker"
+                  disabled={!isAuthenticated}
+                />
+                <p className="text-sm text-muted-foreground">
+                  A new Google Sheet will be created with this name if it doesn't exist
+                </p>
+              </div>
+            </section>
+
+            <div className="pt-4 border-t flex items-center justify-end">
+              <button
+                disabled={!isAuthenticated}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
               >
-                <option value="">-- Select a spreadsheet --</option>
-                                    {spreadsheets.map((sheet) => (
-                  <option key={sheet.id} value={sheet.id}>
-                    {sheet.name}
-                  </option>
-                ))}
-              </select>
-          </div>
-          
-          <div className="mb-4">
-                                  <label className="block text-gray-700 text-sm font-bold mb-2">
-                                    Or create a new spreadsheet
-            </label>
-                                  <div className="flex gap-2">
-            <input
-              type="text"
-                                      value={newSheetName}
-                                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewSheetName(e.target.value)}
-                                      placeholder="Enter spreadsheet name"
-                                      className="flex-1 shadow appearance-none border rounded py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
-                                    />
-                                    <button
-                                      onClick={handleCreateNewSheet}
-                                      disabled={isCreatingSheet}
-                                      className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:bg-gray-400"
-                                    >
-                                      {isCreatingSheet ? 'Creating...' : 'Create'}
-                                    </button>
-          </div>
-        </div>
-        
-                                {spreadsheetId && (
-                                  <div className="mt-4 p-4 bg-green-100 rounded">
-                                    <p className="text-green-700">✓ Spreadsheet selected and ready for bill data</p>
-                                    <p className="text-sm text-green-600 mt-1">ID: {spreadsheetId}</p>
-                                  </div>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        ) : (
-                          <p className="text-gray-500">Please sign in to configure Google Sheets integration</p>
-                        )}
-            </div>
-            
-                      {error && (
-                        <div className="text-red-500 mt-4">{error}</div>
-                      )}
-            </div>
+                Save Settings
+              </button>
             </div>
           </div>
-            </div>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <AccountManagement 
-          onDeleteAccount={handleDeleteAccount}
-          onRevokeAccess={handleRevokeAccess}
-        />
-      )}
+        )}
+      </main>
+      
+      <footer className="mt-8 pt-4 border-t text-center text-sm text-muted-foreground">
+        Gmail Bill Scanner v1.0.0 • <a href="#" className="underline">Privacy Policy</a>
+      </footer>
     </div>
   );
 };
 
-const root = ReactDOM.createRoot(document.getElementById('root')!);
-  root.render(<Options />);
+// REMOVED: Direct createRoot initialization - This is now handled in src/index.js
+// Do not initialize React here as it causes duplicate initialization errors
+// const rootElement = document.getElementById('root');
+// if (rootElement) {
+//   const root = ReactDOM.createRoot(rootElement);
+//   root.render(<OptionsPageContent />);
+// } 
