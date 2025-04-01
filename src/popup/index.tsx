@@ -84,9 +84,51 @@ export const PopupContent = () => {
   const [showUpgradeBanner, setShowUpgradeBanner] = useState(true);
   const [backgroundReady, setBackgroundReady] = useState<boolean>(false);
   const [isSigningUp, setIsSigningUp] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isReturningUser, setIsReturningUser] = useState<boolean>(false);
   
-  const { isAuthenticated, isLoading, error, login } = useAuth();
+  const { isAuthenticated, isLoading, error, refreshAuthStatus, userProfile } = useAuth();
   const { scanStatus, scanProgressMessage, exportInProgress } = useScan();
+
+  // When component mounts, check if this is a returning user
+  useEffect(() => {
+    const checkUserStatus = async () => {
+      try {
+        console.log('Checking user status for auto-login');
+        
+        // Check if we have email in local storage first
+        const storedData = await chrome.storage.sync.get(['gmail-bill-scanner-auth', 'is_returning_user']);
+        console.log('Stored data found:', !!storedData['gmail-bill-scanner-auth']);
+        
+        if (storedData && storedData['gmail-bill-scanner-auth']) {
+          // User has previously authenticated
+          setIsReturningUser(true);
+          
+          // Always try to auto-login for better UX
+          console.log('Auto-logging in returning user');
+          try {
+            // We'll try to refresh the auth status first
+            await refreshAuthStatus();
+            
+            // If that didn't work, explicitly login
+            if (!isAuthenticated) {
+              console.log('Auth status refresh didn\'t authenticate, triggering explicit login');
+              await handleLogin();
+            }
+          } catch (loginError) {
+            console.error('Auto-login failed:', loginError);
+            // Don't show error to user, just fall back to manual login
+          }
+        } else {
+          console.log('No stored auth data found, user will need to authenticate');
+        }
+      } catch (error) {
+        console.error('Error checking returning user status:', error);
+      }
+    };
+    
+    checkUserStatus();
+  }, []);
 
   // Check if background script is ready
   useEffect(() => {
@@ -121,24 +163,67 @@ export const PopupContent = () => {
 
   const handleLogin = async () => {
     try {
+      setAuthError(null);
       setIsSigningUp(false);
-      await login();
+      
+      // Make sure we tell the background this is explicitly a sign-in attempt
+      await chrome.storage.local.set({ auth_mode: 'signin' });
+      
+      // Explicitly pass false to indicate this is a sign-in, not sign-up
+      const response = await new Promise<any>((resolve) => {
+        chrome.runtime.sendMessage({ 
+          type: 'AUTHENTICATE',
+          isSignUp: false 
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            throw new Error(chrome.runtime.lastError.message);
+          }
+          resolve(response);
+        });
+      });
+      
+      if (response?.success) {
+        // Refresh the auth status to update the UI
+        await refreshAuthStatus();
+      } else if (response?.error) {
+        setAuthError(response.error);
+      }
     } catch (error) {
       console.error('Failed to login:', error);
+      setAuthError(error instanceof Error ? error.message : 'Login failed');
     }
   };
 
   const handleSignUp = async () => {
     try {
+      setAuthError(null);
       setIsSigningUp(true);
       
       // Store that we're in signup mode in local storage
-      // This will be used to show appropriate messages after OAuth redirect
       await chrome.storage.local.set({ auth_mode: 'signup' });
       
-      await login(); // Use the same login function as it handles OAuth flow
+      // Explicitly pass true to indicate this is a sign-up
+      const response = await new Promise<any>((resolve) => {
+        chrome.runtime.sendMessage({ 
+          type: 'AUTHENTICATE',
+          isSignUp: true
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            throw new Error(chrome.runtime.lastError.message);
+          }
+          resolve(response);
+        });
+      });
+      
+      if (response?.success) {
+        // Refresh the auth status to update the UI
+        await refreshAuthStatus();
+      } else if (response?.error) {
+        setAuthError(response.error);
+      }
     } catch (error) {
       console.error('Failed to sign up:', error);
+      setAuthError(error instanceof Error ? error.message : 'Sign up failed');
     } finally {
       setIsSigningUp(false);
     }
@@ -174,7 +259,7 @@ export const PopupContent = () => {
         
         <div className="action-container">
           {isAuthenticated === false && (
-            <button onClick={login} className="primary-button">
+            <button onClick={handleLogin} className="primary-button">
               Sign in with Google
             </button>
           )}
@@ -191,15 +276,24 @@ export const PopupContent = () => {
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
+        
+        {isReturningUser && !authError && (
+          <div className="bg-blue-50 border border-blue-200 rounded-md p-3 mb-4">
+            <p className="text-sm text-blue-800">
+              Welcome back! You've used this extension before.
+            </p>
+          </div>
+        )}
+        
         <p className="text-center text-gray-600 mb-4">Connect your Google account to scan emails for bills</p>
         
         {/* Authentication status message */}
-        {error && (
+        {authError && (
           <div className="bg-red-50 border border-red-200 rounded-md p-3 mb-4">
             <p className="text-sm text-red-800">
-              {error}
+              {authError}
             </p>
-            {error.includes('already exists') && (
+            {authError.includes('already exists') && (
               <div className="mt-2">
                 <button 
                   onClick={async () => {
@@ -220,12 +314,30 @@ export const PopupContent = () => {
         )}
         
         <div className="action-container space-y-3">
-          <button onClick={handleSignUp} className={`primary-button bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md flex justify-center items-center w-full`}>
-            {isSigningUp ? "Creating Account..." : "Sign Up with Google"}
-          </button>
-          <button onClick={handleLogin} className="secondary-button border border-blue-500 text-blue-600 bg-white hover:bg-blue-50 py-2 rounded-md flex justify-center items-center w-full">
-            Sign In with Google
-          </button>
+          {isReturningUser ? (
+            <button 
+              onClick={handleLogin} 
+              className={`primary-button bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md flex justify-center items-center w-full`}
+            >
+              {isLoading ? "Signing In..." : "Continue with Google"}
+            </button>
+          ) : (
+            <>
+              <button 
+                onClick={handleSignUp} 
+                className={`primary-button bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md flex justify-center items-center w-full`}
+              >
+                {isSigningUp ? "Creating Account..." : "Sign Up with Google"}
+              </button>
+              <button 
+                onClick={handleLogin} 
+                className="secondary-button border border-blue-500 text-blue-600 bg-white hover:bg-blue-50 py-2 rounded-md flex justify-center items-center w-full"
+              >
+                Sign In with Google
+              </button>
+            </>
+          )}
+          
           <div className="text-xs text-center text-gray-500 mt-2 p-2 bg-gray-50 rounded">
             <p className="font-medium mb-1">What's the difference?</p>
             <p>Both use Google OAuth for authentication.</p>
@@ -233,6 +345,7 @@ export const PopupContent = () => {
             <p><strong>Sign In</strong>: You've used this extension before</p>
           </div>
         </div>
+        
         <div className="footer">
           <button onClick={handleOpenOptions} className="text-button">Options</button>
         </div>
@@ -329,13 +442,18 @@ export const PopupContent = () => {
 
 // Component used for exporting for external use
 export const Popup = () => {
-  return (
-    <AuthProvider>
-      <ScanProvider>
-        <SettingsProvider>
-          <PopupContent />
-        </SettingsProvider>
-      </ScanProvider>
-    </AuthProvider>
+  // Use standard React.createElement instead of JSX to avoid TypeScript errors
+  return React.createElement(
+    AuthProvider,
+    null,
+    React.createElement(
+      ScanProvider,
+      null,
+      React.createElement(
+        SettingsProvider,
+        null,
+        React.createElement(PopupContent, null)
+      )
+    )
   );
 }; 

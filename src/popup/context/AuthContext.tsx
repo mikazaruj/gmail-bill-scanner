@@ -1,14 +1,14 @@
-import * as React from 'react';
-import { createContext, useState, useEffect, ReactNode } from 'react';
+import React from 'react';
 import { UserProfile } from '../../types/Message';
 
+// Define the shape of our context
 interface AuthContextType {
   isAuthenticated: boolean | null;
   isLoading: boolean;
   error: string | null;
   userProfile: UserProfile;
-  login: () => Promise<void>;
   logout: () => Promise<void>;
+  refreshAuthStatus: () => Promise<void>;
 }
 
 const defaultUserProfile: UserProfile = {
@@ -17,30 +17,32 @@ const defaultUserProfile: UserProfile = {
   avatar: ''
 };
 
-export const AuthContext = createContext<AuthContextType>({
+// Create the context with a default value
+const AuthContext = React.createContext<AuthContextType>({
   isAuthenticated: null,
   isLoading: true,
   error: null,
   userProfile: defaultUserProfile,
-  login: async () => {},
-  logout: async () => {}
+  logout: async () => {},
+  refreshAuthStatus: async () => {}
 });
 
+// Provider props type
 interface AuthProviderProps {
-  children: React.ReactNode | JSX.Element | JSX.Element[] | string | null;
+  children: React.ReactNode;
 }
 
-export const AuthProvider = ({ children }: AuthProviderProps) => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile>(defaultUserProfile);
+// Create a function component for the provider
+// Use an inline function to avoid render method type issues
+const AuthProvider = ({ children }: AuthProviderProps) => {
+  // State declarations
+  const [isAuthenticated, setIsAuthenticated] = React.useState<boolean | null>(null);
+  const [isLoading, setIsLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [userProfile, setUserProfile] = React.useState<UserProfile>(defaultUserProfile);
 
-  useEffect(() => {
-    checkAuthStatus();
-  }, []);
-
-  const checkAuthStatus = async () => {
+  // Check authentication status
+  const checkAuthStatus = React.useCallback(async () => {
     setIsLoading(true);
     
     try {
@@ -55,6 +57,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       
       if (response?.success) {
         setIsAuthenticated(response.isAuthenticated);
+        
         if (response.isAuthenticated && response.profile) {
           setUserProfile({
             name: response.profile.name || '',
@@ -62,6 +65,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
             avatar: response.profile.picture || ''
           });
         }
+        
         setError(null);
       } else {
         setError(response?.error || 'Failed to check authentication status');
@@ -73,56 +77,16 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+  
+  // Run on mount
+  React.useEffect(() => {
+    checkAuthStatus();
+  }, [checkAuthStatus]);
 
-  const login = async () => {
+  // Logout function
+  const logout = React.useCallback(async () => {
     setIsLoading(true);
-    setError(null);
-    
-    try {
-      // Use our custom authentication through the background script
-      // This will use Chrome's Identity API directly
-      const authMode = await chrome.storage.local.get('auth_mode');
-      const isSignUp = authMode?.auth_mode === 'signup';
-      
-      const response = await new Promise<any>((resolve) => {
-        chrome.runtime.sendMessage({ 
-          type: 'AUTHENTICATE',
-          isSignUp: isSignUp
-        }, (response) => {
-          if (chrome.runtime.lastError) {
-            throw new Error(chrome.runtime.lastError.message);
-          }
-          resolve(response);
-        });
-      });
-      
-      if (response?.success) {
-        setIsAuthenticated(true);
-        if (response.profile) {
-          setUserProfile({
-            name: response.profile.name || '',
-            email: response.profile.email || '',
-            avatar: response.profile.picture || ''
-          });
-        }
-        setError(null);
-        
-        // Clear the auth_mode
-        await chrome.storage.local.remove('auth_mode');
-      } else {
-        throw new Error(response?.error || 'Authentication failed');
-      }
-    } catch (error) {
-      setError((error as Error).message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const logout = async () => {
-    setIsLoading(true);
-    setError(null);
     
     try {
       const response = await new Promise<any>((resolve) => {
@@ -137,25 +101,42 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       if (response?.success) {
         setIsAuthenticated(false);
         setUserProfile(defaultUserProfile);
+        setError(null);
       } else {
-        throw new Error(response?.error || 'Sign out failed');
+        throw new Error(response?.error || 'Logout failed');
       }
     } catch (error) {
       setError((error as Error).message);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const contextValue: AuthContextType = {
+  // Refresh auth status function
+  const refreshAuthStatus = React.useCallback(async () => {
+    return checkAuthStatus();
+  }, [checkAuthStatus]);
+
+  // Create context value
+  const value = {
     isAuthenticated,
     isLoading,
     error,
     userProfile,
-    login,
-    logout
+    logout,
+    refreshAuthStatus
   };
 
-  // @ts-ignore - Ignore TypeScript errors for now to get the extension working
-  return <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>;
-}; 
+  // We use a plain div to wrap the context provider to avoid JSX issues
+  return (
+    <div style={{ display: 'contents' }}>
+      {/* @ts-ignore */}
+      <AuthContext.Provider value={value}>
+        {children}
+      </AuthContext.Provider>
+    </div>
+  );
+};
+
+// Export both context and provider
+export { AuthContext, AuthProvider }; 
