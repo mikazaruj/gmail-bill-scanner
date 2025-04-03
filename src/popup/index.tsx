@@ -8,6 +8,9 @@ import {
   AlertTriangle, Check, User, Calendar, PieChart
 } from 'lucide-react';
 
+// Import Debug Tools
+import '../debug-tools';
+
 // Context Providers
 import { AuthProvider } from './context/AuthContext';
 import { ScanProvider } from './context/ScanContext';
@@ -169,6 +172,15 @@ export const PopupContent = () => {
       // Make sure we tell the background this is explicitly a sign-in attempt
       await chrome.storage.local.set({ auth_mode: 'signin' });
       
+      // Clear any cached tokens that might be causing issues
+      try {
+        chrome.identity.clearAllCachedAuthTokens(() => {
+          console.log('Cleared all cached auth tokens before login');
+        });
+      } catch (tokenError) {
+        console.error('Error clearing cached tokens:', tokenError);
+      }
+      
       // Explicitly pass false to indicate this is a sign-in, not sign-up
       const response = await new Promise<any>((resolve) => {
         chrome.runtime.sendMessage({ 
@@ -187,6 +199,7 @@ export const PopupContent = () => {
         await refreshAuthStatus();
       } else if (response?.error) {
         setAuthError(response.error);
+        console.error('Login error response:', response);
       }
     } catch (error) {
       console.error('Failed to login:', error);
@@ -201,6 +214,15 @@ export const PopupContent = () => {
       
       // Store that we're in signup mode in local storage
       await chrome.storage.local.set({ auth_mode: 'signup' });
+      
+      // Clear any cached tokens that might be causing issues
+      try {
+        chrome.identity.clearAllCachedAuthTokens(() => {
+          console.log('Cleared all cached auth tokens before signup');
+        });
+      } catch (tokenError) {
+        console.error('Error clearing cached tokens:', tokenError);
+      }
       
       // Explicitly pass true to indicate this is a sign-up
       const response = await new Promise<any>((resolve) => {
@@ -220,6 +242,7 @@ export const PopupContent = () => {
         await refreshAuthStatus();
       } else if (response?.error) {
         setAuthError(response.error);
+        console.error('Sign up error response:', response);
       }
     } catch (error) {
       console.error('Failed to sign up:', error);

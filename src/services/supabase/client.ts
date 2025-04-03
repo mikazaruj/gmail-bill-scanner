@@ -85,6 +85,21 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 
 // Export the function to get the client
 export async function getSupabaseClient() {
+  // Get Google user ID from Chrome storage
+  const { google_user_id } = await chrome.storage.local.get('google_user_id');
+  
+  // Set up headers including Google user ID if available
+  const headers: Record<string, string> = {
+    'x-application-name': 'gmail-bill-scanner'
+  };
+  
+  if (google_user_id) {
+    headers['X-Google-User-ID'] = google_user_id;
+    console.log('Including Google user ID in Supabase requests:', google_user_id);
+  } else {
+    console.log('No Google user ID available for Supabase headers');
+  }
+  
   // Create a fresh client each time to avoid auth issues
   const freshClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
@@ -95,9 +110,7 @@ export async function getSupabaseClient() {
       storageKey: 'gmail-bill-scanner-auth'
     },
     global: {
-      headers: {
-        'x-application-name': 'gmail-bill-scanner'
-      }
+      headers: headers
     }
   });
   
@@ -503,88 +516,24 @@ export async function getCurrentUser() {
 }
 
 /**
- * Store Google token for a user
- * @param userId Supabase user ID
- * @param token Google OAuth token
- * @returns Operation result
+ * Stores Google token in local storage only (no longer in Supabase)
  */
-export async function storeGoogleToken(userId: string, token: string) {
+export async function storeGoogleToken(userId: string, token: string): Promise<boolean> {
   try {
-    console.log('Storing Google token for user ID:', userId);
-  const supabase = await getSupabaseClient();
-  
-    // Check if an entry already exists for this user
-    const { data: existingToken, error: checkError } = await supabase
-    .from('google_credentials')
-      .select('*')
-    .eq('user_id', userId)
-    .maybeSingle();
-  
-    // If check fails due to JWT errors, try a different approach
-    if (checkError && checkError.message.includes('JWT')) {
-      console.warn('JWT error while checking for existing token:', checkError.message);
-      
-      // Fallback to direct SQL approach via RPC function
-      try {
-        const { data: upsertResult, error: upsertError } = await supabase
-          .rpc('upsert_google_token', { 
-            p_user_id: userId,
-            p_access_token: token
-          });
-          
-        if (upsertError) {
-          console.error('Error in RPC upsert:', upsertError);
-          return { success: false, error: upsertError };
-        }
-        
-        console.log('Stored Google token via RPC function');
-        return { success: true };
-      } catch (rpcError) {
-        console.error('RPC call failed:', rpcError);
-        return { success: false, error: rpcError };
-      }
-    }
+    console.log('Storing Google token in local storage only');
     
-    // Standard approach when JWT verification works
-    if (existingToken) {
-      // Update existing record
-      const { error: updateError } = await supabase
-      .from('google_credentials')
-      .update({
-          access_token: token,
-          updated_at: new Date().toISOString()
-        })
-        .eq('user_id', userId);
-      
-      if (updateError) {
-        console.error('Error updating Google credentials:', updateError);
-        return { success: false, error: updateError };
-      }
-      
-      console.log('Updated existing Google token');
-      return { success: true };
-  } else {
-      // Insert new record
-      const { error: insertError } = await supabase
-      .from('google_credentials')
-      .insert({
-        user_id: userId,
-          access_token: token,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        });
-      
-      if (insertError) {
-        console.error('Error inserting Google credentials:', insertError);
-        return { success: false, error: insertError };
-      }
-      
-      console.log('Inserted new Google token');
-      return { success: true };
-    }
+    // Store token only in Chrome storage, not in Supabase
+    await chrome.storage.local.set({
+      'google_access_token': token,
+      'google_token_user_id': userId,
+      'google_token_expiry': Date.now() + (3600 * 1000) // 1 hour from now
+    });
+    
+    console.log('Google token stored successfully in local storage');
+    return true;
   } catch (error) {
     console.error('Error storing Google token:', error);
-    return { success: false, error };
+    return false;
   }
 }
 
@@ -604,40 +553,70 @@ export async function getGoogleCredentials(userId: string) {
 }
 
 /**
- * Add a trusted email source
- * @param userId Supabase user ID
- * @param emailAddress Email to add as a trusted source
- * @param description Optional description
- * @returns Response with status
+ * Get trusted email sources for the current user
+ * Uses Google User ID passed in headers for RLS policies
  */
-export async function addTrustedSource(userId: string, emailAddress: string, description?: string) {
+export async function getTrustedSources() {
+  try {
+    console.log('Getting trusted sources for current user using Google User ID header');
   const supabase = await getSupabaseClient();
   
-  return await supabase
+    // With the X-Google-User-ID header set, RLS policies will filter appropriately
+    const { data, error } = await supabase
     .from('email_sources')
-    .insert({
-      user_id: userId,
-      email_address: emailAddress,
-      description: description || null,
-      is_active: true
-    });
+      .select('*')
+      .eq('is_active', true);
+    
+    if (error) {
+      console.error('Error getting trusted sources:', error);
+      return [];
+    }
+    
+    return data || [];
+  } catch (error) {
+    console.error('Failed to get trusted sources:', error);
+    return [];
+  }
 }
 
 /**
- * Get all trusted email sources for a user
- * @param userId Supabase user ID
- * @returns List of trusted email sources
+ * Add a trusted email source
+ * Uses Google User ID passed in headers for RLS policies
  */
-export async function getTrustedSources(userId: string) {
+export async function addTrustedSource(emailAddress: string, description?: string) {
+  try {
   const supabase = await getSupabaseClient();
   
-  const { data } = await supabase
-    .from('email_sources')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('is_active', true);
+    // Get current user ID from storage
+    const { supabase_user_id } = await chrome.storage.local.get('supabase_user_id');
     
-  return data || [];
+    if (!supabase_user_id) {
+      console.error('No Supabase user ID available');
+      return { success: false, error: 'User not authenticated' };
+    }
+    
+    const { data, error } = await supabase
+    .from('email_sources')
+      .insert({
+        user_id: supabase_user_id,
+        email_address: emailAddress,
+        description: description || null,
+        is_active: true
+      });
+    
+    if (error) {
+      console.error('Error adding trusted source:', error);
+      return { success: false, error: error.message };
+    }
+    
+    return { success: true, data };
+  } catch (error) {
+    console.error('Failed to add trusted source:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  }
 }
 
 /**
@@ -747,6 +726,7 @@ export async function saveUserSettings(
  * @param name User's name from Google
  * @param avatarUrl User's avatar URL from Google
  * @param isSignUp Whether this is a sign up (true) or sign in (false) attempt
+ * @param profile Optional Google profile
  * @returns Response with user data or error
  */
 export async function signInWithGoogle(
@@ -754,7 +734,8 @@ export async function signInWithGoogle(
   email: string,
   name: string,
   avatarUrl: string,
-  isSignUp: boolean = false
+  isSignUp: boolean = false,
+  profile?: any
 ) {
   try {
     console.log(`Attempting to ${isSignUp ? 'sign up' : 'sign in'} with Google:`, { email, name });
@@ -766,8 +747,20 @@ export async function signInWithGoogle(
     if (existingSession && existingSession.user) {
       console.log('User already has a valid session:', existingSession.user.id);
       
-      // Update profile information
-      await updateUserProfile(existingSession.user.id, name, avatarUrl, email);
+      // Update profile information with Google ID if available
+      await updateUserProfile(
+        existingSession.user.id, 
+        name, 
+        avatarUrl, 
+        email,
+        profile?.id
+      );
+
+      // If profile is provided, try to link with Google
+      if (profile) {
+        console.log('Linking Google profile with existing session');
+        await linkGoogleUserInSupabase(profile);
+      }
       
       return { 
         data: { user: existingSession.user }, 
@@ -796,8 +789,20 @@ export async function signInWithGoogle(
       if (signInData?.user) {
         console.log('Sign in successful:', signInData.user.id);
         
-        // Update profile information
-        await updateUserProfile(signInData.user.id, name, avatarUrl, email);
+        // Update profile information with Google ID if available
+        await updateUserProfile(
+          signInData.user.id, 
+          name, 
+          avatarUrl, 
+          email,
+          profile?.id
+        );
+
+        // If profile is provided, try to link with Google
+        if (profile) {
+          console.log('Linking Google profile with signed in user');
+          await linkGoogleUserInSupabase(profile);
+        }
         
         return { 
           data: signInData, 
@@ -928,30 +933,41 @@ export async function signInWithGoogle(
 /**
  * Helper function to update a user's profile information
  */
-async function updateUserProfile(userId: string, name: string, avatarUrl: string, email: string) {
+async function updateUserProfile(userId: string, name: string, avatarUrl: string, email: string, googleId?: string) {
   const supabase = await getSupabaseClient();
   
   try {
     // Check if user exists in public.users table
     const { data: userData, error: userError } = await supabase
       .from('users')
-      .select('id')
-    .eq('id', userId)
-    .maybeSingle();
+      .select('id, google_user_id')
+      .eq('id', userId)
+      .maybeSingle();
   
     // If user doesn't exist in public.users, create the record
     if (!userData) {
       console.log("Creating user record in public.users");
       await supabase
         .from('users')
-      .insert({
-        id: userId,
+        .insert({
+          id: userId,
           email: email,
           auth_id: userId,
           plan: 'free',
           quota_bills_monthly: 50,
-          quota_bills_used: 0
+          quota_bills_used: 0,
+          google_user_id: googleId
         });
+    } else if (googleId && !userData.google_user_id) {
+      // Only update Google ID if it's not already set
+      console.log("Setting Google ID for user that doesn't have one");
+      await supabase
+        .from('users')
+        .update({
+          google_user_id: googleId,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userId);
     }
     
     // Update or create profile
@@ -1119,4 +1135,262 @@ export async function upsertUserProfile(
     profile.avatar_url, 
     profile.email
   );
+}
+
+/**
+ * Links a Google user with a Supabase user account
+ * Uses the RPC function link_google_user to perform the linking
+ */
+export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{ 
+  success: boolean; 
+  userId?: string; 
+  userData?: any;
+  error?: string 
+}> {
+  try {
+    console.log('Linking Google user with Supabase:', googleProfile.email);
+    const supabase = await getSupabaseClient();
+    
+    if (!googleProfile.id) {
+      console.error('Google profile missing ID');
+      return { success: false, error: 'Google profile missing ID' };
+    }
+    
+    // First try to find if user already exists with this Google ID
+    const { data: existingUser, error: lookupError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('google_user_id', googleProfile.id)
+      .maybeSingle();
+    
+    if (!lookupError && existingUser) {
+      console.log('Found existing user with Google ID:', existingUser.id);
+      
+      // User exists - return user data
+      const userData = {
+        id: existingUser.id,
+        email: existingUser.email || googleProfile.email,
+        created_at: existingUser.created_at,
+        plan: existingUser.plan || 'free',
+        quota_bills_monthly: existingUser.quota_bills_monthly || 50,
+        quota_bills_used: existingUser.quota_bills_used || 0,
+        total_processed_items: 0,
+        successful_processed_items: 0,
+        last_processed_at: null,
+        display_name: googleProfile.name,
+        avatar_url: googleProfile.picture
+      };
+      
+      return { success: true, userId: existingUser.id, userData };
+    }
+    
+    // Try to find by email if not found by Google ID
+    const { data: userByEmail, error: emailLookupError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', googleProfile.email)
+      .maybeSingle();
+    
+    if (!emailLookupError && userByEmail) {
+      console.log('Found existing user by email:', userByEmail.id);
+      
+      // Update with Google ID
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({ google_user_id: googleProfile.id })
+        .eq('id', userByEmail.id);
+      
+      if (updateError) {
+        console.warn('Failed to update user with Google ID:', updateError);
+      } else {
+        console.log('Updated user with Google ID:', userByEmail.id);
+      }
+      
+      // Return user data
+      const userData = {
+        id: userByEmail.id,
+        email: userByEmail.email || googleProfile.email,
+        created_at: userByEmail.created_at,
+        plan: userByEmail.plan || 'free',
+        quota_bills_monthly: userByEmail.quota_bills_monthly || 50,
+        quota_bills_used: userByEmail.quota_bills_used || 0,
+        total_processed_items: 0,
+        successful_processed_items: 0,
+        last_processed_at: null,
+        display_name: googleProfile.name,
+        avatar_url: googleProfile.picture
+      };
+      
+      return { success: true, userId: userByEmail.id, userData };
+    }
+    
+    // If not found, create a new user
+    console.log('Creating new user for Google ID:', googleProfile.id);
+    const { data: newUser, error: insertError } = await supabase
+      .from('users')
+      .insert({
+        email: googleProfile.email,
+        google_user_id: googleProfile.id,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        plan: 'free',
+        quota_bills_monthly: 50,
+        quota_bills_used: 0
+      })
+      .select()
+      .single();
+    
+    if (insertError) {
+      console.error('Failed to create new user:', insertError);
+      return { success: false, error: insertError.message };
+    }
+    
+    console.log('Created new user with ID:', newUser.id);
+    
+    // Return user data
+    const userData = {
+      id: newUser.id,
+      email: newUser.email,
+      created_at: newUser.created_at,
+      plan: 'free',
+      quota_bills_monthly: 50,
+      quota_bills_used: 0,
+      total_processed_items: 0,
+      successful_processed_items: 0,
+      last_processed_at: null,
+      display_name: googleProfile.name,
+      avatar_url: googleProfile.picture
+    };
+    
+    return { success: true, userId: newUser.id, userData };
+  } catch (error) {
+    console.error('Error linking Google user:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  }
+}
+
+/**
+ * Get user stats by Google ID
+ * @param googleId The Google user ID
+ * @returns User stats data or null
+ */
+export async function getUserStatsByGoogleId(googleId: string): Promise<any> {
+  try {
+    console.log('Getting user stats for Google ID:', googleId);
+    const supabase = await getSupabaseClient();
+    
+    // Get Google profile info from storage for fallback
+    const { user_profile } = await chrome.storage.local.get('user_profile');
+    console.log('Google profile info available:', !!user_profile);
+    
+    // Find the user by Google ID
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('google_user_id', googleId)
+      .maybeSingle();
+    
+    if (userError || !userData) {
+      console.error('User not found for Google ID:', googleId);
+      
+      // If we have profile info, return a synthetic record
+      if (user_profile) {
+        console.log('Creating synthetic user stats from Google profile');
+        return {
+          id: 'temp-' + googleId,
+          email: user_profile.email,
+          created_at: new Date().toISOString(),
+          plan: 'free',
+          quota_bills_monthly: 50,
+          quota_bills_used: 0,
+          total_processed_items: 0,
+          successful_processed_items: 0,
+          last_processed_at: null,
+          display_name: user_profile.name,
+          avatar_url: user_profile.picture
+        };
+      }
+      
+      return null;
+    }
+    
+    console.log('Found user in database:', userData.id);
+    
+    // Try to get profile info from user_profiles view
+    const { data: profileData, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('*')
+      .eq('id', userData.id)
+      .maybeSingle();
+    
+    if (profileError) {
+      console.warn('Error getting profile data:', profileError.message);
+    } else if (profileData) {
+      console.log('Found profile data for user:', profileData.display_name || 'No display name');
+    } else {
+      console.log('No profile data found for user');
+    }
+    
+    // Get processed items count
+    const { count, error: countError } = await supabase
+      .from('processed_items')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userData.id);
+    
+    // Get successful items count
+    const { count: successCount, error: successError } = await supabase
+      .from('processed_items')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userData.id)
+      .eq('status', 'success');
+    
+    // Build stats data, merging profile data if available
+    const userStats = {
+      id: userData.id,
+      email: userData.email,
+      created_at: userData.created_at,
+      plan: userData.plan || 'free',
+      quota_bills_monthly: userData.quota_bills_monthly || 50,
+      quota_bills_used: userData.quota_bills_used || 0,
+      total_processed_items: count || 0,
+      successful_processed_items: successCount || 0,
+      last_processed_at: null,
+      // Use profile data if available, otherwise use Google profile or defaults
+      display_name: (profileData?.display_name || profileData?.full_name || user_profile?.name || userData.email?.split('@')[0] || 'User'),
+      avatar_url: (profileData?.avatar_url || user_profile?.picture || null)
+    };
+    
+    console.log('Returning user stats with display name:', userStats.display_name);
+    return userStats;
+  } catch (error) {
+    console.error('Error getting user stats:', error);
+    
+    // Get Google profile info from storage for fallback
+    try {
+      const { user_profile } = await chrome.storage.local.get('user_profile');
+      if (user_profile) {
+        console.log('Creating synthetic user stats from Google profile after error');
+        return {
+          id: 'temp-' + googleId,
+          email: user_profile.email,
+          created_at: new Date().toISOString(),
+          plan: 'free',
+          quota_bills_monthly: 50,
+          quota_bills_used: 0,
+          total_processed_items: 0,
+          successful_processed_items: 0,
+          last_processed_at: null,
+          display_name: user_profile.name,
+          avatar_url: user_profile.picture
+        };
+      }
+    } catch (fallbackError) {
+      console.error('Error getting fallback profile:', fallbackError);
+    }
+    
+    return null;
+  }
 }
