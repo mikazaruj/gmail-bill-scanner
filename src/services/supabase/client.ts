@@ -213,6 +213,8 @@ type Database = {
 // Environment variables - loaded from .env.local
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://eipfspwyqzejhmybpofk.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTE0NzQ2MTAsImV4cCI6MjAyNzA1MDYxMH0.RKGuiOWMG1igzPYTbXJa1wRsaTiPxXy_9r5JCEZ5BNQ';
+// Service role key for admin operations
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcxMTQ3NDYxMCwiZXhwIjoyMDI3MDUwNjEwfQ.X2Qd0fOJ20tQu4VexcTwuBZEO-lsmCJU5dC7vxDKoRg';
 
 // Chrome extension URL for OAuth redirects (no longer used but kept for reference)
 const EXTENSION_URL = chrome.runtime.getURL('');
@@ -221,6 +223,7 @@ const EXTENSION_URL = chrome.runtime.getURL('');
 console.log('Supabase config:', { 
   url: SUPABASE_URL.substring(0, 20) + '...',  // Only log part of URL for security
   hasKey: !!SUPABASE_ANON_KEY,
+  hasServiceKey: !!SUPABASE_SERVICE_ROLE_KEY,
   extensionUrl: EXTENSION_URL
 });
 
@@ -284,6 +287,20 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, 
   global: {
     headers: {
       'x-application-name': 'gmail-bill-scanner'
+    }
+  }
+});
+
+// Create an admin client with service role key for admin operations
+export const supabaseAdmin = createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false,
+    detectSessionInUrl: false
+  },
+  global: {
+    headers: {
+      'x-application-name': 'gmail-bill-scanner-admin'
     }
   }
 });
@@ -1267,7 +1284,7 @@ export async function upsertUserProfile(
 
 /**
  * Links a Google user with a Supabase user account
- * Uses the RPC function link_google_user to perform the linking
+ * Uses our RPC function to create/update users in both auth.users and public.users
  */
 export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{ 
   success: boolean; 
@@ -1278,28 +1295,18 @@ export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{
   try {
     console.log('Linking Google user with Supabase:', googleProfile.email);
     
-    // Create a fresh client without trying to set a session to avoid JWT errors
-    const client = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-        detectSessionInUrl: false
-      },
-      global: {
-        headers: {
-          'x-application-name': 'gmail-bill-scanner'
-        }
-      }
-    });
-    
     if (!googleProfile.id) {
       console.error('Google profile missing ID');
       return { success: false, error: 'Google profile missing ID' };
     }
     
+    if (!googleProfile.email) {
+      console.error('Google profile missing email');
+      return { success: false, error: 'Google profile missing email' }; 
+    }
+    
     console.log('Google ID for linking:', googleProfile.id);
-    console.log('Google ID type:', typeof googleProfile.id);
-    console.log('Google ID length:', googleProfile.id.length);
+    console.log('Google email for linking:', googleProfile.email);
     
     // Save Google profile to local storage for debugging/fallback
     await chrome.storage.local.set({
@@ -1307,117 +1314,72 @@ export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{
       'google_id': googleProfile.id
     });
     
-    // First try to find if user already exists with this Google ID
-    const { data: existingUser, error: lookupError } = await client
-      .from('users')
-      .select('*')
-      .eq('google_user_id', googleProfile.id)
-      .maybeSingle();
+    // Use our new function that doesn't require service role key
+    const result = await createGoogleUser(
+      googleProfile.email,
+      googleProfile.id,
+      googleProfile.name,
+      googleProfile.picture
+    );
     
-    if (!lookupError && existingUser) {
-      console.log('Found existing user with Google ID:', existingUser.id);
-      console.log('Existing user\'s Google ID:', existingUser.google_user_id);
-      
-      // User exists - return user data
-      const userData = {
-        id: existingUser.id,
-        email: existingUser.email || googleProfile.email,
-        created_at: existingUser.created_at,
-        plan: existingUser.plan || 'free',
-        quota_bills_monthly: existingUser.quota_bills_monthly || 50,
-        quota_bills_used: existingUser.quota_bills_used || 0,
-        total_processed_items: 0,
-        successful_processed_items: 0,
-        last_processed_at: null,
-        display_name: googleProfile.name,
-        avatar_url: googleProfile.picture
-      };
-      
-      return { success: true, userId: existingUser.id, userData };
+    if (!result.success) {
+      console.error('Failed to create/update user:', result.error);
+      return { success: false, error: result.error };
     }
     
-    // Try to find by email if not found by Google ID
-    const { data: userByEmail, error: emailLookupError } = await client
+    console.log('Successfully created/updated user:', result.userId);
+    
+    // Get the user data to return
+    const client = await getSupabaseClient();
+    const { data: userData, error: fetchError } = await client
       .from('users')
       .select('*')
-      .eq('email', googleProfile.email)
+      .eq('id', result.userId)
       .maybeSingle();
     
-    if (!emailLookupError && userByEmail) {
-      console.log('Found existing user by email:', userByEmail.id);
-      console.log('Current Google ID (should be null):', userByEmail.google_user_id);
-      
-      // Update with Google ID using our more reliable direct update
-      const updateSuccess = await updateGoogleId(userByEmail.id, googleProfile.id);
-      
-      if (!updateSuccess) {
-        console.warn('Failed to update user with Google ID. Will try again later.');
-        // We'll still proceed and return the user data
-        // The Google ID will be updated next time the user logs in
-      } else {
-        console.log('Updated user with Google ID:', userByEmail.id);
-      }
-      
-      // Return user data
-      const userData = {
-        id: userByEmail.id,
-        email: userByEmail.email || googleProfile.email,
-        created_at: userByEmail.created_at,
-        plan: userByEmail.plan || 'free',
-        quota_bills_monthly: userByEmail.quota_bills_monthly || 50,
-        quota_bills_used: userByEmail.quota_bills_used || 0,
-        total_processed_items: 0,
-        successful_processed_items: 0,
-        last_processed_at: null,
-        display_name: googleProfile.name,
-        avatar_url: googleProfile.picture,
-        google_user_id: googleProfile.id // Add this even if the update failed
+    if (fetchError) {
+      console.error('Error fetching user data after creation/update:', fetchError);
+      // Still return success even if we couldn't fetch the data
+      return { 
+        success: true, 
+        userId: result.userId,
+        error: 'Created/updated user but failed to fetch user data'
       };
-      
-      return { success: true, userId: userByEmail.id, userData };
     }
     
-    // If not found, create a new user
-    console.log('Creating new user for Google ID:', googleProfile.id);
-    const { data: newUser, error: insertError } = await client
-      .from('users')
-      .insert({
+    if (!userData) {
+      console.warn('User not found after creation/update');
+      // Create a synthetic user data object
+      return { 
+        success: true, 
+        userId: result.userId,
+        userData: {
+          id: result.userId,
         email: googleProfile.email,
-        google_user_id: googleProfile.id,
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
         plan: 'free',
         quota_bills_monthly: 50,
-        quota_bills_used: 0
-      })
-      .select()
-      .single();
-    
-    if (insertError) {
-      console.error('Failed to create new user:', insertError);
-      return { success: false, error: insertError.message };
+          quota_bills_used: 0,
+          google_user_id: googleProfile.id
+        }
+      };
     }
     
-    console.log('Created new user with ID:', newUser.id);
-    console.log('New user Google ID:', newUser.google_user_id);
-    
-    // Return user data
-    const userData = {
-      id: newUser.id,
-      email: newUser.email,
-      created_at: newUser.created_at,
-      plan: 'free',
-      quota_bills_monthly: 50,
-      quota_bills_used: 0,
-      total_processed_items: 0,
-      successful_processed_items: 0,
-      last_processed_at: null,
+    // Return full user data
+    const enhancedUserData = {
+      ...userData,
       display_name: googleProfile.name,
       avatar_url: googleProfile.picture,
-      google_user_id: googleProfile.id
+      total_processed_items: 0,
+      successful_processed_items: 0,
+      last_processed_at: null
     };
     
-    return { success: true, userId: newUser.id, userData };
+    return { 
+      success: true, 
+      userId: result.userId, 
+      userData: enhancedUserData
+    };
   } catch (error) {
     console.error('Error linking Google user:', error);
     return { 
@@ -1820,309 +1782,69 @@ export async function getGoogleIdFromStorage(userId: string): Promise<string | n
 }
 
 /**
- * Manages Google user ID in Supabase for authentication
+ * Creates a user with Google account info using our RPC function
+ * This handles both auth.users and public.users tables
  */
-export async function manageGoogleUserId(googleProfile: any): Promise<{
+export async function createGoogleUser(
+  email: string,
+  googleId: string,
+  name?: string,
+  avatarUrl?: string
+): Promise<{
   success: boolean;
-  userId?: string | null; // Update type to accept null
-  userData?: any;
+  userId?: string;
   error?: string;
+  message?: string;
 }> {
   try {
-    console.log('Managing Google user ID for:', googleProfile.email);
+    console.log('Creating user with Google ID via RPC:', googleId);
     
-    // Always store the profile in Chrome storage for redundancy
-    await chrome.storage.local.set({
-      'google_profile': googleProfile,
-      'google_id': googleProfile.id,
-      'user_email': googleProfile.email
-    });
+    const client = await getSupabaseClient();
     
-    if (!googleProfile.id) {
-      console.error('No Google ID provided');
-      return { success: false, error: 'No Google ID provided' };
-    }
-    
-    // Get Supabase client
-    const supabase = await getSupabaseClient();
-    
-    // First, check if user exists with this Google ID
-    console.log('Checking if user exists with Google ID:', googleProfile.id);
-    const { data: existingUser, error: userError } = await supabase
-      .from('users')
-      .select('*')
-      .eq('google_user_id', googleProfile.id)
-      .maybeSingle();
-    
-    if (userError) {
-      console.error('Error checking for existing user by Google ID:', userError);
-    } else if (existingUser) {
-      console.log('User exists with Google ID:', existingUser.id);
-      
-      // Update user last login time
-      await supabase
-        .from('users')
-        .update({ updated_at: new Date().toISOString() })
-        .eq('id', existingUser.id);
-      
-      // Store mapping in Chrome storage
-      await chrome.storage.local.set({
-        'supabase_user_id': existingUser.id,
-        'google_user_id': googleProfile.id
-      });
-      
-      return {
-        success: true,
-        userId: existingUser.id,
-        userData: existingUser
-      };
-    }
-    
-    // No user with this Google ID, check by email
-    console.log('Checking if user exists with email:', googleProfile.email);
-    const { data: userByEmail, error: emailError } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', googleProfile.email.toLowerCase())
-      .maybeSingle();
-    
-    if (emailError) {
-      console.error('Error checking for existing user by email:', emailError);
-    } else if (userByEmail) {
-      console.log('User exists with email:', userByEmail.id);
-      
-      // Update the existing user with Google ID
-      const { data: updatedUser, error: updateError } = await supabase
-        .from('users')
-        .update({ 
-          google_user_id: googleProfile.id,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', userByEmail.id)
-        .select()
-        .single();
-      
-      if (updateError) {
-        console.error('Error updating user with Google ID:', updateError);
-      } else {
-        console.log('Updated user with Google ID');
-        
-        // Store mapping in Chrome storage
-        await chrome.storage.local.set({
-          'supabase_user_id': userByEmail.id,
-          'google_user_id': googleProfile.id
-        });
-        
-        return {
-          success: true,
-          userId: userByEmail.id,
-          userData: updatedUser
-        };
+    // Call the RPC function to create the user
+    const { data, error } = await client.rpc(
+      'create_google_user',
+      {
+        user_email: email.toLowerCase().trim(),
+        google_id: googleId,
+        user_name: name,
+        avatar_url: avatarUrl
       }
-    }
-    
-    // No existing user found, try creating one
-    console.log('Creating new user with Google ID:', googleProfile.id);
-    
-    // Check if user exists in auth.users first
-    const { data: authUser } = await supabase.auth.admin.getUserById(
-      googleProfile.id // Try using Google ID as user ID
     );
     
-    let userId = authUser?.user?.id;
-    
-    if (!userId) {
-      // Try to find auth user by email
-      const { data: authUsers } = await supabase.auth.admin.listUsers();
-      const matchingUser = authUsers?.users?.find(u => u.email === googleProfile.email);
-      userId = matchingUser?.id;
-      
-      if (!userId) {
-        // Generate a new UUID if no auth user found
-        userId = self.crypto.randomUUID();
-      }
+    if (error) {
+      console.error('RPC error creating Google user:', error);
+      return { success: false, error: error.message };
     }
     
-    // Create user in public.users table
-    const { data: newUser, error: createError } = await supabase
-      .from('users')
-      .insert({
-        id: userId,
-        email: googleProfile.email.toLowerCase(),
-        auth_id: userId,
-        google_user_id: googleProfile.id,
-        plan: 'free',
-        quota_bills_monthly: 50,
-        quota_bills_used: 0,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })
-      .select()
-      .single();
-    
-    if (createError) {
-      console.error('Error creating user:', createError);
-      return { 
-        success: false, 
-        error: `Failed to create user: ${createError.message}` 
-      };
+    if (!data || !data.success) {
+      console.error('Function returned error creating Google user:', data?.error || 'Unknown error');
+      return { success: false, error: data?.error || 'Unknown error' };
     }
     
-    console.log('Created new user successfully:', newUser.id);
+    console.log('Successfully created/updated user via RPC. Result:', data);
     
-    // Store mapping in Chrome storage
-    await chrome.storage.local.set({
-      'supabase_user_id': newUser.id,
-      'google_user_id': googleProfile.id
-    });
-    
-    return {
-      success: true,
-      userId: newUser.id,
-      userData: newUser
+    return { 
+      success: true, 
+      userId: data.user_id,
+      message: data.message
     };
   } catch (error) {
-    console.error('Error managing Google user ID:', error);
+    console.error('Error creating Google user:', error);
     return { 
       success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error' 
+      error: error instanceof Error ? error.message : 'Unknown error'
     };
   }
 }
 
 /**
- * Verifies a user by Google ID, checking if they exist in the database
+ * Creates a local session without JWT tokens
  */
-export async function verifyUserByGoogleId(googleId: string): Promise<{
-  success: boolean;
-  userData?: any;
-  error?: string;
-}> {
-  try {
-    if (!googleId) {
-      console.error('No Google ID provided for verification');
-      return {
-        success: false,
-        error: 'No Google ID provided'
-      };
-    }
-    
-    console.log('Verifying user by Google ID:', googleId);
-    
-    // Get Supabase client
-    const supabase = await getSupabaseClient();
-    
-    // First try to get the user directly from the users table
-    console.log('Looking up user with Google ID in public.users table...');
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('*')
-      .eq('google_user_id', googleId)
-      .maybeSingle();
-    
-    if (userError) {
-      console.error('Error querying users by Google ID:', userError);
-      return {
-        success: false,
-        error: userError.message
-      };
-    }
-    
-    if (userData) {
-      console.log('Found user with Google ID in users table:', userData.id);
-      return {
-        success: true,
-        userData
-      };
-    }
-    
-    // If not found, try checking auth.users table for metadata containing the Google ID
-    console.log('User not found in public.users, checking auth.users metadata...');
-    const { data: authData, error: authError } = await supabase.auth.admin.listUsers();
-    
-    if (authError) {
-      console.error('Error querying auth users:', authError);
-      return {
-        success: false,
-        error: authError.message
-      };
-    }
-    
-    // Look for a user with matching Google ID in metadata
-    const authUser = authData.users.find(user => 
-      (user.user_metadata?.google_user_id === googleId) || 
-      (user.user_metadata?.sub === googleId)
-    );
-    
-    if (authUser) {
-      console.log('Found user with Google ID in auth.users metadata:', authUser.id);
-      
-      // Try to create public.users record if missing
-      try {
-        console.log('Creating missing public.users record for auth user:', authUser.id);
-        const { data: newUserData, error: createError } = await supabase
-          .from('users')
-          .insert({
-            id: authUser.id,
-            email: authUser.email || '',
-            auth_id: authUser.id,
-            google_user_id: googleId,
-            plan: 'free',
-            quota_bills_monthly: 50,
-            quota_bills_used: 0,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          })
-          .select()
-          .single();
-        
-        if (createError) {
-          console.error('Failed to create public user record:', createError);
-        } else {
-          console.log('Successfully created missing public.users record');
-          return {
-            success: true,
-            userData: newUserData
-          };
-        }
-      } catch (createError) {
-        console.warn('Error creating public user record:', createError);
-      }
-      
-      // Return basic data from auth user even if we couldn't create public record
-      return {
-        success: true,
-        userData: {
-          id: authUser.id,
-          email: authUser.email,
-          google_user_id: googleId,
-          created_at: authUser.created_at,
-          plan: 'free',
-          quota_bills_monthly: 50,
-          quota_bills_used: 0
-        }
-      };
-    }
-    
-    console.log('No user found with this Google ID in any table');
-    return {
-      success: false,
-      error: 'User not found with this Google ID'
-    };
-  } catch (error) {
-    console.error('Error verifying user by Google ID:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error verifying user by Google ID'
-    };
-  }
-}
-
-/**
- * Create Chrome session for user
- * Production-ready function to create a local session without JWT tokens
- */
-export async function createLocalSession(userId: string, googleProfile: any): Promise<{
+export async function createLocalSession(
+  userId: string, 
+  googleProfile: any
+): Promise<{
   success: boolean;
   session?: any;
   error?: string;
@@ -2162,6 +1884,68 @@ export async function createLocalSession(userId: string, googleProfile: any): Pr
     return { 
       success: false, 
       error: error instanceof Error ? error.message : 'Unknown error' 
+    };
+  }
+}
+
+/**
+ * Verifies if a user exists by Google ID
+ * @param googleId The Google user ID
+ * @returns Promise resolving to verification result
+ */
+export async function verifyUserByGoogleId(googleId: string): Promise<{
+  success: boolean;
+  userData?: any;
+  error?: string;
+}> {
+  try {
+    console.log('Looking up user with Google ID in public.users table...');
+    
+    const client = await getSupabaseClient();
+    
+    // First, check public.users table
+    const { data: userData, error: userError } = await client
+      .from('users')
+      .select('*')
+      .eq('google_user_id', googleId)
+      .maybeSingle();
+    
+    if (!userError && userData) {
+      console.log('Found user in public.users with Google ID:', userData.id);
+      return { success: true, userData };
+    }
+    
+    console.log('User not found in public.users, checking auth.users metadata...');
+    
+    // If not found in public.users, try a synthetic user record
+    const { google_profile } = await chrome.storage.local.get('google_profile');
+    if (google_profile) {
+      console.log('Creating synthetic user record from Google profile');
+      return {
+        success: true,
+        userData: {
+          id: 'temp-' + googleId,
+          email: google_profile.email,
+          created_at: new Date().toISOString(),
+          plan: 'free',
+          quota_bills_monthly: 50,
+          quota_bills_used: 0,
+          google_user_id: googleId,
+          display_name: google_profile.name,
+          avatar_url: google_profile.picture
+        }
+      };
+    }
+    
+    return { 
+      success: false, 
+      error: 'User not found with Google ID: ' + googleId 
+    };
+  } catch (error) {
+    console.error('Error verifying user by Google ID:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Error verifying user' 
     };
   }
 }

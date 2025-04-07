@@ -15,11 +15,11 @@ import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../typ
 import { 
   isAuthenticated as isGoogleAuthenticated,
   getAccessToken as getGoogleAccessToken,
-  authenticate as googleAuthenticate,
-  fetchGoogleUserInfo
+  authenticate as googleAuthenticate
 } from '../services/auth/googleAuth';
 import { signInWithGoogle, syncAuthState } from '../services/supabase/client';
 import { searchEmails } from '../services/gmail/gmailService';
+import { fetchGoogleUserInfo } from '../services/auth/googleApi';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -299,227 +299,68 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
       });
     }
 
-    // Import Supabase client
-    const { getSupabaseClient } = await import('../services/supabase/client');
-    const supabase = await getSupabaseClient();
+    // Import Supabase client and functions
+    const { 
+      linkGoogleUserInSupabase, 
+      createLocalSession,
+      storeGoogleToken 
+    } = await import('../services/supabase/client');
 
-    // Create the user in auth.users first using admin API
-    console.log('Creating user in auth.users using admin API with Google ID:', userInfo.id);
-
-    // Make sure Google ID is properly registered in user metadata
-    const userMetadata = {
-      sub: userInfo.id, // Use Google ID as sub
-      name: userInfo.name,
-      email: userInfo.email,
-      picture: userInfo.picture,
-      full_name: userInfo.name,
-      google_user_id: userInfo.id,
-      provider: 'google',
-      email_verified: true
-    };
-
-    console.log('User metadata with Google ID:', userMetadata);
-
-    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email: userInfo.email,
-      email_confirm: true,
-      user_metadata: userMetadata,
-      app_metadata: {
-        provider: 'google',
-        google_user_id: userInfo.id
-      }
-    });
-
-    if (authError) {
-      console.error('Error creating user in auth.users:', authError);
-      throw new Error(`Failed to create user account: ${authError.message}`);
+    // Link the Google user directly with Supabase public.users
+    console.log('Linking Google user to Supabase with Google ID:', userInfo.id);
+    
+    const linkResult = await linkGoogleUserInSupabase(userInfo);
+    
+    if (!linkResult.success) {
+      console.error('Failed to link Google user:', linkResult.error);
+      throw new Error(`Failed to link Google account: ${linkResult.error}`);
     }
-
-    // Now create the user in public.users table
-    console.log('Creating user in public.users table with Google ID:', userInfo.id);
-
-    // Try direct insert first
-    let publicUser;
+    
+    console.log('Successfully linked Google account with user ID:', linkResult.userId);
+    
+    if (!linkResult.userId) {
+      throw new Error('Failed to get user ID after linking Google account');
+    }
+    
+    // Store Google token for the user
     try {
-      console.log('Inserting user with Google ID:', userInfo.id);
-      const { data: directInsert, error: insertError } = await supabase
-        .from('users')
-        .insert({
-          id: authData.user.id,
-          email: userInfo.email.toLowerCase().trim(),
-          auth_id: authData.user.id,
-          plan: 'free',
-          quota_bills_monthly: 50,
-          google_user_id: userInfo.id,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .select()
-        .single();
-
-      if (insertError) {
-        console.error('Failed direct insert:', insertError);
-        throw insertError;
-      }
-      
-      publicUser = directInsert;
-      console.log('User inserted with direct method:', publicUser);
-      console.log('Google ID in created user:', publicUser.google_user_id);
-    } catch (insertError) {
-      console.error('Direct insert failed:', insertError);
-      
-      try {
-        // Try RPC as fallback
-        console.log('Falling back to RPC call with Google ID:', userInfo.id);
-        const { data: rpcUser, error: rpcError } = await supabase
-          .rpc('create_public_user', {
-            user_id: authData.user.id,
-            user_email: userInfo.email.toLowerCase().trim(),
-            user_auth_id: authData.user.id,
-            user_plan: 'free',
-            user_quota: 50,
-            google_user_id: userInfo.id
-          });
-
-        if (rpcError) {
-          throw rpcError;
-        }
-        
-        publicUser = rpcUser;
-        console.log('Successfully created user via RPC:', publicUser);
-      } catch (rpcError) {
-        console.error('RPC call failed:', rpcError);
-        
-        try {
-          // Last resort: try to create without Google ID first, then update
-          console.log('Attempting two-step creation...');
-          const { data: basicUser, error: basicError } = await supabase
-            .from('users')
-            .insert({
-              id: authData.user.id,
-              email: userInfo.email.toLowerCase().trim(),
-              auth_id: authData.user.id,
-              plan: 'free',
-              quota_bills_monthly: 50,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            })
-            .select()
-            .single();
-            
-          if (basicError) {
-            throw basicError;
-          }
-          
-          // Now update with Google ID
-          console.log('Updating with Google ID:', userInfo.id);
-          const { data: updatedUser, error: updateError } = await supabase
-            .from('users')
-            .update({ google_user_id: userInfo.id })
-            .eq('id', authData.user.id)
-            .select()
-            .single();
-            
-          if (updateError) {
-            throw updateError;
-          }
-          
-          publicUser = updatedUser;
-          console.log('Successfully created and updated user:', publicUser);
-        } catch (finalError) {
-          console.error('All creation attempts failed:', finalError);
-          throw new Error('Failed to create user profile after multiple attempts');
-        }
-      }
+      await storeGoogleToken(linkResult.userId, token);
+      console.log('Stored Google token for user', linkResult.userId);
+    } catch (tokenError) {
+      console.error('Failed to store Google token:', tokenError);
+      // Continue even if token storage failed
     }
-
-    // Verify the final state
-    const { data: verifiedUser, error: verifyError } = await supabase
-      .from('users')
-      .select('id, email, google_user_id')
-      .eq('id', authData.user.id)
-      .single();
-      
-    if (verifyError) {
-      console.error('Failed to verify user creation:', verifyError);
-    } else {
-      console.log('Final user state:', verifiedUser);
-      console.log('Google ID in verified user:', verifiedUser.google_user_id);
-      
-      // If Google ID is still not set, try one final update
-      if (!verifiedUser.google_user_id && userInfo.id) {
-        console.log('Final attempt to set Google ID:', userInfo.id);
-        const { data: updatedUser, error: updateError } = await supabase
-          .from('users')
-          .update({ 
-            google_user_id: userInfo.id,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', authData.user.id)
-          .select()
-          .single();
-          
-        if (updateError) {
-          console.error('Final Google ID update failed:', updateError);
-        } else {
-          console.log('Final update completed. Updated user:', updatedUser);
-          console.log('Google ID after final update:', updatedUser.google_user_id);
-        }
-      }
+    
+    // Create a local session
+    const sessionResult = await createLocalSession(linkResult.userId, userInfo);
+    
+    if (!sessionResult.success) {
+      console.error('Failed to create local session:', sessionResult.error);
+      throw new Error(`Failed to create local session: ${sessionResult.error}`);
     }
-
-    // As a backup, also store the Google ID in Chrome storage for later use
+    
+    console.log('Local session created successfully');
+    
+    // Store additional information in Chrome storage for reference
     await chrome.storage.local.set({
-      'google_user_id': userInfo.id,
-      'supabase_user_id': authData.user.id,
+      'supabase_user_id': linkResult.userId,
       'user_email': userInfo.email,
       'user_profile': userInfo
     });
 
-    console.log('Stored user IDs in Chrome storage for reference');
-
-    // Note: No longer need to create profile for user since profiles table doesn't exist
-    // The `user_profiles` view will automatically pull data from auth.users metadata
-    
-    // Store Google token
-    await storeGoogleTokenSafely(authData.user.id, userInfo.id || '', token);
-    
-    // Create session data
-    const sessionData = {
-      access_token: token,
-      expires_at: Date.now() + 3600 * 1000, // 1 hour expiry
-      refresh_token: token, // Use the same token
-      user: {
-        id: authData.user.id,
-        email: userInfo.email,
-        app_metadata: {
-          provider: 'google'
-        },
-        user_metadata: {
-          name: userInfo.name,
-          picture: userInfo.picture,
-          full_name: userInfo.name
-        }
-      }
-    };
-    
-    // Set session manually in storage
-    await chrome.storage.local.set({
-      'gmail-bill-scanner-auth': JSON.stringify(sessionData)
-    });
-    
-    // Return success with new user profile
+    // Return success with user profile and session
     return {
       success: true,
       isAuthenticated: true,
       profile: {
-        id: authData.user.id,
+        id: linkResult.userId,
         email: userInfo.email,
         name: userInfo.name || '',
         picture: userInfo.picture || ''
       },
-      message: 'Account created successfully!',
-      newUser: true
+      message: 'Account created and linked successfully!',
+      newUser: !linkResult.userData?.created_at || 
+               (new Date().getTime() - new Date(linkResult.userData.created_at).getTime() < 60000)
     };
   } catch (error) {
     console.error('Authentication error:', error);
@@ -818,19 +659,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               console.log('Background: Stored Google user ID:', authResult.profile.id);
               
               try {
-                // Use our new production-ready function to manage the Google ID
-                const { manageGoogleUserId, createLocalSession } = await import('../services/supabase/client');
-                console.log('Background: Managing Google user with production-ready function');
+                // Create the user in auth.users and public.users tables via RPC
+                const { createGoogleUser, createLocalSession } = await import('../services/supabase/client');
                 
-                const userResult = await manageGoogleUserId(authResult.profile);
-                console.log('Background: User management result:', userResult.success ? 'Success' : 'Failed');
+                console.log('Background: Creating user with Google RPC function...');
+                const createResult = await createGoogleUser(
+                  authResult.profile.email,
+                  authResult.profile.id,
+                  authResult.profile.name,
+                  authResult.profile.picture
+                );
                 
-                if (userResult.success && userResult.userId) {
+                if (createResult.success && createResult.userId) {
+                  console.log('Background: User created/updated successfully:', createResult.userId);
+                  
                   // Create a local session without JWT tokens
-                  const sessionResult = await createLocalSession(userResult.userId, authResult.profile);
+                  const sessionResult = await createLocalSession(createResult.userId, authResult.profile);
                   
                   if (!sessionResult.success) {
                     console.warn('Background: Failed to create local session:', sessionResult.error);
+                  } else {
+                    console.log('Background: Local session created successfully');
                   }
                   
                   // Return the combined result
@@ -839,34 +688,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     isAuthenticated: true,
                     profile: {
                       ...authResult.profile,
-                      supabase_id: userResult.userId
+                      supabase_id: createResult.userId
                     },
-                    userData: userResult.userData,
                     message: 'Signed in successfully!',
                     existingUser: true
                   });
                   return;
                 } else {
-                  console.warn('Background: User management failed:', userResult.error);
-                  // Still return success if Google auth worked, even if management failed
+                  console.error('Background: Failed to create/update user:', createResult.error);
+                  // Still return success if Google auth worked
                   sendResponse({
                     success: true,
                     isAuthenticated: true,
                     profile: authResult.profile,
-                    message: 'Signed in with Google only. Database management failed.',
-                    databaseError: userResult.error
+                    message: 'Signed in with Google only. Database operation failed.',
+                    databaseError: createResult.error
                   });
                   return;
                 }
-              } catch (manageError) {
-                console.error('Background: Error managing user:', manageError);
+              } catch (dbError) {
+                console.error('Background: Error with database operation:', dbError);
                 // Still return success if Google auth worked
                 sendResponse({
                   success: true,
                   isAuthenticated: true,
                   profile: authResult.profile,
                   message: 'Signed in with Google only. Database error occurred.',
-                  databaseError: manageError instanceof Error ? manageError.message : 'Unknown database error'
+                  databaseError: dbError instanceof Error ? dbError.message : 'Unknown database error'
                 });
                 return;
               }

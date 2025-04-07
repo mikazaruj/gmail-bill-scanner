@@ -188,10 +188,42 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
       
       console.log('Stored Google user profile with ID:', retryUserInfo.id);
       
-      return {
-        success: true,
-        profile: retryUserInfo
-      };
+      // Step 3: Link Google user with Supabase
+      try {
+        const { linkGoogleUserInSupabase, createLocalSession } = await import('../supabase/client');
+        
+        // Link the user in Supabase public.users
+        const linkResult = await linkGoogleUserInSupabase(retryUserInfo);
+        
+        if (!linkResult.success) {
+          console.error('Failed to link Google account:', linkResult.error);
+          return { success: false, error: linkResult.error };
+        }
+        
+        console.log('Successfully linked Google account. User ID:', linkResult.userId);
+        
+        // Create a local session
+        if (linkResult.userId) {
+          const sessionResult = await createLocalSession(linkResult.userId, retryUserInfo);
+          if (!sessionResult.success) {
+            console.error('Failed to create local session:', sessionResult.error);
+          } else {
+            console.log('Local session created successfully');
+          }
+        }
+        
+        return {
+          success: true,
+          profile: retryUserInfo
+        };
+      } catch (e) {
+        console.error('Error in linking process:', e);
+        return {
+          success: true,
+          profile: retryUserInfo,
+          error: 'Authentication succeeded but there was an error linking your account'
+        };
+      }
     }
     
     console.log(`Got user info from Google: ${userInfo.email}`);
@@ -211,6 +243,34 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
     });
     
     console.log('Successfully stored Google profile with ID:', userInfo.id);
+    
+    // Step 3: Link Google user with Supabase
+    try {
+      const { linkGoogleUserInSupabase, createLocalSession } = await import('../supabase/client');
+      
+      // Link the user in Supabase public.users
+      const linkResult = await linkGoogleUserInSupabase(userInfo);
+      
+      if (!linkResult.success) {
+        console.error('Failed to link Google account:', linkResult.error);
+        return { success: false, error: linkResult.error };
+      }
+      
+      console.log('Successfully linked Google account. User ID:', linkResult.userId);
+      
+      // Create a local session
+      if (linkResult.userId) {
+        const sessionResult = await createLocalSession(linkResult.userId, userInfo);
+        if (!sessionResult.success) {
+          console.error('Failed to create local session:', sessionResult.error);
+        } else {
+          console.log('Local session created successfully');
+        }
+      }
+    } catch (e) {
+      console.error('Error in linking process:', e);
+      // Continue anyway since we already have the Google token and profile
+    }
     
     return {
       success: true,
