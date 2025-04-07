@@ -14,7 +14,9 @@ import { extractBillsFromPdfs } from '../services/extractors/pdfBillExtractor';
 import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../types/Message';
 import { 
   isAuthenticated as isGoogleAuthenticated,
-  getAccessToken as getGoogleAccessToken
+  getAccessToken as getGoogleAccessToken,
+  authenticate as googleAuthenticate,
+  fetchGoogleUserInfo
 } from '../services/auth/googleAuth';
 import { signInWithGoogle, syncAuthState } from '../services/supabase/client';
 import { searchEmails } from '../services/gmail/gmailService';
@@ -180,9 +182,9 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
           if (chrome.runtime.lastError.message.includes('The user did not approve access') || 
               chrome.runtime.lastError.message.includes('canceled')) {
             reject(new Error('Google authentication was canceled or denied. Please try again.'));
-          return;
-        }
-        
+            return;
+          }
+          
           reject(new Error(chrome.runtime.lastError.message));
           return;
         }
@@ -193,8 +195,8 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
         
         // Log detailed token information for debugging
         console.log('Got Google auth token:', {
-          token: token.substring(0, 10) + '...',
-          length: token.length,
+          tokenPrefix: token.substring(0, 5) + '...',
+          tokenLength: token.length,
           timestamp: new Date().toISOString()
         });
         
@@ -211,8 +213,17 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
     });
     
     // Step 2: Get user info from Google
-    console.log('Fetching user info with token...');
+    console.log('=== Fetching user info with token ===');
+    console.log('Token prefix for user info fetch:', token.substring(0, 5) + '...');
     let userInfo = await fetchGoogleUserInfo(token);
+    
+    console.log('=== User info fetch result ===', {
+      success: !!userInfo,
+      hasEmail: !!userInfo?.email,
+      hasId: !!userInfo?.id,
+      googleId: userInfo?.id,
+      fullData: userInfo
+    });
     
     if (!userInfo) {
       console.error('User info is null - token may be invalid');
@@ -269,413 +280,209 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
     }
     
     console.log('Got user info from Google:', userInfo.email);
-    
-    // Ensure we have an ID
-    if (!userInfo.id) {
-      console.warn('No Google user ID in response, generating a deterministic ID');
-      // Generate a deterministic ID based on email
-      userInfo.id = `google-${userInfo.email.split('@')[0]}-${Date.now()}`;
-    }
-    
-    // Save Google profile to storage
-    await chrome.storage.local.set({
-      'google_user_id': userInfo.id,
-      'user_email': userInfo.email,
-      'user_profile': userInfo,
-      'token_expiry': Date.now() + (3600 * 1000) // 1 hour expiry
+    console.log('Full Google User Info:', {
+      id: userInfo.id,
+      googleIdType: typeof userInfo.id,
+      googleIdLength: userInfo.id ? userInfo.id.length : 0,
+      email: userInfo.email,
+      name: userInfo.name,
+      picture: userInfo.picture,
+      hasProfile: !!userInfo
     });
     
-    console.log('Saved Google profile to storage with ID:', userInfo.id);
-    
-    // Step 3: Import needed functions
+    // Store Google ID in Chrome storage for later use
+    if (userInfo.id) {
+      console.log('Storing Google user ID in Chrome storage:', userInfo.id);
+      await chrome.storage.local.set({
+        'google_user_id': userInfo.id,
+        'google_profile': userInfo
+      });
+    }
+
+    // Import Supabase client
     const { getSupabaseClient } = await import('../services/supabase/client');
     const supabase = await getSupabaseClient();
-    
-    // Step 4: Check if user exists in Supabase by email in the public table
-    // Don't use RPC - use a more direct approach that won't require JWT
-    console.log('Checking if user exists with email:', userInfo.email);
-    
-    // Add variable declarations before the try block
-    let isExistingUser = false;
-    let existingUserId: string | null = null;
 
+    // Create the user in auth.users first using admin API
+    console.log('Creating user in auth.users using admin API with Google ID:', userInfo.id);
+
+    // Make sure Google ID is properly registered in user metadata
+    const userMetadata = {
+      sub: userInfo.id, // Use Google ID as sub
+      name: userInfo.name,
+      email: userInfo.email,
+      picture: userInfo.picture,
+      full_name: userInfo.name,
+      google_user_id: userInfo.id,
+      provider: 'google',
+      email_verified: true
+    };
+
+    console.log('User metadata with Google ID:', userMetadata);
+
+    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+      email: userInfo.email,
+      email_confirm: true,
+      user_metadata: userMetadata,
+      app_metadata: {
+        provider: 'google',
+        google_user_id: userInfo.id
+      }
+    });
+
+    if (authError) {
+      console.error('Error creating user in auth.users:', authError);
+      throw new Error(`Failed to create user account: ${authError.message}`);
+    }
+
+    // Now create the user in public.users table
+    console.log('Creating user in public.users table with Google ID:', userInfo.id);
+
+    // Try direct insert first
+    let publicUser;
     try {
-      const emailToCheck = userInfo.email.toLowerCase().trim();
-      console.log('Checking for existing user with email:', emailToCheck);
-      
-      // Check browser cache first (handled by chrome.storage.sync/local)
-      const storedData = await chrome.storage.sync.get('gmail-bill-scanner-auth');
-      const sessionString = storedData['gmail-bill-scanner-auth'];
-      
-      let cachedUserId = null;
-      if (sessionString) {
-        try {
-          const sessionData = JSON.parse(sessionString);
-          if (sessionData?.user?.email?.toLowerCase() === emailToCheck) {
-            console.log('Found user in browser cache:', sessionData.user.id);
-            isExistingUser = true;
-            existingUserId = sessionData.user.id;
-          }
-        } catch (parseError) {
-          console.error('Error parsing cached session:', parseError);
-        }
+      console.log('Inserting user with Google ID:', userInfo.id);
+      const { data: directInsert, error: insertError } = await supabase
+        .from('users')
+        .insert({
+          id: authData.user.id,
+          email: userInfo.email.toLowerCase().trim(),
+          auth_id: authData.user.id,
+          plan: 'free',
+          quota_bills_monthly: 50,
+          google_user_id: userInfo.id,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error('Failed direct insert:', insertError);
+        throw insertError;
       }
       
-      // If we didn't find the user in the cache, check database
-      if (!isExistingUser) {
-        // First try with a simple public.users check
-        try {
-          const { data: userExists, error: checkError } = await supabase
-            .from('users')
-            .select('id')
-            .eq('email', emailToCheck)
-            .maybeSingle();
-          
-          if (checkError) {
-            console.error('Error checking users table:', checkError);
-          } else if (userExists && userExists.id) {
-            console.log('Found user in public.users:', userExists.id);
-            isExistingUser = true;
-            existingUserId = userExists.id;
-          }
-        } catch (dbError) {
-          console.error('Exception checking users table:', dbError);
-        }
-        
-        // If still not found, try with RPC function if available
-        if (!isExistingUser) {
-          try {
-            const { data: exists, error: rpcError } = await supabase
-              .rpc('check_email_exists', { email_to_check: emailToCheck });
-            
-            if (rpcError) {
-              console.error('Error using email check RPC:', rpcError);
-            } else if (exists === true) {
-              console.log('User exists according to RPC check');
-              isExistingUser = true;
-              
-              // Now try to get the ID
-              try {
-                const { data: countResult, error: countError } = await supabase
-                  .rpc('count_users_with_email', { email_param: emailToCheck });
-                
-                if (countError) {
-                  console.error('Error using count RPC:', countError);
-                } else if (countResult && countResult > 0) {
-                  console.log('Found email via count query, count:', countResult);
-                  
-                  // Now try to get the user ID from auth
-                  try {
-                    const { data: authCheckResult, error: authCheckError } = await supabase
-                      .rpc('check_user_exists_by_email', { p_email: emailToCheck });
-                    
-                    if (authCheckError) {
-                      console.error('Error checking user ID:', authCheckError);
-                    } else if (authCheckResult && authCheckResult.user_id) {
-                      console.log('Retrieved user ID:', authCheckResult.user_id);
-                      existingUserId = authCheckResult.user_id;
-                    }
-                  } catch (userIdError) {
-                    console.error('Exception getting user ID:', userIdError);
-                  }
-                }
-              } catch (countError) {
-                console.error('Exception with count query:', countError);
-              }
-            }
-          } catch (rpcError) {
-            console.error('Exception with RPC check:', rpcError);
-          }
-        }
-        
-        // Last resort - try OAuth sign-in flow
-        if (!isExistingUser) {
-          try {
-            const { data: signInData, error: signInError } = await supabase.auth.signInWithOAuth({
-              provider: 'google',
-              options: {
-                queryParams: {
-                  access_type: 'offline',
-                  prompt: 'consent',
-                },
-                skipBrowserRedirect: true
-              }
-            });
-            
-            // If we get a URL without error, it means the user doesn't exist (would redirect to sign up)
-            if (signInData?.url && !signInError) {
-              console.log('User does not exist in auth (got signup URL)');
-              isExistingUser = false;
-            } else {
-              // If there's no error and we're here, the user likely exists
-              console.log('User likely exists (no signup URL)');
-              isExistingUser = true;
-            }
-          } catch (signInError) {
-            console.log('Error during existence check via sign in:', signInError);
-          }
-        }
-      }
-    } catch (checkError) {
-      console.error('Error during user existence check:', checkError);
-    }
-    
-    // For sign-in attempts, check if the user exists
-    if (!isSignUp && !isExistingUser) {
-      console.log('Sign-in attempt for non-existing user - redirecting to sign up flow');
-      return {
-        success: false,
-        error: 'No account found with this email. Please use Sign Up to create a new account.',
-        isAuthenticated: false,
-        newUser: true
-      };
-    }
-    
-    // For sign-up attempts, check if user exists
-    if (isSignUp && isExistingUser) {
-      console.log('Sign-up attempt for existing user - redirecting to sign in flow');
-      return {
-        success: false,
-        error: 'User already exists with this email. Please use Sign In instead.',
-        isAuthenticated: false,
-        existingUser: true
-      };
-    }
-    
-    // User exists - handle this case differently
-    if (isExistingUser) {
-      console.log('User exists with email:', userInfo.email);
-      
-      if (!existingUserId) {
-        console.error('Could not retrieve user ID for existing user');
-        return {
-          success: false,
-          error: 'Could not retrieve user ID for existing user',
-          isAuthenticated: false
-        };
-      }
+      publicUser = directInsert;
+      console.log('User inserted with direct method:', publicUser);
+      console.log('Google ID in created user:', publicUser.google_user_id);
+    } catch (insertError) {
+      console.error('Direct insert failed:', insertError);
       
       try {
-        console.log('Creating a direct session for returning user with ID:', existingUserId);
+        // Try RPC as fallback
+        console.log('Falling back to RPC call with Google ID:', userInfo.id);
+        const { data: rpcUser, error: rpcError } = await supabase
+          .rpc('create_public_user', {
+            user_id: authData.user.id,
+            user_email: userInfo.email.toLowerCase().trim(),
+            user_auth_id: authData.user.id,
+            user_plan: 'free',
+            user_quota: 50,
+            google_user_id: userInfo.id
+          });
+
+        if (rpcError) {
+          throw rpcError;
+        }
         
-        // Create a Supabase session manually
-        const sessionData = {
-          access_token: token,
-          expires_at: Date.now() + 3600 * 1000, // 1 hour expiry
-          refresh_token: token, // Use the same token
-          user: {
-            id: existingUserId,
-            email: userInfo.email,
-            app_metadata: {
-              provider: 'google'
-            },
-            user_metadata: {
-              name: userInfo.name,
-              picture: userInfo.picture,
-              full_name: userInfo.name
-            }
+        publicUser = rpcUser;
+        console.log('Successfully created user via RPC:', publicUser);
+      } catch (rpcError) {
+        console.error('RPC call failed:', rpcError);
+        
+        try {
+          // Last resort: try to create without Google ID first, then update
+          console.log('Attempting two-step creation...');
+          const { data: basicUser, error: basicError } = await supabase
+            .from('users')
+            .insert({
+              id: authData.user.id,
+              email: userInfo.email.toLowerCase().trim(),
+              auth_id: authData.user.id,
+              plan: 'free',
+              quota_bills_monthly: 50,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+            
+          if (basicError) {
+            throw basicError;
           }
-        };
-        
-        // Import needed functions
-        const { signInWithGoogle } = await import('../services/supabase/client');
-        
-        // Sign in with Google and update profile
-        await signInWithGoogle(
-          token,
-          userInfo.email,
-          userInfo.name || '',
-          userInfo.picture || '',
-          false, // isSignUp = false
-          userInfo // Pass the full Google profile
-        );
-        
-        // Update the user's stored Google token in the custom table
-        await storeGoogleToken(existingUserId, token);
-        
-        // Set the session manually in both storages
-        await chrome.storage.sync.set({
-          'gmail-bill-scanner-auth': JSON.stringify(sessionData)
-        });
-        await chrome.storage.local.set({
-          'gmail-bill-scanner-auth': JSON.stringify(sessionData)
-        });
-        
-        // Also mark that this is an existing user
-        await chrome.storage.sync.set({
-          'is_returning_user': true
-        });
-        
-        // Return success with user profile
-        return {
-          success: true,
-          isAuthenticated: true,
-          profile: {
-            id: existingUserId,
-            email: userInfo.email,
-            name: userInfo.name || '',
-            picture: userInfo.picture || ''
-          },
-          message: 'Signed in successfully!',
-          existingUser: true
-        };
-      } catch (error) {
-        console.error('Error creating manual session:', error);
-        throw error;
-      }
-    }
-    
-    // No existing user at all - create new user
-    console.log('Creating completely new user in Supabase');
-    
-    // Generate a secure random password for the new user
-    const generateRandomPassword = () => {
-      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()';
-      let password = '';
-      for (let i = 0; i < 16; i++) {
-        password += chars.charAt(Math.floor(Math.random() * chars.length));
-      }
-      return password;
-    };
-      
-    const userPassword = generateRandomPassword();
-      
-    // First create a user in auth.users using signUp
-    console.log('Creating user in auth.users...');
-      
-    // Create a new UUID instead of letting Supabase generate one
-    const newUserId = self.crypto.randomUUID();
-    console.log('Generated new user ID:', newUserId);
-      
-    const { data: authData, error: authError } = await supabase.auth.signUp({
-      email: userInfo.email,
-      password: userPassword,
-      options: {
-        data: {
-          name: userInfo.name,
-          picture: userInfo.picture,
-          full_name: userInfo.name
+          
+          // Now update with Google ID
+          console.log('Updating with Google ID:', userInfo.id);
+          const { data: updatedUser, error: updateError } = await supabase
+            .from('users')
+            .update({ google_user_id: userInfo.id })
+            .eq('id', authData.user.id)
+            .select()
+            .single();
+            
+          if (updateError) {
+            throw updateError;
+          }
+          
+          publicUser = updatedUser;
+          console.log('Successfully created and updated user:', publicUser);
+        } catch (finalError) {
+          console.error('All creation attempts failed:', finalError);
+          throw new Error('Failed to create user profile after multiple attempts');
         }
       }
-    });
-      
-    if (authError) {
-      throw new Error(`Failed to create auth user: ${authError.message}`);
     }
+
+    // Verify the final state
+    const { data: verifiedUser, error: verifyError } = await supabase
+      .from('users')
+      .select('id, email, google_user_id')
+      .eq('id', authData.user.id)
+      .single();
       
-    if (!authData.user) {
-      throw new Error('Failed to create auth user: No user returned');
-    }
+    if (verifyError) {
+      console.error('Failed to verify user creation:', verifyError);
+    } else {
+      console.log('Final user state:', verifiedUser);
+      console.log('Google ID in verified user:', verifiedUser.google_user_id);
       
-    console.log('Created user in auth.users with ID:', authData.user.id);
-      
-    // Create the user in our public.users table
-    console.log('Creating user in public.users table...');
-    console.log('Calling create_public_user with:', {
-      user_id: authData.user.id,
-      user_email: userInfo.email.toLowerCase().trim(),
-      user_auth_id: authData.user.id,
-      user_plan: 'free',
-      user_quota: 50,
-      user_google_id: userInfo.id
-    });
-    
-    let sqlResult;
-    try {
-      // First try the RPC call
-      console.log('Attempting RPC call to create_public_user...');
-      const rpcResponse = await supabase.rpc('create_public_user', {
-        user_id: authData.user.id,
-        user_email: userInfo.email.toLowerCase().trim(),
-        user_auth_id: authData.user.id,
-        user_plan: 'free',
-        user_quota: 50,
-        user_google_id: userInfo.id
-      });
-      
-      console.log('Full RPC response:', {
-        data: rpcResponse.data,
-        error: rpcResponse.error,
-        status: rpcResponse.status,
-        statusText: rpcResponse.statusText
-      });
-      
-      if (rpcResponse.error) {
-        console.error('RPC error creating user:', rpcResponse.error);
-        console.error('Full RPC error details:', JSON.stringify(rpcResponse.error, null, 2));
-        console.error('RPC status code:', rpcResponse.status);
-        
-        // If RPC fails, try direct insert
-        console.log('Attempting direct insert as fallback...');
-        const insertResponse = await supabase
+      // If Google ID is still not set, try one final update
+      if (!verifiedUser.google_user_id && userInfo.id) {
+        console.log('Final attempt to set Google ID:', userInfo.id);
+        const { data: updatedUser, error: updateError } = await supabase
           .from('users')
-          .insert({
-            id: authData.user.id,
-            email: userInfo.email.toLowerCase().trim(),
-            auth_id: authData.user.id,
-            plan: 'free',
-            quota_bills_monthly: 50,
-            quota_bills_used: 0,
+          .update({ 
             google_user_id: userInfo.id,
-            created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           })
+          .eq('id', authData.user.id)
           .select()
           .single();
           
-        console.log('Full direct insert response:', {
-          data: insertResponse.data,
-          error: insertResponse.error,
-          status: insertResponse.status,
-          statusText: insertResponse.statusText
-        });
-          
-        if (insertResponse.error) {
-          console.error('Direct insert failed:', insertResponse.error);
-          console.error('Full insert error details:', JSON.stringify(insertResponse.error, null, 2));
-          console.error('Insert status code:', insertResponse.status);
-          throw insertResponse.error;
+        if (updateError) {
+          console.error('Final Google ID update failed:', updateError);
+        } else {
+          console.log('Final update completed. Updated user:', updatedUser);
+          console.log('Google ID after final update:', updatedUser.google_user_id);
         }
-        
-        sqlResult = insertResponse.data;
-      } else {
-        sqlResult = rpcResponse.data;
       }
-    } catch (error) {
-      console.error('Failed to create user record:', error);
-      console.error('Full error object:', JSON.stringify(error, null, 2));
-      console.error('Error stack trace:', error instanceof Error ? error.stack : 'No stack trace');
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to create user record',
-        isAuthenticated: false
-      };
     }
 
-    if (!sqlResult) {
-      console.error('No result returned from user creation');
-      return {
-        success: false,
-        error: 'Failed to create user record: No result returned',
-        isAuthenticated: false
-      };
-    }
+    // As a backup, also store the Google ID in Chrome storage for later use
+    await chrome.storage.local.set({
+      'google_user_id': userInfo.id,
+      'supabase_user_id': authData.user.id,
+      'user_email': userInfo.email,
+      'user_profile': userInfo
+    });
 
-    console.log('User created successfully:', JSON.stringify(sqlResult, null, 2));
-    
-    // Create profile for the user
-    await supabase
-      .from('profiles')
-      .insert({
-        id: authData.user.id,
-        user_id: authData.user.id,
-        display_name: userInfo.name || userInfo.email.split('@')[0],
-        avatar_url: userInfo.picture || '',
-        email: userInfo.email
-      });
+    console.log('Stored user IDs in Chrome storage for reference');
+
+    // Note: No longer need to create profile for user since profiles table doesn't exist
+    // The `user_profiles` view will automatically pull data from auth.users metadata
     
     // Store Google token
-    await storeGoogleToken(authData.user.id, token);
+    await storeGoogleTokenSafely(authData.user.id, userInfo.id || '', token);
     
     // Create session data
     const sessionData = {
@@ -724,22 +531,35 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
   }
 }
 
-// Helper function to store Google token in local storage only (no more Supabase storage)
-async function storeGoogleToken(userId: string, token: string): Promise<void> {
+/**
+ * Complete replacement for any function trying to store tokens in Supabase.
+ * This function only stores the token in Chrome storage and never attempts any Supabase operations.
+ */
+async function storeGoogleTokenSafely(userId: string, googleId: string, token: string): Promise<boolean> {
   try {
-    console.log('Storing Google token in local storage (skipping Supabase)');
+    console.log('Storing Google token and ID safely in Chrome storage only (no Supabase)');
     
-    // Store token only in Chrome storage
+    // Store token and related information in Chrome storage
     await chrome.storage.local.set({
+      // Token related information
       'google_access_token': token,
       'google_token_user_id': userId,
-      'google_token_expiry': Date.now() + (3600 * 1000) // 1 hour from now
+      'google_token_expiry': Date.now() + (3600 * 1000), // 1 hour from now
+      
+      // Google ID related information (stored redundantly in multiple keys for reliability)
+      'google_user_id': googleId,
+      'google_id': googleId,
+      'supabase_user_id': userId,
+      
+      // Also store mapping from user ID to Google ID
+      'user_google_id_mapping': { [userId]: googleId }
     });
     
-    console.log('Token stored successfully in local storage');
+    console.log('Successfully stored token and Google ID in Chrome storage');
+    return true;
   } catch (error) {
-    console.error('Error storing Google token in local storage:', error);
-    // No throw - this is a non-critical operation now
+    console.error('Error storing Google token and ID in Chrome storage:', error);
+    return false;
   }
 }
 
@@ -821,199 +641,240 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   (async () => {
     try {
-  switch (message?.type) {
-    case 'AUTH_STATUS':
-      try {
-        console.log('Background: Checking auth status');
-        
-        // Import needed functions from our simplified client
-        const { getSupabaseClient, getStoredSession } = await import('../services/supabase/client');
-        
-        // Try to get session from Chrome storage first
-        let session;
-        try {
-          session = await getStoredSession();
-          console.log('Background: Retrieved stored session:', session ? 'Found' : 'Not found');
-        } catch (sessionError) {
-          console.error('Error retrieving stored session:', sessionError);
-          session = null;
-        }
-        
-        // If no session found, user is not authenticated
-        if (!session) {
-          console.log('Background: No session found, user is not authenticated');
-          sendResponse({ 
-            success: true, 
-            isAuthenticated: false
-          });
-          return;
-        }
-        
-        // Let's also check Google's auth status
-        const isGoogleStillAuthenticated = await new Promise<boolean>((resolve) => {
-          chrome.identity.getAuthToken({ interactive: false }, (token) => {
-            if (chrome.runtime.lastError || !token) {
-              console.warn('Google token is no longer valid:', chrome.runtime.lastError?.message);
-              resolve(false);
-            } else {
-              resolve(true);
+      switch (message?.type) {
+        case 'FIX_GOOGLE_ID':
+          try {
+            console.log('Background: Processing fix Google ID request');
+            const { google_user_id, user_id } = message;
+            
+            if (!google_user_id || !user_id) {
+              sendResponse({ 
+                success: false, 
+                error: 'Missing Google ID or user ID' 
+              });
+              return;
             }
-          });
-        });
-        
-        // If Google auth is no longer valid, the user is not authenticated
-        if (!isGoogleStillAuthenticated) {
-          console.log('Background: Google token no longer valid, user is not authenticated');
-          await chrome.storage.local.remove('gmail-bill-scanner-auth');
-          sendResponse({ 
-            success: true, 
-            isAuthenticated: false
-          });
-          return;
-        }
-        
-        // Get user ID and validate session
-        const userId = session.user?.id;
-        const userEmail = session.user?.email;
-        
-        if (!userId || !userEmail) {
-          console.log('Background: No user ID or email in session, clearing invalid session');
-          await chrome.storage.local.remove('gmail-bill-scanner-auth');
-          sendResponse({ 
-            success: true, 
-            isAuthenticated: false
-          });
-          return;
-        }
-        
-        console.log('Background: Found user ID in session:', userId);
-        
-        // For test account or any account, just use session data
-        // Completely avoid database queries which can fail with permission issues
-        const profile = {
-          id: userId,
-          email: userEmail,
-          name: session.user?.user_metadata?.name || session.user?.user_metadata?.full_name || '',
-          picture: session.user?.user_metadata?.picture || '',
-          created_at: session.user?.created_at || new Date().toISOString(),
-          last_sign_in: session.user?.last_sign_in_at,
-          // Default values for quota and stats
-          plan: 'free',
-          quota_used: 0,
-          quota_total: 50,
-          total_processed: 0,
-          successful_processed: 0
-        };
-        
-        console.log('Background: Authenticated successfully. Using session data only.');
-        
-        sendResponse({ 
-          success: true, 
-          isAuthenticated: true,
-          profile
-        });
-      } catch (error) {
-        console.error('Background: Auth status error:', error);
-        sendResponse({
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to check auth status',
-          isAuthenticated: false
-        });
-      }
-      break;
+            
+            // Import the updateGoogleId function
+            const { updateGoogleId } = await import('../services/supabase/client');
+            
+            // Update the Google ID
+            const success = await updateGoogleId(user_id, google_user_id);
+            
+            if (success) {
+              sendResponse({ 
+                success: true, 
+                message: 'Google ID updated successfully'
+              });
+            } else {
+              sendResponse({ 
+                success: false, 
+                error: 'Failed to update Google ID'
+              });
+            }
+          } catch (error) {
+            console.error('Error fixing Google ID:', error);
+            sendResponse({ 
+              success: false, 
+              error: error instanceof Error ? error.message : 'Unknown error'
+            });
+          }
+          break;
+          
+        case 'AUTH_STATUS':
+          try {
+            console.log('Background: Checking auth status');
+            
+            // First, check if Google authentication is valid
+            const isGoogleAuthenticated = await new Promise<boolean>((resolve) => {
+              chrome.identity.getAuthToken({ interactive: false }, (token) => {
+                if (chrome.runtime.lastError || !token) {
+                  console.warn('Google token is not valid:', chrome.runtime.lastError?.message);
+                  resolve(false);
+                } else {
+                  resolve(true);
+                }
+              });
+            });
+            
+            if (!isGoogleAuthenticated) {
+              console.log('Background: Not authenticated with Google');
+              sendResponse({ 
+                success: true, 
+                isAuthenticated: false,
+                reason: 'No valid Google token'
+              });
+              return;
+            }
+            
+            // Get the Google ID from storage
+            const { google_user_id, google_id, user_profile } = await chrome.storage.local.get([
+              'google_user_id', 
+              'google_id', 
+              'user_profile'
+            ]);
+            
+            let googleId = google_user_id || google_id;
+            
+            // If no direct Google ID, try to extract from profile
+            if (!googleId && user_profile && user_profile.id) {
+              googleId = user_profile.id;
+              console.log('Background: Using Google ID from profile:', googleId);
+            }
+            
+            if (!googleId) {
+              console.log('Background: No Google ID found in storage');
+              sendResponse({ 
+                success: true, 
+                isAuthenticated: false,
+                reason: 'No Google ID found'
+              });
+              return;
+            }
+            
+            // Use our production-ready verification function
+            const { verifyUserByGoogleId } = await import('../services/supabase/client');
+            const verifyResult = await verifyUserByGoogleId(googleId);
+            
+            if (!verifyResult.success) {
+              console.warn('Background: User verification failed:', verifyResult.error);
+              
+              // If verification failed but we have the profile, still send basic info
+              if (user_profile) {
+                console.log('Background: Verification failed but returning profile data');
+                sendResponse({ 
+                  success: true, 
+                  isAuthenticated: true,
+                  partial: true,
+                  profile: {
+                    id: 'temp-' + googleId,
+                    email: user_profile.email,
+                    name: user_profile.name,
+                    picture: user_profile.picture,
+                    google_user_id: googleId
+                  },
+                  reason: 'User verification failed but profile available',
+                  error: verifyResult.error
+                });
+                return;
+              }
+              
+              sendResponse({ 
+                success: true, 
+                isAuthenticated: false,
+                reason: 'User verification failed',
+                error: verifyResult.error
+              });
+              return;
+            }
+            
+            // User is verified - return the profile data
+            console.log('Background: User verified successfully with Google ID:', googleId);
+            sendResponse({ 
+              success: true, 
+              isAuthenticated: true,
+              profile: verifyResult.userData
+            });
+            
+          } catch (error) {
+            console.error('Background: Auth status error:', error);
+            sendResponse({
+              success: false,
+              error: error instanceof Error ? error.message : 'Failed to check auth status',
+              isAuthenticated: false
+            });
+          }
+          break;
 
-    case 'AUTHENTICATE':
-      console.log('Background: Processing authentication request (sign in)');
-      
-      try {
-        // Parse isSignUp parameter if provided
-        const isSignUp = !!message.isSignUp;
-        console.log('Authentication mode:', isSignUp ? 'sign-up' : 'sign-in');
-        
-        // Call the authentication function to get Google token and profile
-        const { authenticate } = await import('../services/auth/googleAuth');
-        const authResult = await authenticate();
-        
-        console.log('Background: Google authentication completed with result:', 
-          authResult.success ? 'Success' : 'Failed',
-          authResult.profile ? `for ${authResult.profile.email}` : 'no profile'
-        );
-        
-        if (authResult.success && authResult.profile) {
-          console.log('Background: Google authentication successful:', authResult.profile.email);
-          console.log('Background: Google profile data:', authResult.profile);
-          
-          // Ensure Google user ID is properly stored
-          await chrome.storage.local.set({
-            'google_user_id': authResult.profile.id,
-            'user_email': authResult.profile.email,
-            'user_profile': authResult.profile,
-            'token_expiry': Date.now() + (3600 * 1000) // 1 hour expiry
-          });
-          
-          console.log('Background: Stored Google user ID:', authResult.profile.id);
+        case 'AUTHENTICATE':
+          console.log('Background: Processing authentication request (sign in)');
           
           try {
-            // Link the Google user with Supabase
-            const { linkGoogleUserInSupabase } = await import('../services/supabase/client');
-            console.log('Background: Linking Google user with Supabase');
+            // Parse isSignUp parameter if provided
+            const isSignUp = !!message.isSignUp;
+            console.log('Authentication mode:', isSignUp ? 'sign-up' : 'sign-in');
             
-            const linkResult = await linkGoogleUserInSupabase(authResult.profile);
-            console.log('Background: Link result:', linkResult.success ? 'Success' : 'Failed');
+            // Call the authentication function to get Google token and profile
+            const { authenticate } = await import('../services/auth/googleAuth');
+            const authResult = await authenticate();
             
-            if (linkResult.success && linkResult.userId) {
-              // Store the Supabase user ID and user data in Chrome storage
+            console.log('Background: Google authentication completed with result:', 
+              authResult.success ? 'Success' : 'Failed',
+              authResult.profile ? `for ${authResult.profile.email}` : 'no profile'
+            );
+            
+            if (authResult.success && authResult.profile) {
+              console.log('Background: Google authentication successful:', authResult.profile.email);
+              console.log('Background: Google profile data:', authResult.profile);
+              
+              // Always store the profile locally for reference
               await chrome.storage.local.set({
-                'supabase_user_id': linkResult.userId,
-                'authenticated_at': new Date().toISOString(),
-                'user_data': linkResult.userData || null
+                'google_user_id': authResult.profile.id,
+                'user_email': authResult.profile.email,
+                'user_profile': authResult.profile,
+                'token_expiry': Date.now() + (3600 * 1000) // 1 hour expiry
               });
               
-              console.log('Background: Linked with Supabase, user ID:', linkResult.userId);
-              console.log('Background: User data stored from linking');
+              console.log('Background: Stored Google user ID:', authResult.profile.id);
               
-              // Return the combined result
-              sendResponse({
-                success: true,
-                isAuthenticated: true,
-                profile: {
-                  ...authResult.profile,
-                  supabase_id: linkResult.userId
-                },
-                userData: linkResult.userData,
-                message: 'Signed in successfully!',
-                existingUser: true
-              });
-              return;
-            } else {
-              console.warn('Background: Supabase linking failed:', linkResult.error);
-              // Still return success if Google auth worked, even if linking failed
-              sendResponse({
-                success: true,
-                isAuthenticated: true,
-                profile: authResult.profile,
-                message: 'Signed in with Google only. Database linking failed.',
-                databaseError: linkResult.error
-              });
-              return;
+              try {
+                // Use our new production-ready function to manage the Google ID
+                const { manageGoogleUserId, createLocalSession } = await import('../services/supabase/client');
+                console.log('Background: Managing Google user with production-ready function');
+                
+                const userResult = await manageGoogleUserId(authResult.profile);
+                console.log('Background: User management result:', userResult.success ? 'Success' : 'Failed');
+                
+                if (userResult.success && userResult.userId) {
+                  // Create a local session without JWT tokens
+                  const sessionResult = await createLocalSession(userResult.userId, authResult.profile);
+                  
+                  if (!sessionResult.success) {
+                    console.warn('Background: Failed to create local session:', sessionResult.error);
+                  }
+                  
+                  // Return the combined result
+                  sendResponse({
+                    success: true,
+                    isAuthenticated: true,
+                    profile: {
+                      ...authResult.profile,
+                      supabase_id: userResult.userId
+                    },
+                    userData: userResult.userData,
+                    message: 'Signed in successfully!',
+                    existingUser: true
+                  });
+                  return;
+                } else {
+                  console.warn('Background: User management failed:', userResult.error);
+                  // Still return success if Google auth worked, even if management failed
+                  sendResponse({
+                    success: true,
+                    isAuthenticated: true,
+                    profile: authResult.profile,
+                    message: 'Signed in with Google only. Database management failed.',
+                    databaseError: userResult.error
+                  });
+                  return;
+                }
+              } catch (manageError) {
+                console.error('Background: Error managing user:', manageError);
+                // Still return success if Google auth worked
+                sendResponse({
+                  success: true,
+                  isAuthenticated: true,
+                  profile: authResult.profile,
+                  message: 'Signed in with Google only. Database error occurred.',
+                  databaseError: manageError instanceof Error ? manageError.message : 'Unknown database error'
+                });
+                return;
+              }
             }
-          } catch (linkError) {
-            console.error('Background: Error linking accounts:', linkError);
-            // Still return success if Google auth worked
-            sendResponse({
-              success: true,
-              isAuthenticated: true,
-              profile: authResult.profile,
-              message: 'Signed in with Google only. Database error occurred.',
-              databaseError: linkError instanceof Error ? linkError.message : 'Unknown linking error'
-            });
-            return;
-          }
-        }
-        
-        // If authentication failed, return the error
-        console.log('Background: Authentication result:', authResult);
-        sendResponse(authResult);
+            
+            // If authentication failed, return the error
+            console.log('Background: Authentication result:', authResult);
+            sendResponse(authResult);
           } catch (error) {
             console.error('Authentication error:', error);
         
@@ -1038,23 +899,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           try {
         console.log('Background: Processing sign out request');
           
-        // Import needed functions from our simplified client
-        const { clearStoredSession } = await import('../services/supabase/client');
-          
-        // Clear the stored session from Chrome storage
-        await clearStoredSession();
+            // Clear Chrome storage keys related to authentication
+            await chrome.storage.local.remove([
+              'gmail-bill-scanner-auth',
+              'google_user_id',
+              'google_id',
+              'supabase_user_id',
+              'user_email',
+              'user_profile',
+              'google_profile',
+              'user_google_id_mapping',
+              'google_access_token',
+              'google_token_user_id',
+              'google_token_expiry',
+              'authenticated_at',
+              'token_expiry',
+              'user_data'
+            ]);
           
         // Also revoke the Google token if possible
         try {
-          const token = await getAccessToken();
+              // Get the current token
+              const token = await new Promise<string | null>((resolve) => {
+                chrome.identity.getAuthToken({ interactive: false }, (token) => {
+                  if (chrome.runtime.lastError || !token) {
+                    resolve(null);
+                  } else {
+                    resolve(token);
+                  }
+                });
+              });
+              
           if (token) {
-            // Revoke the token
-            chrome.identity.removeCachedAuthToken({ token });
-          }
-        } catch (error) {
-          console.warn('Could not revoke Google token:', error);
-        }
-          
+                // Revoke the token with Google
+                await new Promise<void>((resolve) => {
+                  chrome.identity.removeCachedAuthToken({ token }, () => {
+                    console.log('Removed cached auth token');
+                    resolve();
+                  });
+                });
+                
+                // Clear all cached tokens
+                await new Promise<void>((resolve) => {
+                  chrome.identity.clearAllCachedAuthTokens(() => {
+                    console.log('Cleared all cached auth tokens');
+                    resolve();
+                  });
+                });
+              }
+            } catch (tokenError) {
+              console.warn('Could not revoke Google token:', tokenError);
+              // Continue with sign out even if token revocation fails
+            }
+            
+            console.log('Successfully signed out');
       sendResponse({ success: true });
           } catch (error) {
             console.error('Sign out error:', error);
@@ -1684,123 +1582,56 @@ function parseUrlHash(url: string): Map<string, string> {
   return hashMap;
 }
 
-/**
- * Fetches user information from Google using an access token
- * @param accessToken Google access token
- * @returns User information or null if failed
- */
-async function fetchGoogleUserInfo(accessToken: string): Promise<{ 
-  email: string; 
-  name?: string; 
-  picture?: string;
-  id?: string;
-} | null> {
-  try {
-    console.log('Background: Fetching Google user info with token prefix:', accessToken.substring(0, 5) + '...');
-    
-    // Log more token info for debugging
-    console.log('Token length:', accessToken.length);
-    console.log('Token format valid:', accessToken.includes('.'));
+// Helper function to generate a secure random password
+function generateSecurePassword(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()';
+  let password = '';
+  for (let i = 0; i < 16; i++) {
+    password += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return password;
+}
 
-    // Try with different auth header format - some Google APIs require "OAuth " prefix
-    const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`
-      }
+/**
+ * Complete replacement for storeTokenViaRPC that was causing JWSError.
+ * This version completely bypasses Supabase and only stores in Chrome storage.
+ */
+async function storeTokenViaRPC(userId: string, token: string): Promise<{ success: boolean; error?: any }> {
+  console.log('Safe replacement for storeTokenViaRPC called - bypassing Supabase entirely');
+  
+  try {
+    // Store in Chrome storage instead of trying RPC
+    await chrome.storage.local.set({
+      'google_access_token': token,
+      'google_token_user_id': userId,
+      'google_token_expiry': Date.now() + (3600 * 1000)
     });
     
-    // Log the response status
-    console.log('Userinfo response status:', response.status);
-    
-    if (!response.ok) {
-      console.error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
-      
-      // Get detailed error info
-      try {
-        const errorText = await response.text();
-        console.error('Error response:', errorText);
-      } catch (e) {
-        console.error('Could not read error response');
-      }
-      
-      // Try alternative endpoint for userinfo
-      console.log('Trying alternative people/me endpoint...');
-      const alternativeResponse = await fetch('https://people.googleapis.com/v1/people/me?personFields=names,emailAddresses,photos', {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`
-        }
-      });
-      
-      if (!alternativeResponse.ok) {
-        console.error(`Alternative endpoint also failed: ${alternativeResponse.status}`);
-        
-        // Try to read error response
-        try {
-          const altErrorText = await alternativeResponse.text();
-          console.error('Alternative endpoint error:', altErrorText);
-        } catch (e) {
-          console.error('Could not read alternative error response');
-        }
-        
-        // Try one more variation with OAuth prefix
-        console.log('Trying with OAuth prefix in Authorization header...');
-        const oauthResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-          headers: {
-            'Authorization': `OAuth ${accessToken}`
-          }
-        });
-        
-        if (!oauthResponse.ok) {
-          console.error(`OAuth prefix also failed: ${oauthResponse.status}`);
-      return null;
-    }
-    
-        // If OAuth prefix worked, parse and return the response
-        const oauthData = await oauthResponse.json();
-        console.log('Successfully fetched user info with OAuth prefix');
-        
-        return {
-          email: oauthData.email,
-          name: oauthData.name,
-          picture: oauthData.picture,
-          id: oauthData.id || oauthData.sub
-        };
-      }
-      
-      // If alternative endpoint worked, parse the response differently
-      const peopleData = await alternativeResponse.json();
-      console.log('Successfully fetched user info from people API');
-      
-      // People API has a different structure
-      const email = peopleData.emailAddresses?.[0]?.value;
-      const name = peopleData.names?.[0]?.displayName;
-      const picture = peopleData.photos?.[0]?.url;
-      const resourceName = peopleData.resourceName; // format: people/12345678
-      const id = resourceName ? resourceName.replace('people/', '') : null;
-      
-      return {
-        email: email,
-        name: name,
-        picture: picture,
-        id: id
-      };
-    }
-    
-    // Original endpoint worked
-    const data = await response.json();
-    console.log('Successfully fetched user info from primary endpoint');
-    
-    // Log the full data for debugging
-    console.log('User data:', JSON.stringify(data, null, 2));
-    
-    return {
-      email: data.email,
-      name: data.name,
-      picture: data.picture,
-      id: data.id || data.sub
-    };
+    return { success: true };
   } catch (error) {
-    console.error('Error fetching Google user info:', error);
-    return null;
+    console.error('Error in storeTokenViaRPC replacement:', error);
+    return { success: false, error };
+  }
+}
+
+/**
+ * Complete replacement for storeTokenDirectly that was causing JWSError.
+ * This version completely bypasses Supabase and only stores in Chrome storage.
+ */
+async function storeTokenDirectly(userId: string, token: string): Promise<{ success: boolean; error?: any }> {
+  console.log('Safe replacement for storeTokenDirectly called - bypassing Supabase entirely');
+  
+  try {
+    // Store in Chrome storage instead of direct database insert
+    await chrome.storage.local.set({
+      'google_access_token': token,
+      'google_token_user_id': userId,
+      'google_token_expiry': Date.now() + (3600 * 1000)
+    });
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error in storeTokenDirectly replacement:', error);
+    return { success: false, error };
   }
 } 

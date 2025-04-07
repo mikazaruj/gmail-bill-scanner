@@ -3,289 +3,7 @@
 
 import { createClient, Session } from '@supabase/supabase-js';
 // We'll use the full interface definition below
-// type Database = any;
-
-// Environment variables - loaded from .env.local
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://eipfspwyqzejhmybpofk.supabase.co';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTE0NzQ2MTAsImV4cCI6MjAyNzA1MDYxMH0.RKGuiOWMG1igzPYTbXJa1wRsaTiPxXy_9r5JCEZ5BNQ';
-
-// Chrome extension URL for OAuth redirects (no longer used but kept for reference)
-const EXTENSION_URL = chrome.runtime.getURL('');
-
-// Log config for debugging
-console.log('Supabase config:', { 
-  url: SUPABASE_URL.substring(0, 20) + '...',  // Only log part of URL for security
-  hasKey: !!SUPABASE_ANON_KEY,
-  extensionUrl: EXTENSION_URL
-});
-
-// Create a custom storage adapter for Chrome
-const chromeStorageAdapter = {
-  getItem: (key: string) => {
-    return new Promise<string | null>((resolve) => {
-      // Use sync storage for better persistence across devices
-      chrome.storage.sync.get([key], (result) => {
-        console.log(`Getting storage item ${key}:`, result[key] ? 'exists' : 'null');
-        
-        // If not found in sync, try local as fallback
-        if (!result[key]) {
-          chrome.storage.local.get([key], (localResult) => {
-            // If found in local, migrate it to sync for future use
-            if (localResult[key]) {
-              chrome.storage.sync.set({ [key]: localResult[key] });
-              console.log(`Migrated ${key} from local to sync storage`);
-            }
-            resolve(localResult[key] || null);
-          });
-        } else {
-          resolve(result[key]);
-        }
-      });
-    });
-  },
-  setItem: (key: string, value: string) => {
-    return new Promise<void>((resolve) => {
-      console.log(`Setting storage item ${key}:`, value ? 'value exists' : 'null');
-      // Store in both sync and local for redundancy
-      chrome.storage.sync.set({ [key]: value }, () => {
-        chrome.storage.local.set({ [key]: value }, () => {
-          resolve();
-        });
-      });
-    });
-  },
-  removeItem: (key: string) => {
-    return new Promise<void>((resolve) => {
-      console.log(`Removing storage item ${key}`);
-      // Remove from both storages
-      chrome.storage.sync.remove(key, () => {
-        chrome.storage.local.remove(key, () => {
-          resolve();
-        });
-      });
-    });
-  },
-};
-
-// Create and export the Supabase client - we only need database operations
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: true,
-    detectSessionInUrl: false,
-    storage: chromeStorageAdapter,
-    storageKey: 'gmail-bill-scanner-auth'
-  },
-  global: {
-    headers: {
-      'x-application-name': 'gmail-bill-scanner'
-    }
-  }
-});
-
-// Export the function to get the client
-export async function getSupabaseClient() {
-  // Get Google user ID from Chrome storage
-  const { google_user_id } = await chrome.storage.local.get('google_user_id');
-  
-  // Set up headers including Google user ID if available
-  const headers: Record<string, string> = {
-    'x-application-name': 'gmail-bill-scanner'
-  };
-  
-  if (google_user_id) {
-    headers['X-Google-User-ID'] = google_user_id;
-    console.log('Including Google user ID in Supabase requests:', google_user_id);
-  } else {
-    console.log('No Google user ID available for Supabase headers');
-  }
-  
-  // Create a fresh client each time to avoid auth issues
-  const freshClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: true,
-      detectSessionInUrl: false,
-      storage: chromeStorageAdapter,
-      storageKey: 'gmail-bill-scanner-auth'
-    },
-    global: {
-      headers: headers
-    }
-  });
-  
-  try {
-    // Try to restore the session if it exists, but don't fail if it doesn't
-    const session = await getStoredSession();
-    if (session && session.access_token) {
-      try {
-        await freshClient.auth.setSession({
-          access_token: session.access_token,
-          refresh_token: session.refresh_token || session.access_token
-        });
-      } catch (sessionError) {
-        console.warn('Failed to set session in Supabase client:', sessionError);
-        // Continue anyway with the unauthenticated client
-      }
-    }
-  } catch (error) {
-    console.warn('Error initializing session in getSupabaseClient:', error);
-    // Continue with the client anyway
-  }
-  
-  return freshClient;
-}
-
-/**
- * Gets the stored session from Chrome storage
- * @returns The stored session
- */
-export async function getStoredSession(): Promise<Session | null> {
-  try {
-    // Try to get session from Chrome storage
-    const data = await chrome.storage.sync.get('gmail-bill-scanner-auth');
-    const sessionString = data['gmail-bill-scanner-auth'];
-    
-    if (!sessionString) {
-      // Try from local storage as fallback
-      const localData = await chrome.storage.local.get('gmail-bill-scanner-auth');
-      const localSessionString = localData['gmail-bill-scanner-auth'];
-      
-      if (!localSessionString) {
-        console.log('No stored session found in either sync or local storage');
-        return null;
-      }
-      
-      // If found in local but not sync, migrate it
-      chrome.storage.sync.set({ 'gmail-bill-scanner-auth': localSessionString });
-      console.log('Migrated session from local to sync storage');
-    }
-    
-    let sessionData;
-    try {
-      // Parse the session from whichever storage we found it in
-      sessionData = JSON.parse(sessionString || (await chrome.storage.local.get('gmail-bill-scanner-auth'))['gmail-bill-scanner-auth']);
-      
-      // Basic validation to ensure we have a proper session object
-      if (!sessionData || !sessionData.access_token || !sessionData.user) {
-        console.warn('Invalid session format in storage, missing required fields');
-        return null;
-      }
-      
-      // Check if session is expired or will expire soon (within 5 minutes)
-      const isExpiredOrExpiringSoon = sessionData.expires_at && 
-        (sessionData.expires_at < Date.now() || sessionData.expires_at < Date.now() + 5 * 60 * 1000);
-      
-      if (isExpiredOrExpiringSoon) {
-        console.warn('Session has expired or will expire soon, attempting to refresh');
-        
-        // First try to get a cached token without prompting the user
-        try {
-          const cachedToken = await new Promise<string | null>((resolve, reject) => {
-            chrome.identity.getAuthToken({ 
-              interactive: false,
-              scopes: ['https://www.googleapis.com/auth/gmail.readonly', 
-                      'https://www.googleapis.com/auth/drive.file',
-                      'https://www.googleapis.com/auth/userinfo.email',
-                      'https://www.googleapis.com/auth/userinfo.profile']
-            }, (token) => {
-              if (chrome.runtime.lastError) {
-                console.warn('Could not get cached token:', chrome.runtime.lastError.message);
-                resolve(null);
-                return;
-              }
-              resolve(token || null);
-            });
-          });
-          
-          if (cachedToken) {
-            // We got a token without user interaction, update the session
-            console.log('Got cached token successfully, updating session');
-            
-            // Update the session data with the new token
-            sessionData.access_token = cachedToken;
-            sessionData.refresh_token = cachedToken;
-            sessionData.expires_at = Date.now() + 3600 * 1000; // 1 hour expiry
-            
-            // Update the stored session in both storages
-            await chrome.storage.sync.set({ 
-              'gmail-bill-scanner-auth': JSON.stringify(sessionData)
-            });
-            await chrome.storage.local.set({ 
-              'gmail-bill-scanner-auth': JSON.stringify(sessionData)
-            });
-            
-            console.log('Session refreshed successfully with cached token');
-          } else {
-            // We couldn't get a token without interaction
-            // This is fine - we'll return the existing session and prompt for re-authentication when needed
-            console.log('No cached token available, will need interactive auth later');
-          }
-        } catch (refreshError) {
-          console.error('Failed to refresh session token:', refreshError);
-          // Continue with the expired session and let the caller handle it
-        }
-      }
-      
-      // Skip trying to set the Supabase session since this causes JWT errors
-      // Just return the session data directly
-      return sessionData;
-    } catch (parseError) {
-      console.error('Error parsing stored session:', parseError);
-      // Clean up the invalid session
-      await chrome.storage.sync.remove('gmail-bill-scanner-auth');
-      await chrome.storage.local.remove('gmail-bill-scanner-auth');
-      return null;
-    }
-  } catch (error) {
-    console.error('Error fetching stored session:', error);
-    return null;
-  }
-}
-
-/**
- * Manually set a session in Chrome storage
- */
-export async function setStoredSession(sessionData: any) {
-  return new Promise<void>((resolve) => {
-    chrome.storage.local.set({
-      'gmail-bill-scanner-auth': JSON.stringify(sessionData)
-    }, () => {
-      resolve();
-    });
-  });
-}
-
-/**
- * Clear the stored session from Chrome storage
- */
-export async function clearStoredSession() {
-  return new Promise<void>((resolve) => {
-    chrome.storage.local.remove('gmail-bill-scanner-auth', () => {
-      resolve();
-    });
-  });
-}
-
-/**
- * Check if user is authenticated by checking storage
- */
-export async function isAuthenticated() {
-  const session = await getStoredSession();
-  return !!session;
-}
-
-/**
- * Sign out the current user by clearing the session
- */
-export async function signOut() {
-  await clearStoredSession();
-  return { success: true };
-}
-
-// The Database interface is kept for type safety with queries
-// Simplified to only include what we need
-export interface Database {
+type Database = {
   public: {
     Tables: {
       users: {
@@ -298,6 +16,8 @@ export interface Database {
           plan: string;
           quota_bills_monthly: number;
           quota_bills_used: number;
+          deleted_at: string | null;
+          google_user_id: string | null;
         };
         Insert: {
           id?: string;
@@ -308,6 +28,8 @@ export interface Database {
           plan?: string;
           quota_bills_monthly?: number;
           quota_bills_used?: number;
+          deleted_at?: string | null;
+          google_user_id?: string | null;
         };
         Update: {
           id?: string;
@@ -318,6 +40,8 @@ export interface Database {
           plan?: string;
           quota_bills_monthly?: number;
           quota_bills_used?: number;
+          deleted_at?: string | null;
+          google_user_id?: string | null;
         };
       };
       email_sources: {
@@ -449,7 +173,361 @@ export interface Database {
         };
       };
     };
+    Functions: {
+      create_public_user: {
+        Args: {
+          user_id?: string | null;
+          user_email: string;
+          user_auth_id: string;
+          user_plan?: string;
+          user_quota?: number;
+          user_google_id?: string | null;
+        };
+        Returns: Record<string, any>;
+      };
+      set_google_user_id: {
+        Args: {
+          user_id: string;
+          google_id: string;
+        };
+        Returns: Record<string, any>;
+      };
+      get_google_user_id: {
+        Args: {
+          google_id: string;
+        };
+        Returns: string;
+      };
+      link_google_user: {
+        Args: {
+          p_google_id: string;
+          p_email: string;
+          p_name?: string;
+        };
+        Returns: string;
+      };
+    };
   };
+};
+
+// Environment variables - loaded from .env.local
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://eipfspwyqzejhmybpofk.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTE0NzQ2MTAsImV4cCI6MjAyNzA1MDYxMH0.RKGuiOWMG1igzPYTbXJa1wRsaTiPxXy_9r5JCEZ5BNQ';
+
+// Chrome extension URL for OAuth redirects (no longer used but kept for reference)
+const EXTENSION_URL = chrome.runtime.getURL('');
+
+// Log config for debugging
+console.log('Supabase config:', { 
+  url: SUPABASE_URL.substring(0, 20) + '...',  // Only log part of URL for security
+  hasKey: !!SUPABASE_ANON_KEY,
+  extensionUrl: EXTENSION_URL
+});
+
+// Create a custom storage adapter for Chrome
+const chromeStorageAdapter = {
+  getItem: (key: string) => {
+    return new Promise<string | null>((resolve) => {
+      // Use sync storage for better persistence across devices
+      chrome.storage.sync.get([key], (result) => {
+        console.log(`Getting storage item ${key}:`, result[key] ? 'exists' : 'null');
+        
+        // If not found in sync, try local as fallback
+        if (!result[key]) {
+          chrome.storage.local.get([key], (localResult) => {
+            // If found in local, migrate it to sync for future use
+            if (localResult[key]) {
+              chrome.storage.sync.set({ [key]: localResult[key] });
+              console.log(`Migrated ${key} from local to sync storage`);
+            }
+            resolve(localResult[key] || null);
+          });
+        } else {
+          resolve(result[key]);
+        }
+      });
+    });
+  },
+  setItem: (key: string, value: string) => {
+    return new Promise<void>((resolve) => {
+      console.log(`Setting storage item ${key}:`, value ? 'value exists' : 'null');
+      // Store in both sync and local for redundancy
+      chrome.storage.sync.set({ [key]: value }, () => {
+        chrome.storage.local.set({ [key]: value }, () => {
+          resolve();
+        });
+      });
+    });
+  },
+  removeItem: (key: string) => {
+    return new Promise<void>((resolve) => {
+      console.log(`Removing storage item ${key}`);
+      // Remove from both storages
+      chrome.storage.sync.remove(key, () => {
+        chrome.storage.local.remove(key, () => {
+          resolve();
+        });
+      });
+    });
+  },
+};
+
+// Create and export the Supabase client - we only need database operations
+export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: true,
+    detectSessionInUrl: false,
+    storage: chromeStorageAdapter,
+    storageKey: 'gmail-bill-scanner-auth'
+  },
+  global: {
+    headers: {
+      'x-application-name': 'gmail-bill-scanner'
+    }
+  }
+});
+
+// Export the function to get the client
+export async function getSupabaseClient() {
+  // Get Google user ID from Chrome storage
+  const { google_user_id } = await chrome.storage.local.get('google_user_id');
+  
+  console.log('Retrieved from storage - google_user_id:', google_user_id);
+  
+  // Set up headers including Google user ID if available
+  const headers: Record<string, string> = {
+    'x-application-name': 'gmail-bill-scanner'
+  };
+  
+  let googleId = google_user_id;
+  
+  // If no Google ID found directly, try to get from other storage locations
+  if (!googleId) {
+    // Try to get the current user ID
+    try {
+      const session = await getStoredSession();
+      if (session && session.user && session.user.id) {
+        // Try to get Google ID for this user from storage
+        googleId = await getGoogleIdFromStorage(session.user.id);
+      }
+    } catch (error) {
+      console.warn('Error getting user ID from session:', error);
+    }
+    
+    // If still no Google ID, try direct storage keys
+    if (!googleId) {
+      const { google_id } = await chrome.storage.local.get('google_id');
+      googleId = google_id;
+    }
+  }
+  
+  if (googleId) {
+    headers['X-Google-User-ID'] = googleId;
+    console.log('Setting Supabase headers with Google ID:', headers);
+  } else {
+    console.log('No Google user ID available for Supabase headers. Headers:', headers);
+  }
+  
+  // Create a fresh client each time to avoid auth issues
+  const freshClient = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: true,
+      detectSessionInUrl: false,
+      storage: chromeStorageAdapter,
+      storageKey: 'gmail-bill-scanner-auth'
+    },
+    global: {
+      headers: headers
+    }
+  });
+  
+  try {
+    // Try to restore the session if it exists, but don't fail if it doesn't
+    const session = await getStoredSession();
+    if (session && session.access_token) {
+      try {
+        await freshClient.auth.setSession({
+          access_token: session.access_token,
+          refresh_token: session.refresh_token || session.access_token
+        });
+      } catch (sessionError) {
+        console.warn('Failed to set session in Supabase client:', sessionError);
+        // Continue anyway with the unauthenticated client
+      }
+    }
+  } catch (error) {
+    console.warn('Error initializing session in getSupabaseClient:', error);
+    // Continue with the client anyway
+  }
+  
+  return freshClient;
+}
+
+/**
+ * Gets the stored session from Chrome storage
+ * @returns The stored session
+ */
+export async function getStoredSession(): Promise<Session | null> {
+  try {
+    // Try to get session from Chrome storage
+    const data = await chrome.storage.sync.get('gmail-bill-scanner-auth');
+    const sessionString = data['gmail-bill-scanner-auth'];
+    
+    if (!sessionString) {
+      // Try from local storage as fallback
+      const localData = await chrome.storage.local.get('gmail-bill-scanner-auth');
+      const localSessionString = localData['gmail-bill-scanner-auth'];
+      
+      if (!localSessionString) {
+        console.log('No stored session found in either sync or local storage');
+        return null;
+      }
+      
+      // If found in local but not sync, migrate it
+      chrome.storage.sync.set({ 'gmail-bill-scanner-auth': localSessionString });
+      console.log('Migrated session from local to sync storage');
+    }
+    
+    let sessionData;
+    try {
+      // Parse the session from whichever storage we found it in
+      sessionData = JSON.parse(sessionString || (await chrome.storage.local.get('gmail-bill-scanner-auth'))['gmail-bill-scanner-auth']);
+      
+      // Basic validation to ensure we have a proper session object
+      if (!sessionData || !sessionData.access_token || !sessionData.user) {
+        console.warn('Invalid session format in storage, missing required fields');
+        return null;
+      }
+      
+      // Ensure the token has the correct JWT format (has 3 parts separated by dots)
+      const tokenParts = sessionData.access_token.split('.');
+      if (tokenParts.length !== 3) {
+        console.warn('Invalid token format. Not a valid JWT (needs 3 parts).');
+        
+        // Clear the invalid token
+        await chrome.storage.sync.remove('gmail-bill-scanner-auth');
+        await chrome.storage.local.remove('gmail-bill-scanner-auth');
+        
+        // Return a modified session with just the user info to maintain state
+        return {
+          ...sessionData,
+          access_token: '', // Empty token
+          refresh_token: '',
+          expires_at: 0,
+          expires_in: 0,
+          token_type: 'bearer',
+        };
+      }
+      
+      // Check if session is expired or will expire soon (within 5 minutes)
+      const isExpiredOrExpiringSoon = sessionData.expires_at && 
+        (sessionData.expires_at < Date.now() || sessionData.expires_at < Date.now() + 5 * 60 * 1000);
+      
+      if (isExpiredOrExpiringSoon) {
+        console.warn('Session has expired or will expire soon, attempting to refresh');
+        
+        // First try to get a cached token without prompting the user
+        try {
+          const cachedToken = await new Promise<string | null>((resolve, reject) => {
+            chrome.identity.getAuthToken({ 
+              interactive: false,
+              scopes: ['https://www.googleapis.com/auth/gmail.readonly', 
+                      'https://www.googleapis.com/auth/drive.file',
+                      'https://www.googleapis.com/auth/userinfo.email',
+                      'https://www.googleapis.com/auth/userinfo.profile']
+            }, (token) => {
+              if (chrome.runtime.lastError) {
+                console.warn('Could not get cached token:', chrome.runtime.lastError.message);
+                resolve(null);
+                return;
+              }
+              resolve(token || null);
+            });
+          });
+          
+          if (cachedToken) {
+            // We got a token without user interaction, update the session
+            console.log('Got cached token successfully, updating session');
+            
+            // Update the session data with the new token
+            sessionData.access_token = cachedToken;
+            sessionData.refresh_token = cachedToken;
+            sessionData.expires_at = Date.now() + 3600 * 1000; // 1 hour expiry
+            
+            // Update the stored session in both storages
+            await chrome.storage.sync.set({ 
+              'gmail-bill-scanner-auth': JSON.stringify(sessionData)
+            });
+            await chrome.storage.local.set({ 
+              'gmail-bill-scanner-auth': JSON.stringify(sessionData)
+            });
+            
+            console.log('Session refreshed successfully with cached token');
+          } else {
+            // We couldn't get a token without interaction
+            // This is fine - we'll return the existing session and prompt for re-authentication when needed
+            console.log('No cached token available, will need interactive auth later');
+          }
+        } catch (refreshError) {
+          console.error('Failed to refresh session token:', refreshError);
+          // Continue with the expired session and let the caller handle it
+        }
+      }
+      
+      return sessionData;
+    } catch (parseError) {
+      console.error('Error parsing stored session:', parseError);
+      // Clean up the invalid session
+      await chrome.storage.sync.remove('gmail-bill-scanner-auth');
+      await chrome.storage.local.remove('gmail-bill-scanner-auth');
+      return null;
+    }
+  } catch (error) {
+    console.error('Error fetching stored session:', error);
+    return null;
+  }
+}
+
+/**
+ * Manually set a session in Chrome storage
+ */
+export async function setStoredSession(sessionData: any) {
+  return new Promise<void>((resolve) => {
+    chrome.storage.local.set({
+      'gmail-bill-scanner-auth': JSON.stringify(sessionData)
+    }, () => {
+      resolve();
+    });
+  });
+}
+
+/**
+ * Clear the stored session from Chrome storage
+ */
+export async function clearStoredSession() {
+  return new Promise<void>((resolve) => {
+    chrome.storage.local.remove('gmail-bill-scanner-auth', () => {
+      resolve();
+    });
+  });
+}
+
+/**
+ * Check if user is authenticated by checking storage
+ */
+export async function isAuthenticated() {
+  const session = await getStoredSession();
+  return !!session;
+}
+
+/**
+ * Sign out the current user by clearing the session
+ */
+export async function signOut() {
+  await clearStoredSession();
+  return { success: true };
 }
 
 /**
@@ -859,6 +937,7 @@ export async function signInWithGoogle(
     // New user created successfully
       if (signUpData?.user) {
       console.log('New user created:', signUpData.user.id);
+      console.log('Google profile:', profile);
       
       // Create user record in public.users table
       try {
@@ -870,7 +949,10 @@ export async function signInWithGoogle(
             auth_id: signUpData.user.id,
             plan: 'free',
             quota_bills_monthly: 50,
-            quota_bills_used: 0
+            quota_bills_used: 0,
+            google_user_id: profile?.id,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
           });
           
         if (insertError) {
@@ -937,6 +1019,8 @@ async function updateUserProfile(userId: string, name: string, avatarUrl: string
   const supabase = await getSupabaseClient();
   
   try {
+    console.log("Updating user profile with Google ID:", googleId);
+    
     // Check if user exists in public.users table
     const { data: userData, error: userError } = await supabase
       .from('users')
@@ -944,10 +1028,16 @@ async function updateUserProfile(userId: string, name: string, avatarUrl: string
       .eq('id', userId)
       .maybeSingle();
   
+    if (userError) {
+      console.error("Error checking user existence:", userError);
+    }
+    
+    console.log("Existing user data:", userData);
+    
     // If user doesn't exist in public.users, create the record
     if (!userData) {
-      console.log("Creating user record in public.users");
-      await supabase
+      console.log("Creating user record in public.users with Google ID:", googleId);
+      const { data: insertedUser, error: insertError } = await supabase
         .from('users')
         .insert({
           id: userId,
@@ -956,18 +1046,42 @@ async function updateUserProfile(userId: string, name: string, avatarUrl: string
           plan: 'free',
           quota_bills_monthly: 50,
           quota_bills_used: 0,
-          google_user_id: googleId
-        });
+          google_user_id: googleId,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+        
+      if (insertError) {
+        console.error("Error creating user record:", insertError);
+      } else {
+        console.log("Created new user record with Google ID:", insertedUser.google_user_id);
+      }
     } else if (googleId && !userData.google_user_id) {
       // Only update Google ID if it's not already set
-      console.log("Setting Google ID for user that doesn't have one");
-      await supabase
+      console.log("Setting Google ID for user that doesn't have one. User ID:", userId, "Google ID:", googleId);
+      const { data: updatedUser, error: updateError } = await supabase
         .from('users')
         .update({
           google_user_id: googleId,
           updated_at: new Date().toISOString()
         })
-        .eq('id', userId);
+        .eq('id', userId)
+        .select()
+        .single();
+        
+      if (updateError) {
+        console.error("Error updating Google ID:", updateError);
+      } else {
+        console.log("Updated user with Google ID. New value:", updatedUser.google_user_id);
+      }
+    } else {
+      console.log("User already has a Google ID or no Google ID provided:", {
+        hasExistingGoogleId: !!userData.google_user_id,
+        existingGoogleId: userData.google_user_id,
+        newGoogleId: googleId
+      });
     }
     
     // Update or create profile
@@ -984,6 +1098,20 @@ async function updateUserProfile(userId: string, name: string, avatarUrl: string
       });
     
     console.log("User profile updated successfully");
+    
+    // Verify final state of Google ID
+    const { data: finalUser, error: finalError } = await supabase
+      .from('users')
+      .select('id, google_user_id')
+      .eq('id', userId)
+      .single();
+      
+    if (finalError) {
+      console.error("Error checking final user state:", finalError);
+    } else {
+      console.log("Final user state after profile update:", finalUser);
+      console.log("Final Google ID:", finalUser.google_user_id);
+    }
   } catch (error) {
     console.error("Error updating user profile:", error);
   }
@@ -1149,15 +1277,38 @@ export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{
 }> {
   try {
     console.log('Linking Google user with Supabase:', googleProfile.email);
-    const supabase = await getSupabaseClient();
+    
+    // Create a fresh client without trying to set a session to avoid JWT errors
+    const client = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false
+      },
+      global: {
+        headers: {
+          'x-application-name': 'gmail-bill-scanner'
+        }
+      }
+    });
     
     if (!googleProfile.id) {
       console.error('Google profile missing ID');
       return { success: false, error: 'Google profile missing ID' };
     }
     
+    console.log('Google ID for linking:', googleProfile.id);
+    console.log('Google ID type:', typeof googleProfile.id);
+    console.log('Google ID length:', googleProfile.id.length);
+    
+    // Save Google profile to local storage for debugging/fallback
+    await chrome.storage.local.set({
+      'google_profile': googleProfile,
+      'google_id': googleProfile.id
+    });
+    
     // First try to find if user already exists with this Google ID
-    const { data: existingUser, error: lookupError } = await supabase
+    const { data: existingUser, error: lookupError } = await client
       .from('users')
       .select('*')
       .eq('google_user_id', googleProfile.id)
@@ -1165,6 +1316,7 @@ export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{
     
     if (!lookupError && existingUser) {
       console.log('Found existing user with Google ID:', existingUser.id);
+      console.log('Existing user\'s Google ID:', existingUser.google_user_id);
       
       // User exists - return user data
       const userData = {
@@ -1185,7 +1337,7 @@ export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{
     }
     
     // Try to find by email if not found by Google ID
-    const { data: userByEmail, error: emailLookupError } = await supabase
+    const { data: userByEmail, error: emailLookupError } = await client
       .from('users')
       .select('*')
       .eq('email', googleProfile.email)
@@ -1193,15 +1345,15 @@ export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{
     
     if (!emailLookupError && userByEmail) {
       console.log('Found existing user by email:', userByEmail.id);
+      console.log('Current Google ID (should be null):', userByEmail.google_user_id);
       
-      // Update with Google ID
-      const { error: updateError } = await supabase
-        .from('users')
-        .update({ google_user_id: googleProfile.id })
-        .eq('id', userByEmail.id);
+      // Update with Google ID using our more reliable direct update
+      const updateSuccess = await updateGoogleId(userByEmail.id, googleProfile.id);
       
-      if (updateError) {
-        console.warn('Failed to update user with Google ID:', updateError);
+      if (!updateSuccess) {
+        console.warn('Failed to update user with Google ID. Will try again later.');
+        // We'll still proceed and return the user data
+        // The Google ID will be updated next time the user logs in
       } else {
         console.log('Updated user with Google ID:', userByEmail.id);
       }
@@ -1218,7 +1370,8 @@ export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{
         successful_processed_items: 0,
         last_processed_at: null,
         display_name: googleProfile.name,
-        avatar_url: googleProfile.picture
+        avatar_url: googleProfile.picture,
+        google_user_id: googleProfile.id // Add this even if the update failed
       };
       
       return { success: true, userId: userByEmail.id, userData };
@@ -1226,7 +1379,7 @@ export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{
     
     // If not found, create a new user
     console.log('Creating new user for Google ID:', googleProfile.id);
-    const { data: newUser, error: insertError } = await supabase
+    const { data: newUser, error: insertError } = await client
       .from('users')
       .insert({
         email: googleProfile.email,
@@ -1246,6 +1399,7 @@ export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{
     }
     
     console.log('Created new user with ID:', newUser.id);
+    console.log('New user Google ID:', newUser.google_user_id);
     
     // Return user data
     const userData = {
@@ -1259,7 +1413,8 @@ export async function linkGoogleUserInSupabase(googleProfile: any): Promise<{
       successful_processed_items: 0,
       last_processed_at: null,
       display_name: googleProfile.name,
-      avatar_url: googleProfile.picture
+      avatar_url: googleProfile.picture,
+      google_user_id: googleProfile.id
     };
     
     return { success: true, userId: newUser.id, userData };
@@ -1392,5 +1547,621 @@ export async function getUserStatsByGoogleId(googleId: string): Promise<any> {
     }
     
     return null;
+  }
+}
+
+/**
+ * Checks and fixes a user's Google ID if it's missing
+ * @param userId Supabase user ID
+ * @param googleId Google user ID
+ * @returns Success status and updated user data
+ */
+export async function fixGoogleId(userId: string, googleId: string): Promise<{
+  success: boolean;
+  message: string;
+  userData?: any;
+}> {
+  if (!userId || !googleId) {
+    return {
+      success: false,
+      message: 'Missing required user ID or Google ID'
+    };
+  }
+  
+  try {
+    console.log(`Fixing Google ID for user ${userId}. Google ID: ${googleId}`);
+    
+    // Create a fresh client without trying to set a session to avoid JWT errors
+    const freshClient = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false
+      },
+      global: {
+        headers: {
+          'x-application-name': 'gmail-bill-scanner'
+        }
+      }
+    });
+    
+    // First check if the user exists
+    const { data: existingUser, error: checkError } = await freshClient
+      .from('users')
+      .select('id, email, google_user_id')
+      .eq('id', userId)
+      .single();
+      
+    if (checkError) {
+      console.error('Error checking user:', checkError);
+      return {
+        success: false,
+        message: `Error checking user: ${checkError.message}`
+      };
+    }
+    
+    console.log('Current user state:', existingUser);
+    
+    if (existingUser.google_user_id) {
+      console.log('User already has Google ID:', existingUser.google_user_id);
+      
+      // If IDs match, nothing to do
+      if (existingUser.google_user_id === googleId) {
+        return {
+          success: true,
+          message: 'User already has the correct Google ID',
+          userData: existingUser
+        };
+      }
+      
+      // IDs don't match, confirm which to use or leave as is
+      console.log('User has a different Google ID:', {
+        current: existingUser.google_user_id,
+        new: googleId
+      });
+      
+      return {
+        success: true,
+        message: 'User has a different Google ID. No changes made.',
+        userData: existingUser
+      };
+    }
+    
+    // User exists but has no Google ID, update it
+    console.log('User has no Google ID. Setting to:', googleId);
+    
+    // Skip RPC approach (which requires authentication) and use direct update
+    // Direct update using the fresh client
+    const { data: updatedUser, error: updateError } = await freshClient
+        .from('users')
+        .update({ 
+          google_user_id: googleId,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userId)
+        .select()
+        .single();
+        
+      if (updateError) {
+        console.error('Error updating Google ID:', updateError);
+      
+      // Try one more time with even more minimal approach
+      const simpleUpdateResult = await updateGoogleId(userId, googleId);
+      if (simpleUpdateResult) {
+        return {
+          success: true,
+          message: 'Google ID updated successfully with minimal approach',
+          userData: { ...existingUser, google_user_id: googleId }
+        };
+      }
+      
+        return {
+          success: false,
+          message: `Failed to update Google ID: ${updateError.message}`
+        };
+      }
+      
+      console.log('Updated user with Google ID:', updatedUser);
+    
+    // Also store the Google ID in Chrome storage for redundancy
+    await chrome.storage.local.set({
+      'user_google_id_mapping': { [userId]: googleId }
+    });
+      
+      return {
+        success: true,
+        message: 'Google ID updated successfully',
+        userData: updatedUser
+      };
+  } catch (error) {
+    console.error('Error fixing Google ID:', error);
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : 'Unknown error fixing Google ID'
+    };
+  }
+}
+
+/**
+ * Updates the Google ID for a user directly in the database
+ */
+export async function updateGoogleId(userId: string, googleId: string): Promise<boolean> {
+  try {
+    console.log('Updating Google ID directly:', { userId, googleId });
+    
+    // Create a fresh client without trying to set a session to avoid JWT errors
+    const freshClient = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false
+      },
+      global: {
+        headers: {
+          'x-application-name': 'gmail-bill-scanner'
+        }
+      }
+    });
+    
+    const { error } = await freshClient
+      .from('users')
+      .update({ 
+        google_user_id: googleId,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', userId);
+    
+    if (error) {
+      console.error('Error updating Google ID:', error);
+      
+      // Store in Chrome storage as fallback
+      await chrome.storage.local.set({
+        'user_google_id_mapping': { [userId]: googleId }
+      });
+      
+      console.log('Stored Google ID in Chrome storage as fallback');
+      return false;
+    }
+    
+    console.log('Successfully updated Google ID');
+    return true;
+  } catch (error) {
+    console.error('Error in updateGoogleId:', error);
+    
+    // Store in Chrome storage as fallback
+    try {
+      await chrome.storage.local.set({
+        'user_google_id_mapping': { [userId]: googleId }
+      });
+      console.log('Stored Google ID in Chrome storage as fallback after error');
+    } catch (storageError) {
+      console.error('Error even storing in Chrome storage:', storageError);
+    }
+    
+    return false;
+  }
+}
+
+/**
+ * Find a user by Google ID without requiring authentication
+ * This is safe to use in the auth flow
+ */
+export async function findUserByGoogleId(googleId: string): Promise<any> {
+  try {
+    console.log('Finding user by Google ID:', googleId);
+    
+    // Create a fresh client without trying to set a session to avoid JWT errors
+    const freshClient = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false
+      },
+      global: {
+        headers: {
+          'x-application-name': 'gmail-bill-scanner'
+        }
+      }
+    });
+    
+    const { data, error } = await freshClient
+      .from('users')
+      .select('id, email, google_user_id, created_at, updated_at, plan, quota_bills_monthly, quota_bills_used')
+      .eq('google_user_id', googleId)
+      .maybeSingle();
+    
+    if (error) {
+      console.error('Error finding user by Google ID:', error);
+      return null;
+    }
+    
+    console.log('User found by Google ID:', data ? data.id : 'None');
+    return data;
+  } catch (error) {
+    console.error('Error in findUserByGoogleId:', error);
+    return null;
+  }
+}
+
+/**
+ * Get Google ID for a user from Chrome storage (fallback)
+ * @param userId The user ID
+ * @returns The Google ID if found in storage
+ */
+export async function getGoogleIdFromStorage(userId: string): Promise<string | null> {
+  try {
+    // Try to get from mapping first
+    const { user_google_id_mapping } = await chrome.storage.local.get('user_google_id_mapping');
+    if (user_google_id_mapping && user_google_id_mapping[userId]) {
+      console.log('Found Google ID from user mapping in storage:', user_google_id_mapping[userId]);
+      return user_google_id_mapping[userId];
+    }
+    
+    // Try to get from direct storage
+    const { google_id } = await chrome.storage.local.get('google_id');
+    if (google_id) {
+      console.log('Found Google ID directly in storage:', google_id);
+      return google_id;
+    }
+    
+    // Try to get from profile
+    const { google_profile } = await chrome.storage.local.get('google_profile');
+    if (google_profile && google_profile.id) {
+      console.log('Found Google ID from profile in storage:', google_profile.id);
+      return google_profile.id;
+    }
+    
+    console.log('No Google ID found in storage for user:', userId);
+    return null;
+  } catch (error) {
+    console.error('Error getting Google ID from storage:', error);
+    return null;
+  }
+}
+
+/**
+ * Manages Google user ID in Supabase for authentication
+ */
+export async function manageGoogleUserId(googleProfile: any): Promise<{
+  success: boolean;
+  userId?: string | null; // Update type to accept null
+  userData?: any;
+  error?: string;
+}> {
+  try {
+    console.log('Managing Google user ID for:', googleProfile.email);
+    
+    // Always store the profile in Chrome storage for redundancy
+    await chrome.storage.local.set({
+      'google_profile': googleProfile,
+      'google_id': googleProfile.id,
+      'user_email': googleProfile.email
+    });
+    
+    if (!googleProfile.id) {
+      console.error('No Google ID provided');
+      return { success: false, error: 'No Google ID provided' };
+    }
+    
+    // Get Supabase client
+    const supabase = await getSupabaseClient();
+    
+    // First, check if user exists with this Google ID
+    console.log('Checking if user exists with Google ID:', googleProfile.id);
+    const { data: existingUser, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('google_user_id', googleProfile.id)
+      .maybeSingle();
+    
+    if (userError) {
+      console.error('Error checking for existing user by Google ID:', userError);
+    } else if (existingUser) {
+      console.log('User exists with Google ID:', existingUser.id);
+      
+      // Update user last login time
+      await supabase
+        .from('users')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', existingUser.id);
+      
+      // Store mapping in Chrome storage
+      await chrome.storage.local.set({
+        'supabase_user_id': existingUser.id,
+        'google_user_id': googleProfile.id
+      });
+      
+      return {
+        success: true,
+        userId: existingUser.id,
+        userData: existingUser
+      };
+    }
+    
+    // No user with this Google ID, check by email
+    console.log('Checking if user exists with email:', googleProfile.email);
+    const { data: userByEmail, error: emailError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', googleProfile.email.toLowerCase())
+      .maybeSingle();
+    
+    if (emailError) {
+      console.error('Error checking for existing user by email:', emailError);
+    } else if (userByEmail) {
+      console.log('User exists with email:', userByEmail.id);
+      
+      // Update the existing user with Google ID
+      const { data: updatedUser, error: updateError } = await supabase
+        .from('users')
+        .update({ 
+          google_user_id: googleProfile.id,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userByEmail.id)
+        .select()
+        .single();
+      
+      if (updateError) {
+        console.error('Error updating user with Google ID:', updateError);
+      } else {
+        console.log('Updated user with Google ID');
+        
+        // Store mapping in Chrome storage
+        await chrome.storage.local.set({
+          'supabase_user_id': userByEmail.id,
+          'google_user_id': googleProfile.id
+        });
+        
+        return {
+          success: true,
+          userId: userByEmail.id,
+          userData: updatedUser
+        };
+      }
+    }
+    
+    // No existing user found, try creating one
+    console.log('Creating new user with Google ID:', googleProfile.id);
+    
+    // Check if user exists in auth.users first
+    const { data: authUser } = await supabase.auth.admin.getUserById(
+      googleProfile.id // Try using Google ID as user ID
+    );
+    
+    let userId = authUser?.user?.id;
+    
+    if (!userId) {
+      // Try to find auth user by email
+      const { data: authUsers } = await supabase.auth.admin.listUsers();
+      const matchingUser = authUsers?.users?.find(u => u.email === googleProfile.email);
+      userId = matchingUser?.id;
+      
+      if (!userId) {
+        // Generate a new UUID if no auth user found
+        userId = self.crypto.randomUUID();
+      }
+    }
+    
+    // Create user in public.users table
+    const { data: newUser, error: createError } = await supabase
+      .from('users')
+      .insert({
+        id: userId,
+        email: googleProfile.email.toLowerCase(),
+        auth_id: userId,
+        google_user_id: googleProfile.id,
+        plan: 'free',
+        quota_bills_monthly: 50,
+        quota_bills_used: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+    
+    if (createError) {
+      console.error('Error creating user:', createError);
+      return { 
+        success: false, 
+        error: `Failed to create user: ${createError.message}` 
+      };
+    }
+    
+    console.log('Created new user successfully:', newUser.id);
+    
+    // Store mapping in Chrome storage
+    await chrome.storage.local.set({
+      'supabase_user_id': newUser.id,
+      'google_user_id': googleProfile.id
+    });
+    
+    return {
+      success: true,
+      userId: newUser.id,
+      userData: newUser
+    };
+  } catch (error) {
+    console.error('Error managing Google user ID:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    };
+  }
+}
+
+/**
+ * Verifies a user by Google ID, checking if they exist in the database
+ */
+export async function verifyUserByGoogleId(googleId: string): Promise<{
+  success: boolean;
+  userData?: any;
+  error?: string;
+}> {
+  try {
+    if (!googleId) {
+      console.error('No Google ID provided for verification');
+      return {
+        success: false,
+        error: 'No Google ID provided'
+      };
+    }
+    
+    console.log('Verifying user by Google ID:', googleId);
+    
+    // Get Supabase client
+    const supabase = await getSupabaseClient();
+    
+    // First try to get the user directly from the users table
+    console.log('Looking up user with Google ID in public.users table...');
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('google_user_id', googleId)
+      .maybeSingle();
+    
+    if (userError) {
+      console.error('Error querying users by Google ID:', userError);
+      return {
+        success: false,
+        error: userError.message
+      };
+    }
+    
+    if (userData) {
+      console.log('Found user with Google ID in users table:', userData.id);
+      return {
+        success: true,
+        userData
+      };
+    }
+    
+    // If not found, try checking auth.users table for metadata containing the Google ID
+    console.log('User not found in public.users, checking auth.users metadata...');
+    const { data: authData, error: authError } = await supabase.auth.admin.listUsers();
+    
+    if (authError) {
+      console.error('Error querying auth users:', authError);
+      return {
+        success: false,
+        error: authError.message
+      };
+    }
+    
+    // Look for a user with matching Google ID in metadata
+    const authUser = authData.users.find(user => 
+      (user.user_metadata?.google_user_id === googleId) || 
+      (user.user_metadata?.sub === googleId)
+    );
+    
+    if (authUser) {
+      console.log('Found user with Google ID in auth.users metadata:', authUser.id);
+      
+      // Try to create public.users record if missing
+      try {
+        console.log('Creating missing public.users record for auth user:', authUser.id);
+        const { data: newUserData, error: createError } = await supabase
+          .from('users')
+          .insert({
+            id: authUser.id,
+            email: authUser.email || '',
+            auth_id: authUser.id,
+            google_user_id: googleId,
+            plan: 'free',
+            quota_bills_monthly: 50,
+            quota_bills_used: 0,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+        
+        if (createError) {
+          console.error('Failed to create public user record:', createError);
+        } else {
+          console.log('Successfully created missing public.users record');
+          return {
+            success: true,
+            userData: newUserData
+          };
+        }
+      } catch (createError) {
+        console.warn('Error creating public user record:', createError);
+      }
+      
+      // Return basic data from auth user even if we couldn't create public record
+      return {
+        success: true,
+        userData: {
+          id: authUser.id,
+          email: authUser.email,
+          google_user_id: googleId,
+          created_at: authUser.created_at,
+          plan: 'free',
+          quota_bills_monthly: 50,
+          quota_bills_used: 0
+        }
+      };
+    }
+    
+    console.log('No user found with this Google ID in any table');
+    return {
+      success: false,
+      error: 'User not found with this Google ID'
+    };
+  } catch (error) {
+    console.error('Error verifying user by Google ID:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error verifying user by Google ID'
+    };
+  }
+}
+
+/**
+ * Create Chrome session for user
+ * Production-ready function to create a local session without JWT tokens
+ */
+export async function createLocalSession(userId: string, googleProfile: any): Promise<{
+  success: boolean;
+  session?: any;
+  error?: string;
+}> {
+  try {
+    if (!userId || !googleProfile) {
+      return { success: false, error: 'Missing required data' };
+    }
+    
+    console.log('Creating local session for user:', userId);
+    
+    // Create simplified session object
+    const session = {
+      access_token: 'local_session_' + Date.now(),
+      expires_at: Date.now() + (7 * 24 * 60 * 60 * 1000), // 7 days
+      user: {
+        id: userId,
+        email: googleProfile.email,
+        user_metadata: {
+          name: googleProfile.name,
+          picture: googleProfile.picture,
+          full_name: googleProfile.name,
+          google_user_id: googleProfile.id
+        }
+      }
+    };
+    
+    // Store session in Chrome storage
+    await chrome.storage.local.set({
+      'gmail-bill-scanner-auth': JSON.stringify(session)
+    });
+    
+    console.log('Local session created successfully');
+    return { success: true, session };
+  } catch (error) {
+    console.error('Error creating local session:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    };
   }
 }
