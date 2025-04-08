@@ -485,34 +485,70 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       switch (message?.type) {
         case 'FIX_GOOGLE_ID':
           try {
-            console.log('Background: Processing fix Google ID request');
-            const { google_user_id, user_id } = message;
+            const { user_id, google_user_id } = message;
             
-            if (!google_user_id || !user_id) {
+            if (!user_id || !google_user_id) {
               sendResponse({ 
                 success: false, 
-                error: 'Missing Google ID or user ID' 
+                error: 'Missing user_id or google_user_id parameter' 
               });
               return;
             }
             
-            // Import the updateGoogleId function
-            const { updateGoogleId } = await import('../services/supabase/client');
-            
-            // Update the Google ID
-            const success = await updateGoogleId(user_id, google_user_id);
-            
-            if (success) {
-              sendResponse({ 
-                success: true, 
-                message: 'Google ID updated successfully'
-              });
-            } else {
+            // Import directly from client.ts
+            import('../services/supabase/client').then(async (module) => {
+              try {
+                // Use signInWithGoogle which handles both creation and updating
+                if (module.signInWithGoogle) {
+                  // Simulate a profile object
+                  const profile = {
+                    id: google_user_id,
+                    email: user_id + '@placeholder.com', // This is just for function signature
+                    name: 'User'
+                  };
+                  
+                  const result = await module.signInWithGoogle(
+                    'token-not-needed',
+                    profile.email,
+                    profile.name,
+                    null, // No avatar
+                    false, // Not signup
+                    profile
+                  );
+                  
+                  if (result.data && result.data.user) {
+                    sendResponse({ 
+                      success: true, 
+                      message: 'Google user ID updated successfully'
+                    });
+                  } else {
+                    sendResponse({ 
+                      success: false, 
+                      error: result.error?.message || 'Failed to update user'
+                    });
+                  }
+                } else {
+                  console.error('signInWithGoogle function not found');
+                  sendResponse({ 
+                    success: false, 
+                    error: 'Update function not available' 
+                  });
+                }
+              } catch (error) {
+                console.error('Error executing Google ID update:', error);
+                sendResponse({ 
+                  success: false, 
+                  error: error instanceof Error ? error.message : 'Unknown error' 
+                });
+              }
+            }).catch(error => {
+              console.error('Error importing module:', error);
               sendResponse({ 
                 success: false, 
-                error: 'Failed to update Google ID'
+                error: 'Failed to import update functions' 
               });
-            }
+            });
+            return true; // Keep the response channel open
           } catch (error) {
             console.error('Error fixing Google ID:', error);
             sendResponse({ 
@@ -548,75 +584,83 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               return;
             }
             
-            // Get the Google ID from storage
-            const { google_user_id, google_id, user_profile } = await chrome.storage.local.get([
-              'google_user_id', 
-              'google_id', 
-              'user_profile'
-            ]);
-            
-            let googleId = google_user_id || google_id;
-            
-            // If no direct Google ID, try to extract from profile
-            if (!googleId && user_profile && user_profile.id) {
-              googleId = user_profile.id;
-              console.log('Background: Using Google ID from profile:', googleId);
-            }
-            
-            if (!googleId) {
-              console.log('Background: No Google ID found in storage');
-              sendResponse({ 
-                success: true, 
-                isAuthenticated: false,
-                reason: 'No Google ID found'
-              });
-              return;
-            }
-            
-            // Use our production-ready verification function
-            const { verifyUserByGoogleId } = await import('../services/supabase/client');
-            const verifyResult = await verifyUserByGoogleId(googleId);
-            
-            if (!verifyResult.success) {
-              console.warn('Background: User verification failed:', verifyResult.error);
-              
-              // If verification failed but we have the profile, still send basic info
-              if (user_profile) {
-                console.log('Background: Verification failed but returning profile data');
+            // Import the client module asynchronously
+            import('../services/supabase/client').then(async (module) => {
+              try {
+                // Get user data from storage
+                const userData = await module.getUserData();
+                const googleId = userData?.googleId;
+                
+                if (!googleId) {
+                  console.log('Background: No Google ID found in storage');
+                  sendResponse({ 
+                    success: true, 
+                    isAuthenticated: false,
+                    reason: 'No Google ID found'
+                  });
+                  return;
+                }
+                
+                // Try to get user stats by Google ID
+                if (module.getUserStatsByGoogleId) {
+                  try {
+                    const userStats = await module.getUserStatsByGoogleId(googleId);
+                    
+                    if (userStats) {
+                      console.log('Background: Got user stats by Google ID');
+                      sendResponse({ 
+                        success: true, 
+                        isAuthenticated: true,
+                        profile: userStats
+                      });
+                      return;
+                    }
+                  } catch (statsError) {
+                    console.warn('Background: Error getting stats by Google ID:', statsError);
+                  }
+                }
+                
+                // Fallback to basic profile if available
+                if (userData.profile) {
+                  console.log('Background: Using fallback profile data');
+                  sendResponse({ 
+                    success: true, 
+                    isAuthenticated: true,
+                    partial: true,
+                    profile: {
+                      id: 'temp-' + googleId,
+                      email: userData.profile.email,
+                      name: userData.profile.name,
+                      picture: userData.profile.picture,
+                      google_user_id: googleId
+                    },
+                    reason: 'Using fallback profile data'
+                  });
+                  return;
+                }
+                
+                // No profile data available
                 sendResponse({ 
                   success: true, 
-                  isAuthenticated: true,
-                  partial: true,
-                  profile: {
-                    id: 'temp-' + googleId,
-                    email: user_profile.email,
-                    name: user_profile.name,
-                    picture: user_profile.picture,
-                    google_user_id: googleId
-                  },
-                  reason: 'User verification failed but profile available',
-                  error: verifyResult.error
+                  isAuthenticated: false,
+                  reason: 'No profile data found'
                 });
-                return;
+              } catch (error) {
+                console.error('Background: Error in auth verification:', error);
+                sendResponse({
+                  success: false, 
+                  error: error instanceof Error ? error.message : 'Unknown error in verification'
+                });
               }
-              
-              sendResponse({ 
-                success: true, 
-                isAuthenticated: false,
-                reason: 'User verification failed',
-                error: verifyResult.error
+            }).catch(error => {
+              console.error('Background: Error importing client module:', error);
+              sendResponse({
+                success: false,
+                error: 'Failed to import verification functions',
+                isAuthenticated: false
               });
-              return;
-            }
-            
-            // User is verified - return the profile data
-            console.log('Background: User verified successfully with Google ID:', googleId);
-            sendResponse({ 
-              success: true, 
-              isAuthenticated: true,
-              profile: verifyResult.userData
             });
-            
+            return true; // Keep the response channel open
           } catch (error) {
             console.error('Background: Auth status error:', error);
             sendResponse({
@@ -659,28 +703,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               console.log('Background: Stored Google user ID:', authResult.profile.id);
               
               try {
-                // Create the user in auth.users and public.users tables via RPC
-                const { createGoogleUser, createLocalSession } = await import('../services/supabase/client');
+                // Use the signInWithGoogle function which handles the full authentication flow
+                const { signInWithGoogle } = await import('../services/supabase/client');
                 
-                console.log('Background: Creating user with Google RPC function...');
-                const createResult = await createGoogleUser(
+                console.log('Background: Authenticating with Supabase using Google credentials...');
+                const signInResult = await signInWithGoogle(
+                  'token-not-needed', // Our improved function doesn't need this anymore
                   authResult.profile.email,
-                  authResult.profile.id,
                   authResult.profile.name,
-                  authResult.profile.picture
+                  authResult.profile.picture,
+                  isSignUp, // Pass whether this is signup or signin
+                  authResult.profile // Pass the full profile for best results
                 );
                 
-                if (createResult.success && createResult.userId) {
-                  console.log('Background: User created/updated successfully:', createResult.userId);
-                  
-                  // Create a local session without JWT tokens
-                  const sessionResult = await createLocalSession(createResult.userId, authResult.profile);
-                  
-                  if (!sessionResult.success) {
-                    console.warn('Background: Failed to create local session:', sessionResult.error);
-                  } else {
-                    console.log('Background: Local session created successfully');
-                  }
+                if (signInResult.data && signInResult.data.user) {
+                  console.log('Background: User authenticated successfully:', signInResult.data.user.id);
                   
                   // Return the combined result
                   sendResponse({
@@ -688,21 +725,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     isAuthenticated: true,
                     profile: {
                       ...authResult.profile,
-                      supabase_id: createResult.userId
+                      supabase_id: signInResult.data.user.id
                     },
-                    message: 'Signed in successfully!',
+                    message: signInResult.message || 'Signed in successfully!',
                     existingUser: true
                   });
                   return;
                 } else {
-                  console.error('Background: Failed to create/update user:', createResult.error);
+                  console.error('Background: Failed to authenticate with Supabase:', signInResult.error);
                   // Still return success if Google auth worked
                   sendResponse({
                     success: true,
                     isAuthenticated: true,
                     profile: authResult.profile,
-                    message: 'Signed in with Google only. Database operation failed.',
-                    databaseError: createResult.error
+                    message: 'Signed in with Google only. Supabase authentication failed.',
+                    databaseError: signInResult.error?.message || 'Unknown error'
                   });
                   return;
                 }

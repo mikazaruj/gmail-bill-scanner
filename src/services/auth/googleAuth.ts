@@ -91,176 +91,151 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
   try {
     console.log('Starting Chrome extension Google authentication process for sign-in...');
     
-    // Define all required scopes
-    const allScopes = [
-      "https://www.googleapis.com/auth/gmail.readonly",
-      "https://www.googleapis.com/auth/drive.file",
-      "https://www.googleapis.com/auth/userinfo.email",
-      "https://www.googleapis.com/auth/userinfo.profile",
-      "openid",
-      "email",
-      "profile"
-    ];
-    
-    // Get Google token using Chrome Identity API
-    const token = await new Promise<string>((resolve, reject) => {
+    // Step 1: Get Google auth token from Chrome Identity API
+    const token = await new Promise<string | null>((resolve, reject) => {
+      const scopes = [
+        'https://www.googleapis.com/auth/userinfo.email',
+        'https://www.googleapis.com/auth/userinfo.profile',
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/drive.file',
+      ];
+      
+      // Use Chrome Identity to get token (automatically handles refresh and expiry)
       chrome.identity.getAuthToken({ 
-        interactive: true,
-        scopes: allScopes
+        interactive: true, 
+        scopes: scopes 
       }, (token) => {
         if (chrome.runtime.lastError) {
-          console.error('Auth token error:', chrome.runtime.lastError.message);
-          reject(new Error('Google authentication was canceled or denied. Please try again.'));
-          return;
-        }
-        if (!token) {
-          reject(new Error('Google authentication was canceled or denied. Please try again.'));
+          console.error('Chrome identity error:', chrome.runtime.lastError.message);
+          reject(new Error(chrome.runtime.lastError.message));
           return;
         }
         
-        console.log('Got Google auth token:', {
-          tokenPrefix: token.substring(0, 5) + '...',
+        if (!token) {
+          reject(new Error('No auth token received from Chrome identity'));
+          return;
+        }
+        
+        // Mask token for logs
+        const masked = token ? { 
+          tokenPrefix: token.substring(0, 6) + '....',
           tokenLength: token.length
-        });
+        } : null;
+        console.log('Got Google auth token:', masked);
         
         resolve(token);
       });
     });
     
+    if (!token) {
+      console.error('Failed to get auth token from Chrome identity');
+      return { success: false, error: 'Failed to get authentication token' };
+    }
+    
     console.log('Got Google auth token successfully');
     
-    // Get user profile info from Google
-    const userInfo = await fetchGoogleUserInfo(token);
+    // Step 2: Get user info from Google
+    let userInfo = await fetchGoogleUserInfo(token);
     
-    console.log('User info fetched from Google:', userInfo ? 'Success' : 'Failed');
-    if (userInfo) {
-      console.log('Full Google profile data:', JSON.stringify(userInfo, null, 2));
+    if (!userInfo) {
+      console.error('Failed to get user info from Google');
+      return { success: false, error: 'Failed to get user info from Google' };
     }
     
-    if (!userInfo || !userInfo.email) {
-      console.error('Failed to get user info with token');
-      
-      // Try to invalidate the token and retry once
-      await new Promise<void>((resolve) => {
-        chrome.identity.removeCachedAuthToken({ token }, () => {
-          console.log('Removed cached auth token after failure');
-          resolve();
-        });
-      });
-      
-      // Try one more time with a fresh token
-      const newToken = await new Promise<string>((resolve, reject) => {
-        chrome.identity.getAuthToken({ 
-          interactive: true,
-          scopes: allScopes
-        }, (token) => {
-          if (chrome.runtime.lastError || !token) {
-            reject(new Error('Failed to get new token'));
-            return;
-          }
-          resolve(token);
-        });
-      });
-      
-      console.log('Got new Google auth token, retrying profile fetch');
-      const retryUserInfo = await fetchGoogleUserInfo(newToken);
-      
-      if (retryUserInfo) {
-        console.log('Retry Google profile data:', JSON.stringify(retryUserInfo, null, 2));
-      } else {
-        console.error('Retry failed to get user info');
-      }
-      
-      if (!retryUserInfo || !retryUserInfo.email) {
-        throw new Error('Failed to get user info from Google after retry');
-      }
-      
-      // If no ID is provided in retry, generate a synthetic one
-      if (!retryUserInfo.id) {
-        retryUserInfo.id = `google-${retryUserInfo.email}-${Date.now()}`;
-      }
-      
-      // Store the retry user info in Chrome storage
-      await chrome.storage.local.set({
-        'google_user_id': retryUserInfo.id,
-        'google_user_info': retryUserInfo
-      });
-      
-      console.log('Stored Google user profile with ID:', retryUserInfo.id);
-      
-      // Step 3: Link Google user with Supabase
-      try {
-        const { linkGoogleUserInSupabase, createLocalSession } = await import('../supabase/client');
-        
-        // Link the user in Supabase public.users
-        const linkResult = await linkGoogleUserInSupabase(retryUserInfo);
-        
-        if (!linkResult.success) {
-          console.error('Failed to link Google account:', linkResult.error);
-          return { success: false, error: linkResult.error };
-        }
-        
-        console.log('Successfully linked Google account. User ID:', linkResult.userId);
-        
-        // Create a local session
-        if (linkResult.userId) {
-          const sessionResult = await createLocalSession(linkResult.userId, retryUserInfo);
-          if (!sessionResult.success) {
-            console.error('Failed to create local session:', sessionResult.error);
-          } else {
-            console.log('Local session created successfully');
-          }
-        }
-        
-        return {
-          success: true,
-          profile: retryUserInfo
-        };
-      } catch (e) {
-        console.error('Error in linking process:', e);
-        return {
-          success: true,
-          profile: retryUserInfo,
-          error: 'Authentication succeeded but there was an error linking your account'
-        };
-      }
-    }
+    console.log('User info fetched from Google: Success');
     
-    console.log(`Got user info from Google: ${userInfo.email}`);
+    // Ensure all required fields are present
+    console.log('Full Google profile data:', userInfo);
+    console.log('Google ID in userInfo:', userInfo.id);
+    console.log('Google ID type:', typeof userInfo.id);
+    console.log('Google ID length:', userInfo.id ? userInfo.id.length : 'undefined');
     
-    // If no ID is provided, generate a synthetic one
+    // If the ID is missing, try to extract it from the sub field
     if (!userInfo.id) {
-      userInfo.id = `google-${userInfo.email}-${Date.now()}`;
+      console.error('Google user ID is missing from response');
+      
+      // Try re-fetching with extended fields to get ID
+      try {
+        const retryUserInfo = await fetchGoogleUserInfoExtended(token);
+        if (retryUserInfo && retryUserInfo.id) {
+          userInfo = retryUserInfo;
+          
+          // Try linking with Supabase
+          const { linkGoogleUserInSupabase, createLocalSession } = await import('../supabase/client');
+          
+          const linkResult = await linkGoogleUserInSupabase({
+            profile: retryUserInfo,
+            token: { access_token: token }
+          });
+          
+          if (linkResult.success) {
+            console.log('Successfully linked Google account after ID retry. User ID:', linkResult.user?.id);
+          }
+        }
+      } catch (retryError) {
+        console.error('Error during extended profile fetch:', retryError);
+      }
     }
     
-    // Log the complete profile for debugging
-    console.log('Complete Google profile:', JSON.stringify(userInfo, null, 2));
+    // Final check for valid user info
+    if (!userInfo || !userInfo.email) {
+      return { 
+        success: false, 
+        error: 'Could not retrieve sufficient user information from Google'
+      };
+    }
     
-    // Store the user info in Chrome storage
+    console.log('Got user info from Google:', userInfo.email);
+    
+    // Store Google profile locally for reference
+    const profile = {
+      email: userInfo.email,
+      name: userInfo.name || null,
+      picture: userInfo.picture || null,
+      id: userInfo.id || null
+    };
+    
+    console.log('Complete Google profile:', profile);
+    console.log('Final Google ID to be stored:', profile.id);
+    
+    // Store Google user ID for future use
     await chrome.storage.local.set({
-      'google_user_id': userInfo.id,
-      'google_user_info': userInfo
+      'google_user_id': profile.id,
+      'google_user_info': profile
     });
     
-    console.log('Successfully stored Google profile with ID:', userInfo.id);
+    console.log('Successfully stored Google profile with ID:', profile.id);
     
     // Step 3: Link Google user with Supabase
     try {
       const { linkGoogleUserInSupabase, createLocalSession } = await import('../supabase/client');
       
+      // Debug what's being passed to linkGoogleUserInSupabase
+      console.log('IMPORTANT DEBUG - Profile data being passed to linkGoogleUserInSupabase:', {
+        profile: profile,
+        hasEmail: !!profile?.email,
+        hasId: !!profile?.id, 
+        profileType: typeof profile,
+        isObject: profile instanceof Object,
+        keys: profile ? Object.keys(profile) : []
+      });
+      
       // Link the user in Supabase public.users
-      const linkResult = await linkGoogleUserInSupabase(userInfo);
+      const linkResult = await linkGoogleUserInSupabase({
+        profile: profile,
+        token: { access_token: token }
+      });
       
       if (!linkResult.success) {
         console.error('Failed to link Google account:', linkResult.error);
         return { success: false, error: linkResult.error };
       }
       
-      console.log('Successfully linked Google account. User ID:', linkResult.userId);
+      console.log('Successfully linked Google account. User ID:', linkResult.user?.id);
       
       // Create a local session
-      if (linkResult.userId) {
-        const sessionResult = await createLocalSession(linkResult.userId, userInfo);
+      if (linkResult.user?.id) {
+        const sessionResult = await createLocalSession(linkResult.user.id, profile);
         if (!sessionResult.success) {
           console.error('Failed to create local session:', sessionResult.error);
         } else {
@@ -274,7 +249,7 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
     
     return {
       success: true,
-      profile: userInfo
+      profile: profile
     };
   } catch (error) {
     console.error('Google authentication failed:', error);
@@ -484,59 +459,57 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
 }
 
 /**
- * Fetches user information from Google using an access token
- * @param accessToken Google access token
- * @returns User information or null if failed
+ * Fetch Google user info with standard fields
  */
-async function fetchGoogleUserInfo(accessToken: string): Promise<{ 
-  email: string; 
-  name?: string; 
-  picture?: string;
-  id?: string;
-} | null> {
+export async function fetchGoogleUserInfo(token: string): Promise<any> {
   try {
-    console.log('Fetching Google user info with token prefix:', accessToken.substring(0, 5) + '...');
-
-    // Standard userinfo endpoint should return proper profile info including ID
     const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: {
-        'Authorization': `Bearer ${accessToken}`
+        Authorization: `Bearer ${token}`
       }
     });
     
     if (!response.ok) {
-      console.error('Failed to fetch user info, status:', response.status, response.statusText);
-      
-      // Try to get more detailed error info
-      try {
-        const errorText = await response.text();
-        console.error('Google API error response:', errorText);
-      } catch (e) {
-        console.error('Could not read error response');
+      console.error('Failed to fetch Google user info:', response.status, response.statusText);
+      return null;
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching Google user info:', error);
+    return null;
+  }
+}
+
+/**
+ * Fetch Google user info with extended fields to ensure we have user ID
+ * This uses a different endpoint that explicitly includes the 'sub' field which is the Google ID
+ */
+export async function fetchGoogleUserInfoExtended(token: string): Promise<any> {
+  try {
+    // Use the Google OpenID endpoint which includes the 'sub' field (Google's user ID)
+    const response = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+      headers: {
+        Authorization: `Bearer ${token}`
       }
-      
+    });
+    
+    if (!response.ok) {
+      console.error('Failed to fetch extended Google user info:', response.status, response.statusText);
       return null;
     }
     
     const data = await response.json();
-    console.log('Successfully fetched Google user info:', data.email);
     
-    // Log the full user data for debugging
-    console.log('User data from Google:', JSON.stringify(data, null, 2));
-    
-    // Ensure we have an ID property
-    if (!data.id) {
-      console.warn('Google user info missing ID property, trying sub or user_id property');
+    // Map the OpenID 'sub' field to 'id' if needed
+    if (!data.id && data.sub) {
+      data.id = data.sub;
+      console.log('Mapped OpenID sub field to id:', data.id);
     }
     
-    return {
-      email: data.email,
-      name: data.name,
-      picture: data.picture,
-      id: data.id || data.sub || data.user_id || `google-${data.email.split('@')[0]}-${Date.now()}`
-    };
+    return data;
   } catch (error) {
-    console.error('Error fetching Google user info:', error);
+    console.error('Error fetching extended Google user info:', error);
     return null;
   }
 } 
