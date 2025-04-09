@@ -5,8 +5,7 @@ import { SettingsProvider } from './context/SettingsContext';
 import { PopupContent } from './index';
 
 export const PopupPage = () => {
-  // Use direct @ts-ignore to bypass TypeScript JSX validation issues
-  // @ts-ignore
+  // Use direct JSX to avoid TypeScript errors
   return (
     <AuthProvider>
       <ScanProvider>

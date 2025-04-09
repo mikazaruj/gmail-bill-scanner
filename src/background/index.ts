@@ -984,7 +984,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
             
             // Get the Supabase client utility functions
-            const { getUserStatsByGoogleId, getSupabaseClient } = await import('../services/supabase/client');
+            const { getUserStatsByGoogleId, getSupabaseClient, getUserStats } = await import('../services/supabase/client');
+            
+            // Try to get user stats from user_stats view if we have Supabase user ID
+            if (supabase_user_id) {
+              try {
+                const userStats = await getUserStats(supabase_user_id);
+                
+                if (userStats) {
+                  console.log('Background: Got user stats from user_stats view:', userStats);
+                  sendResponse({ success: true, userData: userStats });
+                  return;
+                }
+              } catch (statsError) {
+                console.warn('Background: Error getting stats from user_stats view:', statsError);
+              }
+            }
             
             // Try to get user stats by Google ID
             if (google_user_id) {
@@ -994,7 +1009,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 if (userStats) {
                   console.log('Background: Got user stats by Google ID:', userStats);
                   sendResponse({ success: true, userData: userStats });
-              return;
+                  return;
                 }
               } catch (statsError) {
                 console.warn('Background: Error getting stats by Google ID:', statsError);
@@ -1002,17 +1017,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
             
             // Fallback to simple default data if we can't get real stats
-            console.log('Background: Returning default stats data');
-              sendResponse({
-                success: true,
-                userData: {
+            // Important: don't return placeholder percentages or counts here!
+            console.log('Background: Returning default stats data with proper zeros');
+            sendResponse({
+              success: true,
+              userData: {
                 id: supabase_user_id || 'unknown',
                 email: user_email || 'unknown',
                 created_at: new Date().toISOString(),
-                  plan: 'free',
-                  quota_bills_monthly: 50,
-                  quota_bills_used: 0,
-                  total_processed_items: 0,
+                plan: 'free',
+                quota_bills_monthly: 50,
+                quota_bills_used: 0,
+                total_processed_items: 0,
                 successful_processed_items: 0,
                 last_processed_at: null,
                 display_name: user_profile?.name || 'User',

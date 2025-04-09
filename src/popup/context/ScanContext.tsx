@@ -1,6 +1,8 @@
 import * as React from 'react';
-import { createContext, useState, ReactNode } from 'react';
+import { createContext, useState, useEffect } from 'react';
 import { BillData, DashboardStats, ScanningStatus, Settings } from '../../types/Message';
+import { getUserStats } from '../../services/supabase/client';
+import { useAuth } from '../hooks/useAuth';
 
 interface ScanContextType {
   scanStatus: ScanningStatus;
@@ -9,6 +11,9 @@ interface ScanContextType {
   dashboardStats: DashboardStats;
   exportInProgress: boolean;
   error: string | null;
+  lastProcessedAt: string | null;
+  successRate: number;
+  timeSaved: number;
   startScan: (settings: Settings) => Promise<void>;
   exportToSheets: () => Promise<void>;
   clearResults: () => void;
@@ -28,6 +33,9 @@ export const ScanContext = createContext<ScanContextType>({
   dashboardStats: defaultDashboardStats,
   exportInProgress: false,
   error: null,
+  lastProcessedAt: null,
+  successRate: 0,
+  timeSaved: 0,
   startScan: async () => {},
   exportToSheets: async () => {},
   clearResults: () => {},
@@ -45,6 +53,68 @@ export const ScanProvider = ({ children }: ScanProviderProps) => {
   const [dashboardStats, setDashboardStats] = useState<DashboardStats>(defaultDashboardStats);
   const [exportInProgress, setExportInProgress] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastProcessedAt, setLastProcessedAt] = useState<string | null>(null);
+  const [successRate, setSuccessRate] = useState<number>(0);
+  const [timeSaved, setTimeSaved] = useState<number>(0);
+  
+  // Get auth context to access user ID
+  const { userId } = useAuth?.() || { userId: null };
+  
+  // Load user stats from Supabase when user is authenticated
+  useEffect(() => {
+    const fetchUserStats = async () => {
+      if (!userId) return;
+      
+      try {
+        console.log('Fetching user stats for userId:', userId);
+        const stats = await getUserStats(userId);
+        
+        console.log('Received stats from database:', stats);
+        
+        if (stats) {
+          // Calculate success rate based on processed items
+          // If no items processed, success rate is 0%
+          const calculatedSuccessRate = stats.total_processed_items > 0 
+            ? Math.round((stats.successful_processed_items / stats.total_processed_items) * 100) 
+            : 0;
+            
+          // Set last processed date
+          setLastProcessedAt(stats.last_processed_at);
+          
+          // Set success rate
+          setSuccessRate(calculatedSuccessRate);
+          
+          // Calculate estimated time saved (2.4 minutes per successful bill)
+          // If no successful items, time saved is 0
+          const calculatedTimeSaved = stats.successful_processed_items > 0 
+            ? parseFloat((stats.successful_processed_items * 2.4 / 60).toFixed(1))
+            : 0;
+          setTimeSaved(calculatedTimeSaved);
+          
+          // Update dashboard stats
+          setDashboardStats({
+            processed: stats.total_processed_items,
+            billsFound: stats.successful_processed_items,
+            errors: stats.total_processed_items - stats.successful_processed_items
+          });
+          
+          console.log('Updated dashboard values:', {
+            successRate: calculatedSuccessRate,
+            timeSaved: calculatedTimeSaved,
+            dashboardStats: {
+              processed: stats.total_processed_items,
+              billsFound: stats.successful_processed_items,
+              errors: stats.total_processed_items - stats.successful_processed_items
+            }
+          });
+        }
+      } catch (err) {
+        console.error('Error fetching user stats:', err);
+      }
+    };
+    
+    fetchUserStats();
+  }, [userId]);
 
   const clearResults = () => {
     setScanResults([]);
@@ -157,6 +227,9 @@ export const ScanProvider = ({ children }: ScanProviderProps) => {
     dashboardStats,
     exportInProgress,
     error,
+    lastProcessedAt,
+    successRate,
+    timeSaved,
     startScan,
     exportToSheets,
     clearResults,

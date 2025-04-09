@@ -7,6 +7,7 @@ interface AuthContextType {
   isLoading: boolean;
   error: string | null;
   userProfile: UserProfile;
+  userId: string | null;
   logout: () => Promise<void>;
   refreshAuthStatus: () => Promise<void>;
 }
@@ -23,6 +24,7 @@ const AuthContext = React.createContext<AuthContextType>({
   isLoading: true,
   error: null,
   userProfile: defaultUserProfile,
+  userId: null,
   logout: async () => {},
   refreshAuthStatus: async () => {}
 });
@@ -40,6 +42,7 @@ const AuthProvider = ({ children }: AuthProviderProps) => {
   const [isLoading, setIsLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [userProfile, setUserProfile] = React.useState<UserProfile>(defaultUserProfile);
+  const [userId, setUserId] = React.useState<string | null>(null);
 
   // Check authentication status
   const checkAuthStatus = React.useCallback(async () => {
@@ -64,6 +67,11 @@ const AuthProvider = ({ children }: AuthProviderProps) => {
             email: response.profile.email || '',
             avatar: response.profile.picture || ''
           });
+          
+          // Set user ID if available
+          if (response.userId) {
+            setUserId(response.userId);
+          }
         }
         
         setError(null);
@@ -123,6 +131,7 @@ const AuthProvider = ({ children }: AuthProviderProps) => {
     isLoading,
     error,
     userProfile,
+    userId,
     logout,
     refreshAuthStatus
   };

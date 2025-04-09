@@ -1,4 +1,4 @@
-import React, { useState, useEffect, ChangeEvent } from 'react';
+import React, { useState, useEffect, ChangeEvent, useContext } from 'react';
 import { Mail, FileSpreadsheet } from 'lucide-react';
 import CollapsibleSection from '../components/CollapsibleSection';
 import SettingsToggle from '../components/SettingsToggle';
@@ -13,6 +13,7 @@ import {
   addTrustedSource,
   removeTrustedSource
 } from '../../services/trustedSources';
+import { SettingsContext } from '../context/SettingsContext';
 
 // Maximum trusted sources for free plan
 const MAX_FREE_TRUSTED_SOURCES = 3;
@@ -22,12 +23,14 @@ interface SettingsProps {
 }
 
 const Settings = ({ onNavigate }: SettingsProps) => {
+  const settingsContext = useContext(SettingsContext);
+  
   const { 
     settings, 
     updateSettings, 
     saveSettings, 
     isLoading: settingsLoading 
-  } = useSettings();
+  } = settingsContext;
   
   const { userProfile } = useAuth();
   

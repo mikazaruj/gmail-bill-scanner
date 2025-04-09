@@ -173,6 +173,21 @@ type Database = {
         };
       };
     };
+    Views: {
+      user_stats: {
+        Row: {
+          id: string;
+          email: string;
+          created_at: string;
+          plan: string;
+          quota_bills_monthly: number;
+          quota_bills_used: number;
+          total_processed_items: number;
+          successful_processed_items: number;
+          last_processed_at: string | null;
+        };
+      };
+    };
     Functions: {
       create_public_user: {
         Args: {
@@ -1193,114 +1208,25 @@ export async function linkGoogleUserInSupabase({
 }
 
 /**
- * Get user stats by Google ID
- * @param googleId The Google user ID
- * @returns User stats data or null
+ * Get user stats from the user_stats view
+ * @param userId Supabase user ID
+ * @returns User stats
  */
-export async function getUserStatsByGoogleId(googleId: string): Promise<any> {
-  try {
-    console.log('Getting user stats for Google ID:', googleId);
-    const supabase = await getSupabaseClient();
+export async function getUserStats(userId: string) {
+  const supabase = await getSupabaseClient();
+  
+  const { data, error } = await supabase
+    .from('user_stats')
+    .select('*')
+    .eq('id', userId)
+    .single();
     
-    // Get consolidated user data from storage
-    const { profile } = await getUserData();
-    
-    // Find the user by Google ID
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('*')
-      .eq('google_user_id', googleId)
-      .maybeSingle();
-    
-    if (userError || !userData) {
-      console.error('User not found for Google ID:', googleId);
-      
-      // If we have profile info, return a synthetic record
-      if (profile) {
-        console.log('Creating synthetic user stats from Google profile');
-        return {
-          id: 'temp-' + googleId,
-          email: profile.email,
-          created_at: new Date().toISOString(),
-          plan: 'free',
-          quota_bills_monthly: 50,
-          quota_bills_used: 0,
-          total_processed_items: 0,
-          successful_processed_items: 0,
-          last_processed_at: null,
-          display_name: profile.name,
-          avatar_url: profile.picture
-        };
-      }
-      
-      return null;
-    }
-    
-    console.log('Found user in database:', userData.id);
-    
-    // Try to get profile info from user_profiles view
-    const { data: profileData } = await supabase
-      .from('user_profiles')
-      .select('*')
-      .eq('id', userData.id)
-      .maybeSingle();
-    
-    // Get processed items count
-    const { count } = await supabase
-      .from('processed_items')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', userData.id);
-    
-    // Get successful items count
-    const { count: successCount } = await supabase
-      .from('processed_items')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', userData.id)
-      .eq('status', 'success');
-    
-    // Build stats data, merging profile data if available
-    return {
-      id: userData.id,
-      email: userData.email,
-      created_at: userData.created_at,
-      plan: userData.plan || 'free',
-      quota_bills_monthly: userData.quota_bills_monthly || 50,
-      quota_bills_used: userData.quota_bills_used || 0,
-      total_processed_items: count || 0,
-      successful_processed_items: successCount || 0,
-      last_processed_at: null,
-      // Use profile data if available, otherwise use Google profile or defaults
-      display_name: (profileData?.display_name || profileData?.full_name || profile?.name || userData.email?.split('@')[0] || 'User'),
-      avatar_url: (profileData?.avatar_url || profile?.picture || null)
-    };
-  } catch (error) {
-    console.error('Error getting user stats:', error);
-    
-    // Get Google profile info from storage for fallback
-    try {
-      const { profile } = await getUserData();
-      if (profile) {
-        console.log('Creating synthetic user stats from Google profile after error');
-        return {
-          id: 'temp-' + googleId,
-          email: profile.email,
-          created_at: new Date().toISOString(),
-          plan: 'free',
-          quota_bills_monthly: 50,
-          quota_bills_used: 0,
-          total_processed_items: 0,
-          successful_processed_items: 0,
-          last_processed_at: null,
-          display_name: profile.name,
-          avatar_url: profile.picture
-        };
-      }
-    } catch (fallbackError) {
-      console.error('Error getting fallback profile:', fallbackError);
-    }
-    
+  if (error) {
+    console.error('Error fetching user stats:', error);
     return null;
   }
+    
+  return data;
 }
 
 /**

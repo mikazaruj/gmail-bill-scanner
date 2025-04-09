@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { BarChart2, Clock, RefreshCcw, FileSpreadsheet, Check, AlertTriangle, PieChart, Calendar } from 'lucide-react';
 import CollapsibleSection from '../components/CollapsibleSection';
 import StatCard from '../components/StatCard';
 import ActivityItem from '../components/ActivityItem';
-import { useScan } from '../hooks/useScan';
+import { ScanContext } from '../context/ScanContext';
 import { useSettings } from '../hooks/useSettings';
 
 interface DashboardProps {
@@ -11,14 +11,39 @@ interface DashboardProps {
 }
 
 const Dashboard = ({ onNavigate }: DashboardProps) => {
+  const context = useContext(ScanContext);
+  
   const { 
     scanStatus, 
     scanResults, 
     dashboardStats, 
     exportInProgress, 
     startScan, 
-    exportToSheets 
-  } = useScan();
+    exportToSheets,
+    lastProcessedAt,
+    successRate,
+    timeSaved
+  } = context;
+  
+  // Add console logging to see what values we're getting
+  console.log('Dashboard values:', {
+    dashboardStats,
+    successRate,
+    timeSaved,
+    lastProcessedAt
+  });
+  
+  // Override values if no processed items (temporary solution until we fix the data flow)
+  const displaySuccessRate = dashboardStats.processed === 0 ? 0 : successRate;
+  const displayTimeSaved = dashboardStats.billsFound === 0 ? 0 : timeSaved;
+  
+  // Log the display values
+  console.log('Display values:', {
+    displaySuccessRate,
+    displayTimeSaved,
+    processed: dashboardStats.processed,
+    billsFound: dashboardStats.billsFound
+  });
   
   const { settings } = useSettings();
   
@@ -30,6 +55,29 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
     await exportToSheets();
   };
 
+  // Format the last processed time
+  const formatLastProcessedTime = () => {
+    if (!lastProcessedAt) return 'Never';
+    
+    const now = new Date();
+    const lastProcessed = new Date(lastProcessedAt);
+    const diffMs = now.getTime() - lastProcessed.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 0) {
+      const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+      if (diffHours === 0) {
+        const diffMinutes = Math.floor(diffMs / (1000 * 60));
+        return `${diffMinutes}m ago`;
+      }
+      return `${diffHours}h ago`;
+    } else if (diffDays === 1) {
+      return 'Yesterday';
+    } else {
+      return `${diffDays}d ago`;
+    }
+  };
+
   return (
     <div className="dashboard-container">
       {/* Stats Dashboard */}
@@ -38,14 +86,14 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
           <h2 className="text-base font-semibold text-gray-900">Dashboard</h2>
           <div className="flex items-center text-xs text-gray-500">
             <Clock size={12} className="mr-1" />
-            <span>Last run: 2d ago</span>
+            <span>Last run: {formatLastProcessedTime()}</span>
           </div>
         </div>
         
         <div className="grid grid-cols-2 gap-2 mb-3">
           <StatCard
             title="Success Rate"
-            value="96%"
+            value={`${displaySuccessRate}%`}
             subtitle={`${dashboardStats.processed} emails processed`}
             icon={BarChart2}
             bgColor="bg-blue-50"
@@ -57,7 +105,7 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
           
           <StatCard
             title="Time Saved"
-            value="3.7 hrs"
+            value={`${displayTimeSaved} hrs`}
             subtitle={`${dashboardStats.billsFound} bills extracted`}
             icon={Clock}
             bgColor="bg-green-50"
@@ -69,7 +117,7 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
           
           <StatCard
             title="This Month"
-            value="5.6 hrs"
+            value={`${displayTimeSaved} hrs`}
             subtitle="total time saved"
             icon={PieChart}
             bgColor="bg-indigo-50"
@@ -81,7 +129,7 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
           
           <StatCard
             title="Per Bill"
-            value="2.4 min"
+            value={dashboardStats.billsFound > 0 ? "2.4 min" : "0 min"}
             subtitle="avg. time saved"
             icon={Calendar}
             bgColor="bg-amber-50"
@@ -93,29 +141,37 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
         </div>
         
         <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-          <div className="h-full bg-blue-600" style={{ width: '96%' }}></div>
+          <div className="h-full bg-blue-600" style={{ width: `${displaySuccessRate}%` }}></div>
         </div>
       </div>
       
       {/* Recent Activity */}
       <CollapsibleSection title="Recent Activity" defaultOpen={true}>
         <div className="space-y-1.5">
-          <ActivityItem
-            icon={Check}
-            iconColor="text-green-500"
-            title={`Auto-processed ${dashboardStats.processed} emails`}
-            subtitle={`${dashboardStats.billsFound} bills found, ${dashboardStats.errors} errors`}
-            timestamp="2d ago"
-          />
-          
-          {dashboardStats.errors > 0 && (
-            <ActivityItem
-              icon={AlertTriangle}
-              iconColor="text-amber-500"
-              title={`${dashboardStats.errors} extraction failures`}
-              subtitle="Format not recognized"
-              timestamp="2d ago"
-            />
+          {dashboardStats.processed > 0 ? (
+            <>
+              <ActivityItem
+                icon={Check}
+                iconColor="text-green-500"
+                title={`Auto-processed ${dashboardStats.processed} emails`}
+                subtitle={`${dashboardStats.billsFound} bills found, ${dashboardStats.errors} errors`}
+                timestamp={formatLastProcessedTime()}
+              />
+              
+              {dashboardStats.errors > 0 && (
+                <ActivityItem
+                  icon={AlertTriangle}
+                  iconColor="text-amber-500"
+                  title={`${dashboardStats.errors} extraction failures`}
+                  subtitle="Format not recognized"
+                  timestamp={formatLastProcessedTime()}
+                />
+              )}
+            </>
+          ) : (
+            <div className="text-sm text-gray-500 text-center py-2">
+              No processing activity yet. Run your first scan to extract bills.
+            </div>
           )}
         </div>
       </CollapsibleSection>
@@ -126,7 +182,7 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
         className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
       >
         <RefreshCcw size={14} className="mr-2" />
-        {scanStatus === 'scanning' ? 'Scanning...' : 'Run Manual Processing'}
+        {scanStatus === 'scanning' ? 'Scanning...' : dashboardStats.processed === 0 ? 'Run First Scan' : 'Run Manual Processing'}
       </button>
       
       {scanResults.length > 0 && (

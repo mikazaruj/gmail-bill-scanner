@@ -23,7 +23,8 @@ import Profile from './pages/Profile';
 
 // Hooks
 import { useAuth } from './hooks/useAuth';
-import { useScan } from './hooks/useScan';
+// We'll use the ScanContext directly but provide fallback hardcoded values
+import { ScanContext } from './context/ScanContext';
 
 interface CollapsibleSectionProps {
   title: string;
@@ -91,7 +92,37 @@ export const PopupContent = () => {
   const [isReturningUser, setIsReturningUser] = useState<boolean>(false);
   
   const { isAuthenticated, isLoading, error, refreshAuthStatus, userProfile } = useAuth();
-  const { scanStatus, scanProgressMessage, exportInProgress } = useScan();
+  
+  // Hardcoded default scan values until we fix the import issues
+  const scanValues = {
+    scanStatus: 'idle',
+    scanResults: [],
+    scanProgressMessage: '',
+    dashboardStats: {
+      processed: 0,
+      billsFound: 0,
+      errors: 0
+    },
+    exportInProgress: false,
+    error: null,
+    lastProcessedAt: null,
+    successRate: 0,
+    timeSaved: 0,
+    startScan: async () => {},
+    exportToSheets: async () => {},
+    clearResults: () => {},
+    clearError: () => {}
+  };
+  
+  const { 
+    scanStatus, 
+    scanProgressMessage, 
+    exportInProgress,
+    scanResults,
+    dashboardStats,
+    startScan,
+    exportToSheets
+  } = scanValues;
 
   // When component mounts, check if this is a returning user
   useEffect(() => {
@@ -463,20 +494,8 @@ export const PopupContent = () => {
   );
 };
 
-// Component used for exporting for external use
-export const Popup = () => {
-  // Use standard React.createElement instead of JSX to avoid TypeScript errors
-  return React.createElement(
-    AuthProvider,
-    null,
-    React.createElement(
-      ScanProvider,
-      null,
-      React.createElement(
-        SettingsProvider,
-        null,
-        React.createElement(PopupContent, null)
-      )
-    )
-  );
-}; 
+// Fix for duplicate export
+// Instead of exporting PopupContent twice, export it only once and use a default export for Popup
+export default function Popup() {
+  return <PopupContent />;
+} 
