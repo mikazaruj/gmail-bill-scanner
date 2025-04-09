@@ -1,5 +1,12 @@
 import { TrustedSource } from '../types/TrustedSource';
 import { supabase } from './supabase/client';
+import {
+  getTrustedSources,
+  addTrustedSource as addSource,
+  removeTrustedSource as removeSource,
+  getUserSettings as getSettings,
+  saveUserSettings as saveSettings
+} from './supabase/client';
 
 // Save to local Chrome storage
 export async function saveLocalTrustedSources(sources: TrustedSource[]): Promise<void> {
@@ -44,6 +51,38 @@ function normalizeTrustedSource(source: TrustedSource): TrustedSource {
   }
   
   return source;
+}
+
+export interface TrustedSourceView extends TrustedSource {
+  plan: string;
+  max_trusted_sources: number;
+  total_sources: number;
+  is_limited: boolean;
+}
+
+// Get trusted sources from the trusted_sources_view
+export async function getTrustedSourcesView(userId: string): Promise<TrustedSourceView[]> {
+  try {
+    const { data, error } = await supabase
+      .from('trusted_sources_view')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_active', true);
+      
+    if (error) throw error;
+    
+    // Update local cache for performance
+    const normalizedData = (data || []).map(normalizeTrustedSource);
+    await saveLocalTrustedSources(normalizedData);
+    
+    return data || [];
+  } catch (error) {
+    console.error('Error fetching trusted sources:', error);
+    
+    // Fall back to cache if available
+    const cachedSources = await loadLocalTrustedSources();
+    return cachedSources.map(normalizeTrustedSource) as TrustedSourceView[];
+  }
 }
 
 // Sync from Supabase and update local cache
@@ -207,5 +246,71 @@ export async function removeTrustedSource(email: string, userId?: string): Promi
       console.error('Failed to update local cache:', innerError);
       return await loadLocalTrustedSources();
     }
+  }
+}
+
+/**
+ * Get user settings from Supabase
+ * 
+ * @param userId Optional user ID (required for Supabase sync)
+ * @returns User settings
+ */
+export async function getUserSettings(userId?: string) {
+  try {
+    if (!userId) {
+      // Return default settings if no userId provided
+      return {
+        spreadsheet_id: null,
+        spreadsheet_name: null,
+        scan_frequency: 'manual',
+        apply_labels: false,
+        label_name: null
+      };
+    }
+    
+    // Get settings from Supabase
+    return await getSettings(userId);
+  } catch (error) {
+    console.error('Error getting user settings:', error);
+    // Return default settings on error
+    return {
+      spreadsheet_id: null,
+      spreadsheet_name: null,
+      scan_frequency: 'manual',
+      apply_labels: false,
+      label_name: null
+    };
+  }
+}
+
+/**
+ * Save user settings to Supabase
+ * 
+ * @param userId User ID (required for Supabase sync)
+ * @param settings Settings to save
+ * @returns Success status
+ */
+export async function saveUserSettings(
+  userId: string, 
+  settings: {
+    spreadsheet_id?: string | null;
+    spreadsheet_name?: string | null;
+    scan_frequency?: 'manual' | 'daily' | 'weekly';
+    apply_labels?: boolean;
+    label_name?: string | null;
+  }
+) {
+  try {
+    if (!userId) {
+      console.warn('No userId provided for saveUserSettings');
+      return { success: false, error: 'No userId provided' };
+    }
+    
+    // Save settings to Supabase
+    const result = await saveSettings(userId, settings);
+    return { success: !result.error, error: result.error };
+  } catch (error) {
+    console.error('Error saving user settings:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 } 

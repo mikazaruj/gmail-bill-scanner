@@ -29,6 +29,7 @@ export interface UserProfile {
   name: string;
   email: string;
   avatar: string;
+  plan?: string;  // User's subscription plan
 }
 
 export interface DashboardStats {

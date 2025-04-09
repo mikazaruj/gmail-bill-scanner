@@ -801,11 +801,11 @@ export async function getUserSettings(userId: string) {
 export async function saveUserSettings(
   userId: string, 
   settings: {
-    spreadsheet_id?: string;
-    spreadsheet_name?: string;
+    spreadsheet_id?: string | null;
+    spreadsheet_name?: string | null;
     scan_frequency?: 'manual' | 'daily' | 'weekly';
     apply_labels?: boolean;
-    label_name?: string;
+    label_name?: string | null;
   }
 ) {
   const supabase = await getSupabaseClient();
@@ -834,7 +834,10 @@ export async function saveUserSettings(
         user_id: userId,
         ...settings,
         scan_frequency: settings.scan_frequency || 'manual',
-        apply_labels: settings.apply_labels !== undefined ? settings.apply_labels : false
+        apply_labels: settings.apply_labels !== undefined ? settings.apply_labels : false,
+        label_name: settings.label_name || null,
+        spreadsheet_id: settings.spreadsheet_id || null,
+        spreadsheet_name: settings.spreadsheet_name || null
       });
   }
 }
