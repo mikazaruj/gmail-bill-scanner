@@ -306,33 +306,45 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
       storeGoogleToken 
     } = await import('../services/supabase/client');
 
-    // Link the Google user directly with Supabase public.users
+    // Ensure userInfo.id is not undefined before using it in the profile object
+    if (!userInfo.id) {
+      throw new Error('Google user ID is missing');
+    }
+    
     console.log('Linking Google user to Supabase with Google ID:', userInfo.id);
     
-    const linkResult = await linkGoogleUserInSupabase(userInfo);
+    const linkResult = await linkGoogleUserInSupabase({
+      profile: {
+        id: userInfo.id,
+        email: userInfo.email,
+        name: userInfo.name,
+        picture: userInfo.picture
+      },
+      token: null // Token not needed for this operation
+    });
     
     if (!linkResult.success) {
       console.error('Failed to link Google user:', linkResult.error);
       throw new Error(`Failed to link Google account: ${linkResult.error}`);
     }
     
-    console.log('Successfully linked Google account with user ID:', linkResult.userId);
+    console.log('Successfully linked Google account with user ID:', linkResult.user?.id);
     
-    if (!linkResult.userId) {
+    if (!linkResult.user?.id) {
       throw new Error('Failed to get user ID after linking Google account');
     }
     
     // Store Google token for the user
     try {
-      await storeGoogleToken(linkResult.userId, token);
-      console.log('Stored Google token for user', linkResult.userId);
+      await storeGoogleToken(linkResult.user.id, token);
+      console.log('Stored Google token for user', linkResult.user.id);
     } catch (tokenError) {
       console.error('Failed to store Google token:', tokenError);
       // Continue even if token storage failed
     }
     
     // Create a local session
-    const sessionResult = await createLocalSession(linkResult.userId, userInfo);
+    const sessionResult = await createLocalSession(linkResult.user.id, userInfo);
     
     if (!sessionResult.success) {
       console.error('Failed to create local session:', sessionResult.error);
@@ -343,7 +355,7 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
     
     // Store additional information in Chrome storage for reference
     await chrome.storage.local.set({
-      'supabase_user_id': linkResult.userId,
+      'supabase_user_id': linkResult.user.id,
       'user_email': userInfo.email,
       'user_profile': userInfo
     });
@@ -353,14 +365,14 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
       success: true,
       isAuthenticated: true,
       profile: {
-        id: linkResult.userId,
+        id: linkResult.user.id,
         email: userInfo.email,
         name: userInfo.name || '',
         picture: userInfo.picture || ''
       },
       message: 'Account created and linked successfully!',
-      newUser: !linkResult.userData?.created_at || 
-               (new Date().getTime() - new Date(linkResult.userData.created_at).getTime() < 60000)
+      newUser: !linkResult.user?.created_at || 
+               (new Date().getTime() - new Date(linkResult.user.created_at).getTime() < 60000)
     };
   } catch (error) {
     console.error('Authentication error:', error);
@@ -601,19 +613,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                   return;
                 }
                 
-                // Try to get user stats by Google ID
-                if (module.getUserStatsByGoogleId) {
+                // Try to find user by Google ID and then get their stats
+                if (module.findUserByGoogleId) {
                   try {
-                    const userStats = await module.getUserStatsByGoogleId(googleId);
+                    const user = await module.findUserByGoogleId(googleId);
                     
-                    if (userStats) {
-                      console.log('Background: Got user stats by Google ID');
-                      sendResponse({ 
-                        success: true, 
-                        isAuthenticated: true,
-                        profile: userStats
-                      });
-                      return;
+                    if (user && user.id) {
+                      const userStats = await module.getUserStats(user.id);
+                      
+                      if (userStats) {
+                        console.log('Background: Got user stats by Google ID');
+                        sendResponse({ 
+                          success: true, 
+                          isAuthenticated: true,
+                          profile: userStats
+                        });
+                        return;
+                      }
                     }
                   } catch (statsError) {
                     console.warn('Background: Error getting stats by Google ID:', statsError);
@@ -984,7 +1000,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
             
             // Get the Supabase client utility functions
-            const { getUserStatsByGoogleId, getSupabaseClient, getUserStats } = await import('../services/supabase/client');
+            const { getSupabaseClient, getUserStats, findUserByGoogleId } = await import('../services/supabase/client');
             
             // Try to get user stats from user_stats view if we have Supabase user ID
             if (supabase_user_id) {
@@ -1001,15 +1017,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               }
             }
             
-            // Try to get user stats by Google ID
+            // Try to get user stats by Google ID using findUserByGoogleId and getUserStats
             if (google_user_id) {
               try {
-                const userStats = await getUserStatsByGoogleId(google_user_id);
+                const user = await findUserByGoogleId(google_user_id);
                 
-                if (userStats) {
-                  console.log('Background: Got user stats by Google ID:', userStats);
-                  sendResponse({ success: true, userData: userStats });
-                  return;
+                if (user && user.id) {
+                  const userStats = await getUserStats(user.id);
+                  
+                  if (userStats) {
+                    console.log('Background: Got user stats by Google ID:', userStats);
+                    sendResponse({ success: true, userData: userStats });
+                    return;
+                  }
                 }
               } catch (statsError) {
                 console.warn('Background: Error getting stats by Google ID:', statsError);
@@ -1171,25 +1191,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const { linkGoogleUserInSupabase } = await import('../services/supabase/client');
         
         // Link the Google user with Supabase
-        const linkResult = await linkGoogleUserInSupabase(profile);
+        const linkResult = await linkGoogleUserInSupabase({
+          profile: {
+            id: profile.id,
+            email: profile.email,
+            name: profile.name,
+            picture: profile.picture
+          },
+          token: null // Token not needed for this operation
+        });
         
         console.log('Link result:', linkResult.success ? 'Success' : 'Failed');
         
-        if (linkResult.success && linkResult.userId) {
+        if (linkResult.success && linkResult.user?.id) {
           // Store the Supabase user ID in Chrome storage
           await chrome.storage.local.set({
-            'supabase_user_id': linkResult.userId,
+            'supabase_user_id': linkResult.user.id,
             'authenticated_at': new Date().toISOString(),
-            'user_data': linkResult.userData || null
+            'user_data': linkResult.user || null
           });
           
-          console.log('Stored Supabase user ID:', linkResult.userId);
+          console.log('Stored Supabase user ID:', linkResult.user.id);
           
           // Return the result
           sendResponse({
             success: true,
-            userId: linkResult.userId,
-            userData: linkResult.userData
+            userId: linkResult.user.id,
+            userData: linkResult.user
           });
         } else {
           console.error('Failed to link user:', linkResult.error);
