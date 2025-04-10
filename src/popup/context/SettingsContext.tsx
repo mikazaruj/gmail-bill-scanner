@@ -95,10 +95,16 @@ export const SettingsProvider = ({ children }: SettingsProviderProps) => {
   };
 
   const updateSettings = (newSettings: Partial<Settings>) => {
-    setSettings(prevSettings => ({
-      ...prevSettings,
-      ...newSettings
-    }));
+    setSettings(prevSettings => {
+      // Deep equality check before updating state
+      if (JSON.stringify({...prevSettings, ...newSettings}) === JSON.stringify(prevSettings)) {
+        return prevSettings; // Return previous state if nothing has changed
+      }
+      return {
+        ...prevSettings,
+        ...newSettings
+      };
+    });
   };
 
   const updateBillFields = (newBillFields: BillFieldConfig[]) => {

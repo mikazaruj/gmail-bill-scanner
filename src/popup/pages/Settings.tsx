@@ -1,4 +1,4 @@
-import React, { useState, useEffect, ChangeEvent, useContext } from 'react';
+import React, { useState, useEffect, ChangeEvent, useContext, useRef, useCallback } from 'react';
 import { Mail, FileSpreadsheet } from 'lucide-react';
 import CollapsibleSection from '../components/CollapsibleSection';
 import SettingsToggle from '../components/SettingsToggle';
@@ -38,7 +38,15 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     isLoading: settingsLoading 
   } = settingsContext;
   
+  // Store settings in a ref to prevent useEffect from re-running due to settings changes
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  
   const { userProfile } = useAuth();
+  
+  // Add refs to track initialization and previous user ID
+  const isInitializedRef = useRef<boolean>(false);
+  const previousUserIdRef = useRef<string | null>(null);
   
   // Trusted sources state
   const [trustedSources, setTrustedSources] = useState<TrustedSourceView[]>([]);
@@ -71,62 +79,112 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     label_name: null
   };
   
+  // Helper function to ensure Google ID is available in headers
+  const ensureGoogleIdHeader = async (userId: string) => {
+    try {
+      const { google_user_id } = await chrome.storage.local.get('google_user_id');
+      
+      if (!google_user_id) {
+        // This is a simplified version - in a real implementation,
+        // you would fetch the Google ID from Supabase if not present
+        chrome.runtime.sendMessage({ type: 'GET_GOOGLE_USER_ID', userId }, 
+          async (response) => {
+            if (response && response.google_user_id) {
+              await chrome.storage.local.set({ 'google_user_id': response.google_user_id });
+            }
+          }
+        );
+      }
+      
+      return google_user_id;
+    } catch (e) {
+      console.error('Error ensuring Google ID header:', e);
+      return null;
+    }
+  };
+  
   // Load data from all services on component mount
   useEffect(() => {
     const fetchData = async () => {
       try {
+        // Get current userId
+        const userId = userProfile?.id;
+        
+        // Skip if no user ID or if already initialized with the same user
+        if (!userId || (isInitializedRef.current && userId === previousUserIdRef.current)) {
+          return;
+        }
+        
+        // Set loading states
         setIsLoading(true);
         setIsConnectedServiceLoading(true);
         setIsFieldMappingLoading(true);
         
-        // Pass userId if available to enable Supabase sync
-        const userId = userProfile?.id;
+        // Store the current userId for future comparisons
+        previousUserIdRef.current = userId;
         
-        if (userId) {
-          // Load user settings with defaults
-          const userSettings = await getUserSettingsWithDefaults(userId);
-          
+        // Ensure Google ID is in headers/storage
+        await ensureGoogleIdHeader(userId);
+        
+        // Load user settings with defaults
+        const userSettings = await getUserSettingsWithDefaults(userId);
+        
+        // Create settings object for comparison
+        const newSettings = {
+          automaticProcessing: userSettings.automatic_processing,
+          weeklySchedule: userSettings.weekly_schedule,
+          processAttachments: userSettings.process_attachments,
+          maxResults: userSettings.max_results,
+          searchDays: userSettings.search_days
+        };
+        
+        // Only update settings if they've changed to prevent loop
+        if (!isInitializedRef.current || 
+            JSON.stringify(newSettings) !== JSON.stringify({
+              automaticProcessing: settingsRef.current.automaticProcessing,
+              weeklySchedule: settingsRef.current.weeklySchedule,
+              processAttachments: settingsRef.current.processAttachments,
+              maxResults: settingsRef.current.maxResults,
+              searchDays: settingsRef.current.searchDays
+            })) {
           // Update context settings with values from Supabase
-          updateSettings({
-            automaticProcessing: userSettings.automatic_processing,
-            weeklySchedule: userSettings.weekly_schedule,
-            processAttachments: userSettings.process_attachments,
-            maxResults: userSettings.max_results,
-            searchDays: userSettings.search_days
-          });
-          
-          // Set user settings data
-          setUserSettingsData({
-            spreadsheet_id: userSettings.sheet_id,
-            spreadsheet_name: userSettings.sheet_name,
-            scan_frequency: userSettings.automatic_processing ? 
-              (userSettings.weekly_schedule ? 'weekly' : 'daily') : 
-              'manual',
-            apply_labels: userSettings.apply_labels,
-            label_name: userSettings.label_name
-          });
-          
-          // Load connected services
-          const services = await getConnectedServices(userId);
-          setConnectedServices(services);
-          
-          // Load trusted sources
-          const sources = await getTrustedSourcesView(userId);
-          setTrustedSources(sources);
-          
-          // Set plan limits based on first trusted source (they all have the same plan info)
-          if (sources.length > 0) {
-            setMaxTrustedSources(sources[0].max_trusted_sources);
-            setIsLimited(sources[0].is_limited);
-          }
-          
-          // Load field mappings
-          const mappings = await getFieldMappings(userId);
-          setFieldMappings(mappings);
+          updateSettings(newSettings);
         }
+        
+        // Set user settings data
+        setUserSettingsData({
+          spreadsheet_id: userSettings.sheet_id,
+          spreadsheet_name: userSettings.sheet_name,
+          scan_frequency: userSettings.automatic_processing ? 
+            (userSettings.weekly_schedule ? 'weekly' : 'daily') : 
+            'manual',
+          apply_labels: userSettings.apply_labels,
+          label_name: userSettings.label_name
+        });
+        
+        // Load other data in parallel
+        const [services, sources, mappings] = await Promise.all([
+          getConnectedServices(userId),
+          getTrustedSourcesView(userId),
+          getFieldMappings(userId)
+        ]);
+        
+        setConnectedServices(services);
+        setTrustedSources(sources);
+        setFieldMappings(mappings);
+        
+        // Set plan limits based on first trusted source
+        if (sources.length > 0) {
+          setMaxTrustedSources(sources[0].max_trusted_sources);
+          setIsLimited(sources[0].is_limited);
+        }
+        
+        // Mark as initialized
+        isInitializedRef.current = true;
       } catch (error) {
         console.error('Error loading data:', error);
       } finally {
+        // Reset loading states
         setIsLoading(false);
         setIsConnectedServiceLoading(false);
         setIsFieldMappingLoading(false);
@@ -134,7 +192,9 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     };
     
     fetchData();
-  }, [userProfile, updateSettings]);
+    
+    // Only include userProfile?.id in dependency array
+  }, [userProfile?.id]);
   
   const handleShowAddModal = () => {
     setIsAddModalOpen(true);
@@ -148,12 +208,15 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     try {
       // Pass userId if available to enable Supabase sync
       const userId = userProfile?.id;
-      if (userId) {
-        const updatedSources = await addTrustedSource(email, userId, description);
-        // Refresh trusted sources from the view to get updated counts
-        const sources = await getTrustedSourcesView(userId);
-        setTrustedSources(sources);
-      }
+      if (!userId) return;
+      
+      // Ensure Google ID is in headers/storage
+      await ensureGoogleIdHeader(userId);
+      
+      const updatedSources = await addTrustedSource(email, userId, description);
+      // Refresh trusted sources from the view to get updated counts
+      const sources = await getTrustedSourcesView(userId);
+      setTrustedSources(sources);
     } catch (error) {
       console.error('Error adding trusted source:', error);
     }
@@ -175,12 +238,15 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     try {
       // Pass userId if available to enable Supabase sync
       const userId = userProfile?.id;
-      if (userId) {
-        await removeTrustedSource(emailToDelete, userId);
-        // Refresh trusted sources from the view to get updated counts
-        const sources = await getTrustedSourcesView(userId);
-        setTrustedSources(sources);
-      }
+      if (!userId) return;
+      
+      // Ensure Google ID is in headers/storage
+      await ensureGoogleIdHeader(userId);
+      
+      await removeTrustedSource(emailToDelete, userId);
+      // Refresh trusted sources from the view to get updated counts
+      const sources = await getTrustedSourcesView(userId);
+      setTrustedSources(sources);
     } catch (error) {
       console.error('Error removing trusted source:', error);
     }
@@ -193,6 +259,9 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         try {
           const userId = userProfile?.id;
           if (!userId) return;
+          
+          // Ensure Google ID is in headers/storage
+          await ensureGoogleIdHeader(userId);
           
           // Update Supabase connected services
           const success = await updateSheetConnection(
@@ -220,34 +289,37 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     });
   };
   
-  const handleToggleAutomaticProcessing = async (checked: boolean) => {
+  const handleToggleAutomaticProcessing = useCallback(async (checked: boolean) => {
     updateSettings({ automaticProcessing: checked });
     
     // Update in Supabase if user is logged in
     if (userProfile?.id) {
+      await ensureGoogleIdHeader(userProfile.id);
       await updateUserPreference(userProfile.id, 'automatic_processing', checked);
     }
-  };
+  }, [userProfile?.id, updateSettings]);
   
-  const handleToggleWeeklySchedule = async (checked: boolean) => {
+  const handleToggleWeeklySchedule = useCallback(async (checked: boolean) => {
     updateSettings({ weeklySchedule: checked });
     
     // Update in Supabase if user is logged in
     if (userProfile?.id) {
+      await ensureGoogleIdHeader(userProfile.id);
       await updateUserPreference(userProfile.id, 'weekly_schedule', checked);
     }
-  };
+  }, [userProfile?.id, updateSettings]);
   
-  const handleToggleProcessAttachments = async (checked: boolean) => {
+  const handleToggleProcessAttachments = useCallback(async (checked: boolean) => {
     updateSettings({ processAttachments: checked });
     
     // Update in Supabase if user is logged in
     if (userProfile?.id) {
+      await ensureGoogleIdHeader(userProfile.id);
       await updateUserPreference(userProfile.id, 'process_attachments', checked);
     }
-  };
+  }, [userProfile?.id, updateSettings]);
   
-  const handleToggleApplyLabels = async (checked: boolean) => {
+  const handleToggleApplyLabels = useCallback(async (checked: boolean) => {
     if (userSettingsData) {
       setUserSettingsData({
         ...userSettingsData,
@@ -257,31 +329,12 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     
     // Update in Supabase if user is logged in
     if (userProfile?.id) {
+      await ensureGoogleIdHeader(userProfile.id);
       await updateUserPreference(userProfile.id, 'apply_labels', checked);
     }
-  };
+  }, [userProfile?.id, userSettingsData]);
   
-  const handleChangeMaxResults = async (e: ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value) || 50;
-    updateSettings({ maxResults: value });
-    
-    // Update in Supabase if user is logged in
-    if (userProfile?.id) {
-      await updateUserPreference(userProfile.id, 'max_results', value);
-    }
-  };
-  
-  const handleChangeSearchDays = async (e: ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value) || 30;
-    updateSettings({ searchDays: value });
-    
-    // Update in Supabase if user is logged in
-    if (userProfile?.id) {
-      await updateUserPreference(userProfile.id, 'search_days', value);
-    }
-  };
-  
-  const handleChangeLabelName = async (e: ChangeEvent<HTMLInputElement>) => {
+  const handleChangeLabelName = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     
     if (userSettingsData) {
@@ -293,23 +346,47 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     
     // Update in Supabase if user is logged in
     if (userProfile?.id) {
+      await ensureGoogleIdHeader(userProfile.id);
       await updateUserPreference(userProfile.id, 'label_name', value);
     }
-  };
+  }, [userProfile?.id, userSettingsData]);
   
-  const handleSaveSettings = async () => {
+  const handleChangeMaxResults = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value) || 50;
+    updateSettings({ maxResults: value });
+    
+    // Update in Supabase if user is logged in
+    if (userProfile?.id) {
+      await ensureGoogleIdHeader(userProfile.id);
+      await updateUserPreference(userProfile.id, 'max_results', value);
+    }
+  }, [userProfile?.id, updateSettings]);
+  
+  const handleChangeSearchDays = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value) || 30;
+    updateSettings({ searchDays: value });
+    
+    // Update in Supabase if user is logged in
+    if (userProfile?.id) {
+      await ensureGoogleIdHeader(userProfile.id);
+      await updateUserPreference(userProfile.id, 'search_days', value);
+    }
+  }, [userProfile?.id, updateSettings]);
+  
+  const handleSaveSettings = useCallback(async () => {
     // Save to Chrome storage via context
     await saveSettings();
     
     // Also save all preferences to Supabase if user is authenticated
     if (userProfile?.id) {
       try {
+        await ensureGoogleIdHeader(userProfile.id);
         await updateMultipleUserPreferences(userProfile.id, {
-          automatic_processing: settings.automaticProcessing,
-          weekly_schedule: settings.weeklySchedule,
-          process_attachments: settings.processAttachments,
-          max_results: settings.maxResults,
-          search_days: settings.searchDays,
+          automatic_processing: settingsRef.current.automaticProcessing,
+          weekly_schedule: settingsRef.current.weeklySchedule,
+          process_attachments: settingsRef.current.processAttachments,
+          max_results: settingsRef.current.maxResults,
+          search_days: settingsRef.current.searchDays,
           apply_labels: userSettingsData?.apply_labels || false,
           label_name: userSettingsData?.label_name
         });
@@ -317,7 +394,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         console.error('Error saving user settings to Supabase:', error);
       }
     }
-  };
+  }, [userProfile?.id, saveSettings, userSettingsData]);
   
   // Helper function to find a specific service
   const findService = (type: 'gmail' | 'sheets'): ServiceStatus | undefined => {
