@@ -6,6 +6,45 @@ const supabaseAnonKey = process.env.REACT_APP_SUPABASE_ANON_KEY || 'your-supabas
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+/**
+ * Get the current authentication state from Chrome storage
+ * Used to check if a user is logged in
+ */
+export async function getAuthState(): Promise<{ 
+  isAuthenticated: boolean; 
+  userId?: string;
+  email?: string;
+}> {
+  try {
+    const data = await chrome.storage.local.get('auth_state');
+    const authState = data.auth_state || { isAuthenticated: false };
+    return authState;
+  } catch (error) {
+    console.error('Error getting auth state:', error);
+    return { isAuthenticated: false };
+  }
+}
+
+/**
+ * Update the authentication state in Chrome storage
+ */
+export async function updateAuthState(authState: { 
+  isAuthenticated: boolean; 
+  userId?: string;
+  email?: string;
+}): Promise<void> {
+  try {
+    await chrome.storage.local.set({ 
+      auth_state: {
+        ...authState,
+        lastSynced: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('Error updating auth state:', error);
+  }
+}
+
 export const syncAuthState = async () => {
   try {
     // Get current session

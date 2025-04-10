@@ -341,34 +341,12 @@ export async function getSupabaseClient() {
     'x-application-name': 'gmail-bill-scanner'
   };
   
-  let googleId = google_user_id;
-  
-  // If no Google ID found directly, try to get from other storage locations
-  if (!googleId) {
-    // Try to get the current user ID
-    try {
-      const session = await getStoredSession();
-      if (session && session.user && session.user.id) {
-        // Use getUserData instead of getGoogleIdFromStorage
-        const userData = await getUserData();
-        googleId = userData.googleId;
-      }
-    } catch (error) {
-      console.warn('Error getting user ID from session:', error);
-    }
-    
-    // If still no Google ID, try direct storage keys
-    if (!googleId) {
-      const { google_id } = await chrome.storage.local.get('google_id');
-      googleId = google_id;
-    }
-  }
-  
-  if (googleId) {
-    headers['X-Google-User-ID'] = googleId;
+  // Add Google ID to headers for RLS policies if available
+  if (google_user_id) {
+    headers['X-Google-User-ID'] = google_user_id;
     console.log('Setting Supabase headers with Google ID:', headers);
   } else {
-    console.log('No Google user ID available for Supabase headers. Headers:', headers);
+    console.log('No Google user ID available for Supabase headers');
   }
   
   // Create a fresh client each time to avoid auth issues
@@ -384,25 +362,6 @@ export async function getSupabaseClient() {
       headers: headers
     }
   });
-  
-  try {
-    // Try to restore the session if it exists, but don't fail if it doesn't
-    const session = await getStoredSession();
-    if (session && session.access_token) {
-      try {
-        await freshClient.auth.setSession({
-          access_token: session.access_token,
-          refresh_token: session.refresh_token || session.access_token
-        });
-      } catch (sessionError) {
-        console.warn('Failed to set session in Supabase client:', sessionError);
-        // Continue anyway with the unauthenticated client
-      }
-    }
-  } catch (error) {
-    console.warn('Error initializing session in getSupabaseClient:', error);
-    // Continue with the client anyway
-  }
   
   return freshClient;
 }
@@ -565,11 +524,35 @@ export async function isAuthenticated() {
 }
 
 /**
- * Sign out the current user by clearing the session
+ * Sign out from Supabase and clear local storage
+ * @returns Result of sign out operation
  */
-export async function signOut() {
-  await clearStoredSession();
-  return { success: true };
+export async function signOut(): Promise<{ success: boolean; error?: string }> {
+  try {
+    console.log('Signing out from Supabase...');
+    
+    // Clear local storage
+    await chrome.storage.local.remove([
+      'gmail-bill-scanner-auth',
+      'supabase_user_id',
+      'auth_state'
+    ]);
+    
+    // Note: We don't clear the Google-related keys here as that's handled by googleAuth.signOut()
+    
+    // Get Supabase client and sign out
+    const supabase = await getSupabaseClient();
+    await supabase.auth.signOut();
+    
+    console.log('Signed out from Supabase successfully');
+    return { success: true };
+  } catch (error) {
+    console.error('Error signing out from Supabase:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  }
 }
 
 /**
@@ -1088,7 +1071,7 @@ export async function upsertUserProfile(
 
 /**
  * Links a Google user with a Supabase public.users account
- * Uses the create_auth_and_public_user RPC function to create or link a user
+ * Uses the ID from Google OAuth as the source of truth
  * @param profile Google profile with ID and email information
  * @returns Response with linking result
  */
@@ -1109,20 +1092,9 @@ export async function linkGoogleUserInSupabase({
   user?: any;
   session?: any;
   needsToAcceptTos?: boolean;
-  googleProfile?: any;
 }> {
   try {
-    // Debug - Log exactly what we received
-    console.log('CRITICAL DEBUG - linkGoogleUserInSupabase received:', {
-      fullArgs: arguments,
-      firstArgType: typeof arguments[0],
-      profileData: profile,
-      tokenData: token,
-      argKeys: Object.keys(arguments[0] || {})
-    });
-    
-    console.log('linkGoogleUserInSupabase: Linking Google user in Supabase', { 
-      profileExists: !!profile,
+    console.log('Linking Google user in Supabase', { 
       hasEmail: profile?.email ? true : false,
       hasId: profile?.id ? true : false
     });
@@ -1146,22 +1118,22 @@ export async function linkGoogleUserInSupabase({
     // Find user by Google ID directly in our database
     const existingUserByGoogleId = await findUserByGoogleId(googleId);
     console.log(
-      'linkGoogleUserInSupabase: Existing user by Google ID',
-      existingUserByGoogleId
+      'User lookup by Google ID:',
+      existingUserByGoogleId ? 'Found' : 'Not found'
     );
 
     // If the user exists, we can authenticate them
     if (existingUserByGoogleId) {
       const session = await createLocalSession(existingUserByGoogleId.id, profile);
-      console.log('linkGoogleUserInSupabase: User found by Google ID, session created');
+      console.log('User found by Google ID, session created');
       return { success: true, user: existingUserByGoogleId, session };
     }
 
-    // If there was no user with this Google ID, let's check if there's a user with this email
+    // If there was no user with this Google ID, check if there's a user with this email
     const existingUserByEmail = await findUserByEmail(email);
     console.log(
-      'linkGoogleUserInSupabase: Existing user by email',
-      existingUserByEmail
+      'User lookup by email:',
+      existingUserByEmail ? 'Found' : 'Not found'
     );
 
     // If we found a user by email, we'll update their Google ID and authenticate them
@@ -1169,12 +1141,12 @@ export async function linkGoogleUserInSupabase({
       // Update the Google ID for the existing user
       await updateUserGoogleId(existingUserByEmail.id, googleId);
       const session = await createLocalSession(existingUserByEmail.id, profile);
-      console.log('linkGoogleUserInSupabase: User found by email, updated Google ID and created session');
+      console.log('User found by email, updated Google ID and created session');
       return { success: true, user: existingUserByEmail, session };
     }
 
     // If we still don't have a user, we'll create a new user with this Google ID and email
-    console.log('linkGoogleUserInSupabase: No existing user found, creating new user');
+    console.log('No existing user found, creating new user');
     const creationResult = await createGoogleUser(
       email,
       googleId,
@@ -1183,16 +1155,15 @@ export async function linkGoogleUserInSupabase({
     );
 
     if (!creationResult.success) {
-      console.error('linkGoogleUserInSupabase: Failed to create Google user', creationResult.error);
+      console.error('Failed to create Google user', creationResult.error);
       return { 
         success: false,
-        error: creationResult.error || 'Failed to create user',
-        googleProfile: profile
+        error: creationResult.error || 'Failed to create user'
       };
     }
 
     // Now we need to create a session for the newly created user
-    const session = await manageGoogleUserId(email, profile);
+    const session = await createLocalSession(creationResult.userId!, profile);
     
     return { 
       success: true, 
@@ -1204,8 +1175,7 @@ export async function linkGoogleUserInSupabase({
     console.error('linkGoogleUserInSupabase error:', error);
     return { 
       success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error during Google account linking',
-      googleProfile: profile || undefined
+      error: error instanceof Error ? error.message : 'Unknown error during Google account linking'
     };
   }
 }
@@ -1281,8 +1251,8 @@ export async function getUserData() {
 }
 
 /**
- * Simplified session management
- * Creates a clean local session without fake JWT tokens
+ * Create a local session for the authenticated user
+ * This simplifies session management by storing essential data in Chrome storage
  * @param userId User ID
  * @param profile Google profile
  * @returns Result of session creation
@@ -1302,13 +1272,13 @@ export async function createLocalSession(
     
     console.log('Creating local session for user:', userId);
     
-    // Create simplified session object without unnecessary JWT complexities
+    // Create simplified session object
     const session = {
       user: {
         id: userId,
         email: profile.email,
         user_metadata: {
-          name: profile.name || 'User',
+          name: profile.name || profile.email.split('@')[0],
           picture: profile.picture,
           avatar_url: profile.picture,
           google_user_id: profile.id
@@ -1318,7 +1288,7 @@ export async function createLocalSession(
       expires_at: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7 days
     };
     
-    // Store essential data directly in Chrome storage for easy access
+    // Store essential data in Chrome storage for easy access
     await chrome.storage.local.set({
       'gmail-bill-scanner-auth': JSON.stringify(session),
       'google_user_id': profile.id,
@@ -1336,8 +1306,8 @@ export async function createLocalSession(
     return { success: true, session };
   } catch (error) {
     console.error('Error creating local session:', error);
-      return {
-        success: false,
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Unknown error' 
     };
   }
@@ -1514,8 +1484,8 @@ export async function manageGoogleUserId(email: string, profile: any) {
 }
 
 /**
- * Creates a user with Google account info using standard Supabase Auth
- * This works by creating auth.users first, then public.users
+ * Creates a user with Google account info
+ * This creates a record in both auth.users and public.users
  */
 export async function createGoogleUser(
   email: string,
@@ -1527,21 +1497,18 @@ export async function createGoogleUser(
   userId?: string;
   error?: string;
   message?: string;
-  details?: any;
 }> {
   try {
-    console.log('⭐⭐⭐ UPDATED VERSION OF createGoogleUser - CREATES AUTH USER FIRST ⭐⭐⭐');
-    console.log('Creating Google user with standard Auth:', {
+    console.log('Creating Google user:', {
       email,
       googleId,
-      name: name || null,
-      avatar_url: avatarUrl || null
+      name: name || null
     });
     
     const supabase = await getSupabaseClient();
     
-    // Step 1: Check if user already exists by email
-    console.log('Step 1: Checking if user exists by email...');
+    // Check if user already exists by email
+    console.log('Checking if user exists by email...');
     const existingUser = await findUserByEmail(email);
     
     if (existingUser) {
@@ -1563,13 +1530,12 @@ export async function createGoogleUser(
       }
     }
     
-    // Step 2: Create a user in auth.users using signUp
-    console.log('Step 2: Creating user in auth.users via signUp...');
+    // Step 1: Create a user in auth.users using signUp
+    console.log('Creating user in auth.users...');
     
-    // Generate a secure random password (user will never need this)
+    // Generate a secure random password
     const securePassword = generateSecurePassword();
     
-    console.log('Calling supabase.auth.signUp to create auth user first');
     const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
       email,
       password: securePassword,
@@ -1587,8 +1553,7 @@ export async function createGoogleUser(
       console.error('Failed to create auth user:', signUpError);
       return {
         success: false,
-        error: signUpError.message,
-        details: signUpError
+        error: signUpError.message
       };
     }
     
@@ -1603,8 +1568,8 @@ export async function createGoogleUser(
     const userId = signUpData.user.id;
     console.log('Auth user created successfully:', userId);
     
-    // Step 3: Create a record in public.users
-    console.log('Step 3: Creating user in public.users table...');
+    // Step 2: Create a record in public.users
+    console.log('Creating user in public.users table...');
     const { error: insertError } = await supabase
       .from('users')
       .insert({
@@ -1619,12 +1584,7 @@ export async function createGoogleUser(
     
     if (insertError) {
       console.error('Error creating public user record:', insertError);
-      return {
-        success: true, // Still return success since auth user was created
-        userId: userId,
-        message: 'Auth user created but public user record failed',
-        details: { authSuccess: true, publicError: insertError.message }
-      };
+      // Continue anyway as we already have the auth user
     }
     
     console.log('User created successfully in both auth and public tables');
@@ -1634,11 +1594,10 @@ export async function createGoogleUser(
       message: 'User created successfully'
     };
   } catch (error) {
-    console.error('Exception in createGoogleUser:', error);
+    console.error('Error creating Google user:', error);
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      details: error
+      error: error instanceof Error ? error.message : 'Unknown error'
     };
   }
 }
@@ -1657,6 +1616,8 @@ function generateSecureId(): string {
  */
 export async function findUserByGoogleId(googleId: string): Promise<any> {
   try {
+    if (!googleId) return null;
+    
     console.log('Finding user by Google ID:', googleId);
     const supabase = await getSupabaseClient();
     
@@ -1680,11 +1641,13 @@ export async function findUserByGoogleId(googleId: string): Promise<any> {
 
 /**
  * Find a user by email
- * @param email User's email
+ * @param email User email
  * @returns User data if found
  */
 export async function findUserByEmail(email: string): Promise<any> {
   try {
+    if (!email) return null;
+    
     console.log('Finding user by email:', email);
     const supabase = await getSupabaseClient();
     

@@ -2,27 +2,13 @@
  * Google OAuth authentication service
  * 
  * Handles authentication with Google OAuth for Gmail and Google Sheets access
+ * using Chrome Identity API
  */
 
 // Default client ID loaded from environment at build time
 const DEFAULT_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 
-// Get the redirect URL for OAuth
-function getRedirectURL(): string {
-  const url = chrome.identity.getRedirectURL();
-  console.warn('Chrome extension OAuth redirect URL:', url);
-  console.warn('Using Chrome App OAuth client type - no redirect URI configuration needed in Google Cloud Console');
-  return url;
-}
-
-// Get the extension ID
-function getExtensionId(): string {
-  const id = chrome.runtime.id;
-  console.warn('Extension ID:', id);
-  return id;
-}
-
-// Scopes for Gmail and Google Sheets
+// Scopes for Gmail and Google Sheets access
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/spreadsheets",
@@ -30,50 +16,25 @@ const SCOPES = [
   "https://www.googleapis.com/auth/userinfo.profile"
 ];
 
-// Token storage key for local cache (tokens are primarily stored in Supabase)
-const TOKEN_STORAGE_KEY = "gmail_bill_scanner_auth_token";
-
-// Token interface
-interface AuthToken {
-  access_token: string;
-  refresh_token?: string;
-  expires_at: number;
-  token_type: string;
-  scope: string;
-}
-
-/**
- * Get the configured Google Client ID
- * @returns The Google Client ID from environment
- */
-async function getClientId(): Promise<string> {
-  // Just return the client ID set at build time - no need to store/retrieve from user settings
-  if (!DEFAULT_CLIENT_ID) {
-    console.warn('No Google Client ID found in environment variables');
-  }
-  
-  return DEFAULT_CLIENT_ID;
-}
-
 /**
  * Checks if the user is authenticated with Google
  * @returns Promise resolving to authentication status
  */
 export async function isAuthenticated(): Promise<boolean> {
   try {
-    console.warn('Checking if user is authenticated...');
+    console.log('Checking if user is authenticated...');
     
     // Use the Chrome Identity API to check authentication status
     return new Promise((resolve) => {
       chrome.identity.getAuthToken({ interactive: false }, (token) => {
         if (chrome.runtime.lastError) {
-          console.warn("Auth check failed:", chrome.runtime.lastError.message);
+          console.log("Auth check failed:", chrome.runtime.lastError.message);
           resolve(false);
           return;
         }
         
         const isAuth = !!token;
-        console.warn('Authentication status:', isAuth ? 'Authenticated' : 'Not authenticated');
+        console.log('Authentication status:', isAuth ? 'Authenticated' : 'Not authenticated');
         resolve(isAuth);
       });
     });
@@ -93,17 +54,10 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
     
     // Step 1: Get Google auth token from Chrome Identity API
     const token = await new Promise<string | null>((resolve, reject) => {
-      const scopes = [
-        'https://www.googleapis.com/auth/userinfo.email',
-        'https://www.googleapis.com/auth/userinfo.profile',
-        'https://www.googleapis.com/auth/gmail.readonly',
-        'https://www.googleapis.com/auth/drive.file',
-      ];
-      
       // Use Chrome Identity to get token (automatically handles refresh and expiry)
       chrome.identity.getAuthToken({ 
         interactive: true, 
-        scopes: scopes 
+        scopes: SCOPES 
       }, (token) => {
         if (chrome.runtime.lastError) {
           console.error('Chrome identity error:', chrome.runtime.lastError.message);
@@ -116,13 +70,7 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
           return;
         }
         
-        // Mask token for logs
-        const masked = token ? { 
-          tokenPrefix: token.substring(0, 6) + '....',
-          tokenLength: token.length
-        } : null;
-        console.log('Got Google auth token:', masked);
-        
+        console.log('Got Google auth token successfully');
         resolve(token);
       });
     });
@@ -131,8 +79,6 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
       console.error('Failed to get auth token from Chrome identity');
       return { success: false, error: 'Failed to get authentication token' };
     }
-    
-    console.log('Got Google auth token successfully');
     
     // Step 2: Get user info from Google
     let userInfo = await fetchGoogleUserInfo(token);
@@ -145,12 +91,6 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
     console.log('User info fetched from Google: Success');
     
     // Ensure all required fields are present
-    console.log('Full Google profile data:', userInfo);
-    console.log('Google ID in userInfo:', userInfo.id);
-    console.log('Google ID type:', typeof userInfo.id);
-    console.log('Google ID length:', userInfo.id ? userInfo.id.length : 'undefined');
-    
-    // If the ID is missing, try to extract it from the sub field
     if (!userInfo.id) {
       console.error('Google user ID is missing from response');
       
@@ -159,18 +99,6 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
         const retryUserInfo = await fetchGoogleUserInfoExtended(token);
         if (retryUserInfo && retryUserInfo.id) {
           userInfo = retryUserInfo;
-          
-          // Try linking with Supabase
-          const { linkGoogleUserInSupabase, createLocalSession } = await import('../supabase/client');
-          
-          const linkResult = await linkGoogleUserInSupabase({
-            profile: retryUserInfo,
-            token: { access_token: token }
-          });
-          
-          if (linkResult.success) {
-            console.log('Successfully linked Google account after ID retry. User ID:', linkResult.user?.id);
-          }
         }
       } catch (retryError) {
         console.error('Error during extended profile fetch:', retryError);
@@ -184,8 +112,6 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
         error: 'Could not retrieve sufficient user information from Google'
       };
     }
-    
-    console.log('Got user info from Google:', userInfo.email);
     
     // Store Google profile locally for reference
     const profile = {
@@ -209,16 +135,6 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
     // Step 3: Link Google user with Supabase
     try {
       const { linkGoogleUserInSupabase, createLocalSession } = await import('../supabase/client');
-      
-      // Debug what's being passed to linkGoogleUserInSupabase
-      console.log('IMPORTANT DEBUG - Profile data being passed to linkGoogleUserInSupabase:', {
-        profile: profile,
-        hasEmail: !!profile?.email,
-        hasId: !!profile?.id, 
-        profileType: typeof profile,
-        isObject: profile instanceof Object,
-        keys: profile ? Object.keys(profile) : []
-      });
       
       // Link the user in Supabase public.users
       const linkResult = await linkGoogleUserInSupabase({
@@ -266,27 +182,30 @@ export async function authenticate(): Promise<{ success: boolean; error?: string
  */
 export async function signOut(): Promise<void> {
   try {
-    console.warn('Signing out...');
+    console.log('Signing out...');
     
-    // Clear local storage token
-    chrome.storage.local.remove(TOKEN_STORAGE_KEY, () => {
-      if (chrome.runtime.lastError) {
-        console.warn('Error clearing token from storage:', chrome.runtime.lastError);
-      }
-    });
-    
-    // Clear Supabase session if configured
+    // Clear Supabase session
     try {
       const { signOut: supabaseSignOut } = await import('../supabase/client');
       await supabaseSignOut();
     } catch (error) {
-      console.warn('Error signing out of Supabase (this is expected if Supabase is not configured):', error);
+      console.warn('Error signing out of Supabase:', error);
     }
     
-    // Note: We intentionally do NOT revoke the Chrome identity token
-    // This allows users to stay signed in to their Google account while signed out of our app
+    // Clear Google token from Chrome identity
+    chrome.identity.removeCachedAuthToken({ token: await getAccessToken() || '' }, () => {
+      console.log('Removed cached auth token from Chrome identity');
+    });
     
-    console.warn('Sign out complete');
+    // Clear local storage
+    await chrome.storage.local.remove([
+      'google_user_id',
+      'google_user_info',
+      'gmail-bill-scanner-auth',
+      'supabase_user_id'
+    ]);
+    
+    console.log('Sign out complete');
   } catch (error) {
     console.error('Error during sign out:', error);
     throw error;
@@ -294,73 +213,28 @@ export async function signOut(): Promise<void> {
 }
 
 /**
- * Exchanges an authorization code for access and refresh tokens
- * @param code Authorization code from OAuth redirect
- * @param codeVerifier PKCE code verifier
- * @returns Promise resolving to the auth token
- */
-async function exchangeCodeForToken(code: string, codeVerifier: string): Promise<AuthToken> {
-  // Get client ID from storage
-  const CLIENT_ID = await getClientId();
-  
-  const tokenURL = "https://oauth2.googleapis.com/token";
-  const params = new URLSearchParams();
-  params.append("client_id", CLIENT_ID);
-  params.append("grant_type", "authorization_code");
-  params.append("code", code);
-  params.append("redirect_uri", getRedirectURL());
-  params.append("code_verifier", codeVerifier);
-  
-  const response = await fetch(tokenURL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    body: params.toString()
-  });
-  
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`Token exchange failed: ${error.error_description || error.error}`);
-  }
-  
-  const data = await response.json();
-  
-  // Calculate token expiration time
-  const expiresAt = Date.now() + data.expires_in * 1000;
-  
-  return {
-    access_token: data.access_token,
-    refresh_token: data.refresh_token,
-    expires_at: expiresAt,
-    token_type: data.token_type,
-    scope: data.scope
-  };
-}
-
-/**
- * Retrieves the current access token, refreshing if necessary
+ * Retrieves the current access token
  * @returns Promise resolving to the access token
  */
 export async function getAccessToken(): Promise<string | null> {
   try {
-    console.warn('Getting access token using chrome.identity.getAuthToken...');
+    console.log('Getting access token using chrome.identity.getAuthToken...');
     
     return new Promise((resolve) => {
       chrome.identity.getAuthToken({ interactive: false }, (token) => {
         if (chrome.runtime.lastError) {
-          console.warn("Error getting auth token (this is expected if not authenticated):", chrome.runtime.lastError.message);
+          console.log("Error getting auth token (this is expected if not authenticated):", chrome.runtime.lastError.message);
           resolve(null);
           return;
         }
         
         if (!token) {
-          console.warn('No token received, user may need to authenticate');
+          console.log('No token received, user may need to authenticate');
           resolve(null);
           return;
         }
         
-        console.warn('Valid token retrieved from Chrome identity');
+        console.log('Valid token retrieved from Chrome identity');
         resolve(token);
       });
     });
@@ -368,94 +242,6 @@ export async function getAccessToken(): Promise<string | null> {
     console.error("Error getting access token:", error);
     return null;
   }
-}
-
-/**
- * Refreshes an expired access token using a refresh token
- * @param refreshToken Refresh token
- * @returns Promise resolving to the new auth token
- */
-async function refreshToken(refreshToken: string): Promise<AuthToken> {
-  // Get client ID from storage
-  const CLIENT_ID = await getClientId();
-  
-  const tokenURL = "https://oauth2.googleapis.com/token";
-  const params = new URLSearchParams();
-  params.append("client_id", CLIENT_ID);
-  params.append("grant_type", "refresh_token");
-  params.append("refresh_token", refreshToken);
-  
-  const response = await fetch(tokenURL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    body: params.toString()
-  });
-  
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`Token refresh failed: ${error.error_description || error.error}`);
-  }
-  
-  const data = await response.json();
-  
-  // Calculate token expiration time
-  const expiresAt = Date.now() + data.expires_in * 1000;
-  
-  // Note: refresh tokens are usually not returned in refresh requests
-  // unless the refresh token has been revoked or expired
-  return {
-    access_token: data.access_token,
-    refresh_token: data.refresh_token, // Might be undefined
-    expires_at: expiresAt,
-    token_type: data.token_type,
-    scope: data.scope
-  };
-}
-
-/**
- * Stores an auth token in local storage
- * @param token Auth token to store
- */
-async function storeToken(token: AuthToken): Promise<void> {
-  await chrome.storage.local.set({ [TOKEN_STORAGE_KEY]: token });
-}
-
-/**
- * Retrieves an auth token from local storage
- * @returns Promise resolving to the stored token or null
- */
-async function getToken(): Promise<AuthToken | null> {
-  const data = await chrome.storage.local.get(TOKEN_STORAGE_KEY);
-  return data[TOKEN_STORAGE_KEY] || null;
-}
-
-/**
- * Generates a random string for PKCE code verifier
- * @returns Random string
- */
-function generateCodeVerifier(): string {
-  const array = new Uint8Array(32);
-  crypto.getRandomValues(array);
-  return Array.from(array, (byte) => ('0' + (byte & 0xFF).toString(16)).slice(-2)).join('');
-}
-
-/**
- * Generates a code challenge from a verifier using SHA-256
- * @param verifier PKCE code verifier
- * @returns Code challenge
- */
-async function generateCodeChallenge(verifier: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(verifier);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  
-  // Base64 encode and make URL safe
-  return btoa(String.fromCharCode.apply(null, [...new Uint8Array(digest)]))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
 }
 
 /**
