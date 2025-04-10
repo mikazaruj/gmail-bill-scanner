@@ -11,7 +11,14 @@ import { SettingsContext } from '../context/SettingsContext';
 
 // Import our new services
 import { getUserSettingsWithDefaults, updateUserPreference, updateMultipleUserPreferences } from '../../services/settings';
-import { getConnectedServices, updateSheetConnection, ServiceStatus } from '../../services/connectedServices';
+import { 
+  getUserConnection, 
+  getUserSheets, 
+  updateSheetConnection, 
+  updateGmailConnection,
+  UserConnection,
+  UserSheet 
+} from '../../services/connectedServices';
 import { getTrustedSourcesView, addTrustedSource, removeTrustedSource, TrustedSourceView } from '../../services/trustedSources';
 import { getFieldMappings, FieldMapping } from '../../services/fieldMapping';
 
@@ -55,9 +62,10 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState<boolean>(false);
   const [emailToDelete, setEmailToDelete] = useState<string>('');
   
-  // Connected services state
-  const [connectedServices, setConnectedServices] = useState<ServiceStatus[]>([]);
-  const [isConnectedServiceLoading, setIsConnectedServiceLoading] = useState<boolean>(true);
+  // New connection state with the updated data structure
+  const [userConnection, setUserConnection] = useState<UserConnection | null>(null);
+  const [userSheets, setUserSheets] = useState<UserSheet[]>([]);
+  const [isConnectionLoading, setIsConnectionLoading] = useState<boolean>(true);
   
   // Field mapping state
   const [fieldMappings, setFieldMappings] = useState<FieldMapping[]>([]);
@@ -117,7 +125,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         
         // Set loading states
         setIsLoading(true);
-        setIsConnectedServiceLoading(true);
+        setIsConnectionLoading(true);
         setIsFieldMappingLoading(true);
         
         // Store the current userId for future comparisons
@@ -126,57 +134,85 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         // Ensure Google ID is in headers/storage
         await ensureGoogleIdHeader(userId);
         
-        // Load user settings with defaults
-        const userSettings = await getUserSettingsWithDefaults(userId);
-        
-        // Create settings object for comparison
-        const newSettings = {
-          automaticProcessing: userSettings.automatic_processing,
-          weeklySchedule: userSettings.weekly_schedule,
-          processAttachments: userSettings.process_attachments,
-          maxResults: userSettings.max_results,
-          searchDays: userSettings.search_days
-        };
-        
-        // Only update settings if they've changed to prevent loop
-        if (!isInitializedRef.current || 
-            JSON.stringify(newSettings) !== JSON.stringify({
-              automaticProcessing: settingsRef.current.automaticProcessing,
-              weeklySchedule: settingsRef.current.weeklySchedule,
-              processAttachments: settingsRef.current.processAttachments,
-              maxResults: settingsRef.current.maxResults,
-              searchDays: settingsRef.current.searchDays
-            })) {
-          // Update context settings with values from Supabase
-          updateSettings(newSettings);
+        try {
+          // Load user settings with defaults
+          const userSettings = await getUserSettingsWithDefaults(userId);
+          
+          // Create settings object for comparison
+          const newSettings = {
+            automaticProcessing: userSettings.automatic_processing,
+            weeklySchedule: userSettings.weekly_schedule,
+            processAttachments: userSettings.process_attachments,
+            maxResults: userSettings.max_results,
+            searchDays: userSettings.search_days
+          };
+          
+          // Only update settings if they've changed to prevent loop
+          if (!isInitializedRef.current || 
+              JSON.stringify(newSettings) !== JSON.stringify({
+                automaticProcessing: settingsRef.current.automaticProcessing,
+                weeklySchedule: settingsRef.current.weeklySchedule,
+                processAttachments: settingsRef.current.processAttachments,
+                maxResults: settingsRef.current.maxResults,
+                searchDays: settingsRef.current.searchDays
+              })) {
+            // Update context settings with values from Supabase
+            updateSettings(newSettings);
+          }
+          
+          // Set user settings data
+          setUserSettingsData({
+            spreadsheet_id: userSettings.sheet_id,
+            spreadsheet_name: userSettings.sheet_name,
+            scan_frequency: userSettings.automatic_processing ? 
+              (userSettings.weekly_schedule ? 'weekly' : 'daily') : 
+              'manual',
+            apply_labels: userSettings.apply_labels,
+            label_name: userSettings.label_name
+          });
+        } catch (settingsError) {
+          console.error('Error loading user settings:', settingsError);
+          // Use defaults if settings can't be loaded from Supabase
+          setUserSettingsData(defaultSettings);
         }
         
-        // Set user settings data
-        setUserSettingsData({
-          spreadsheet_id: userSettings.sheet_id,
-          spreadsheet_name: userSettings.sheet_name,
-          scan_frequency: userSettings.automatic_processing ? 
-            (userSettings.weekly_schedule ? 'weekly' : 'daily') : 
-            'manual',
-          apply_labels: userSettings.apply_labels,
-          label_name: userSettings.label_name
-        });
+        // Try loading other data in parallel with error handling for each
+        try {
+          // Load connection data using the new functions
+          const connection = await getUserConnection(userId);
+          setUserConnection(connection);
+          
+          const sheets = await getUserSheets(userId);
+          setUserSheets(sheets);
+        } catch (servicesError) {
+          console.error('Error fetching user connections:', servicesError);
+          // Set empty objects/arrays if failed
+          setUserConnection(null);
+          setUserSheets([]);
+        }
         
-        // Load other data in parallel
-        const [services, sources, mappings] = await Promise.all([
-          getConnectedServices(userId),
-          getTrustedSourcesView(userId),
-          getFieldMappings(userId)
-        ]);
+        try {
+          const sources = await getTrustedSourcesView(userId);
+          setTrustedSources(sources);
+          
+          // Set plan limits based on first trusted source
+          if (sources.length > 0) {
+            setMaxTrustedSources(sources[0].max_trusted_sources);
+            setIsLimited(sources[0].is_limited);
+          }
+        } catch (sourcesError) {
+          console.error('Error fetching trusted sources:', sourcesError);
+          // Set empty trusted sources array if failed
+          setTrustedSources([]);
+        }
         
-        setConnectedServices(services);
-        setTrustedSources(sources);
-        setFieldMappings(mappings);
-        
-        // Set plan limits based on first trusted source
-        if (sources.length > 0) {
-          setMaxTrustedSources(sources[0].max_trusted_sources);
-          setIsLimited(sources[0].is_limited);
+        try {
+          const mappings = await getFieldMappings(userId);
+          setFieldMappings(mappings);
+        } catch (mappingsError) {
+          console.error('Error fetching field mappings:', mappingsError);
+          // Set empty field mappings array if failed
+          setFieldMappings([]);
         }
         
         // Mark as initialized
@@ -186,7 +222,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       } finally {
         // Reset loading states
         setIsLoading(false);
-        setIsConnectedServiceLoading(false);
+        setIsConnectionLoading(false);
         setIsFieldMappingLoading(false);
       }
     };
@@ -253,40 +289,98 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   };
   
   const handleChangeSpreadsheet = async () => {
-    // Open a dialog to select a new spreadsheet or create one
-    chrome.runtime.sendMessage({ type: 'OPEN_SPREADSHEET_SELECTOR' }, async (response) => {
-      if (response && response.success && response.spreadsheetId) {
-        try {
-          const userId = userProfile?.id;
-          if (!userId) return;
+    try {
+      setIsConnectionLoading(true);
+      // Open a dialog to select a new spreadsheet or create one
+      chrome.runtime.sendMessage({ type: 'OPEN_SPREADSHEET_SELECTOR' }, async (response) => {
+        if (response && response.success) {
+          console.log('Opening spreadsheet selector...');
           
-          // Ensure Google ID is in headers/storage
-          await ensureGoogleIdHeader(userId);
+          // Set up a listener for the message from the selector page
+          const messageListener = (message, sender, sendResponse) => {
+            if (message.type === 'SPREADSHEET_SELECTION_RESULT' && message.payload?.success) {
+              // Use a self-executing function to handle async code
+              (async () => {
+                try {
+                  const { spreadsheetId, spreadsheetName } = message.payload;
+                  
+                  if (spreadsheetId && spreadsheetName) {
+                    console.log('Spreadsheet selected:', spreadsheetId, spreadsheetName);
+                    
+                    // Update local state for user settings
+                    setUserSettingsData({
+                      ...(userSettingsData || defaultSettings),
+                      spreadsheet_id: spreadsheetId,
+                      spreadsheet_name: spreadsheetName
+                    });
+                    
+                    // Save to Chrome storage as a backup
+                    await chrome.storage.local.set({
+                      'sheet_id': spreadsheetId,
+                      'sheet_name': spreadsheetName,
+                      'last_updated': Date.now()
+                    });
+                    
+                    // Try to update Supabase if user is logged in
+                    const userId = userProfile?.id;
+                    if (userId) {
+                      try {
+                        // Ensure Google ID is in headers/storage
+                        await ensureGoogleIdHeader(userId);
+                        
+                        // Update sheet connection with new function
+                        const success = await updateSheetConnection(
+                          userId, 
+                          spreadsheetId, 
+                          spreadsheetName,
+                          true // Set as default
+                        );
+                        
+                        if (success) {
+                          // Refresh user sheets
+                          try {
+                            const sheets = await getUserSheets(userId);
+                            setUserSheets(sheets);
+                          } catch (refreshError) {
+                            console.error('Error refreshing user sheets:', refreshError);
+                          }
+                        }
+                      } catch (supabaseError) {
+                        console.error('Error updating spreadsheet in Supabase:', supabaseError);
+                        // User will still have local state updated
+                      }
+                    }
+                  }
+                } catch (error) {
+                  console.error('Error processing spreadsheet selection:', error);
+                } finally {
+                  // Remove the listener after handling the message
+                  chrome.runtime.onMessage.removeListener(messageListener);
+                  setIsConnectionLoading(false);
+                }
+              })();
+            }
+            // Return false to indicate we won't send a response asynchronously
+            return false;
+          };
           
-          // Update Supabase connected services
-          const success = await updateSheetConnection(
-            userId, 
-            response.spreadsheetId, 
-            response.spreadsheetName || 'Bills Tracker'
-          );
+          // Add the listener
+          chrome.runtime.onMessage.addListener(messageListener);
           
-          if (success) {
-            // Update local state
-            setUserSettingsData({
-              ...(userSettingsData || defaultSettings),
-              spreadsheet_id: response.spreadsheetId,
-              spreadsheet_name: response.spreadsheetName || 'Bills Tracker'
-            });
-            
-            // Refresh connected services
-            const services = await getConnectedServices(userId);
-            setConnectedServices(services);
-          }
-        } catch (error) {
-          console.error('Error updating spreadsheet:', error);
+          // Set a timeout to remove the listener if no selection is made
+          setTimeout(() => {
+            chrome.runtime.onMessage.removeListener(messageListener);
+            setIsConnectionLoading(false);
+          }, 120000); // 2 minutes timeout
+        } else {
+          console.error('Error opening spreadsheet selector:', response?.error);
+          setIsConnectionLoading(false);
         }
-      }
-    });
+      });
+    } catch (error) {
+      console.error('Error in handleChangeSpreadsheet:', error);
+      setIsConnectionLoading(false);
+    }
   };
   
   const handleToggleAutomaticProcessing = useCallback(async (checked: boolean) => {
@@ -396,14 +490,85 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     }
   }, [userProfile?.id, saveSettings, userSettingsData]);
   
-  // Helper function to find a specific service
-  const findService = (type: 'gmail' | 'sheets'): ServiceStatus | undefined => {
-    return connectedServices.find(service => service.service_type === type);
-  };
+  // Get default sheet
+  const defaultSheet = userSheets.find(sheet => sheet.is_default);
   
-  // Get Gmail and Sheets services
-  const gmailService = findService('gmail');
-  const sheetsService = findService('sheets');
+  // Handler for reconnecting Gmail
+  const handleReconnectGmail = async () => {
+    try {
+      setIsConnectionLoading(true);
+      
+      // Send message to background to reauthenticate
+      const response = await new Promise<any>((resolve, reject) => {
+        try {
+          chrome.runtime.sendMessage({ type: 'REAUTHENTICATE_GMAIL' }, (response) => {
+            if (chrome.runtime.lastError) {
+              console.error('Error reconnecting Gmail:', chrome.runtime.lastError.message);
+              reject(new Error(chrome.runtime.lastError.message));
+              return;
+            }
+            resolve(response || { success: false, error: 'No response received' });
+          });
+        } catch (err) {
+          reject(err);
+        }
+      }).catch(error => {
+        console.error('Error in REAUTHENTICATE_GMAIL message:', error);
+        return { success: false, error: error.message };
+      });
+      
+      console.log('Gmail reconnect response:', response);
+      
+      if (response && response.success) {
+        // If successful, update gmail connection in Supabase
+        const userId = userProfile?.id;
+        if (userId && response.profile && response.profile.email) {
+          try {
+            await ensureGoogleIdHeader(userId);
+            
+            // Update Gmail connection using the new function
+            const success = await updateGmailConnection(
+              userId,
+              response.profile.email,
+              true,
+              ['https://www.googleapis.com/auth/gmail.readonly'] // Add default scopes
+            );
+            
+            if (success) {
+              // Refresh user connection
+              const connection = await getUserConnection(userId);
+              setUserConnection(connection);
+              
+              // Show success message
+              console.log('Successfully reconnected Gmail');
+            }
+          } catch (error) {
+            console.error('Error updating Gmail connection in Supabase:', error);
+            
+            // Still update local state
+            setUserConnection({
+              id: 'local-reconnect',
+              user_id: userId || 'local-user',
+              gmail_email: response.profile.email,
+              gmail_connected: true,
+              gmail_last_connected_at: new Date().toISOString(),
+              gmail_scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            });
+          }
+        } else {
+          console.error('Missing user ID or profile information');
+        }
+      } else {
+        console.error('Failed to reconnect Gmail:', response?.error || 'Unknown error');
+      }
+    } catch (error) {
+      console.error('Error reconnecting Gmail:', error);
+    } finally {
+      setIsConnectionLoading(false);
+    }
+  };
 
   return (
     <div className="space-y-3">
@@ -418,20 +583,25 @@ const Settings = ({ onNavigate }: SettingsProps) => {
                 <div>
                   <div className="text-sm font-medium text-gray-900">Gmail</div>
                   <div className="text-xs text-gray-500">
-                    {isConnectedServiceLoading 
+                    {isConnectionLoading 
                       ? 'Loading...' 
-                      : gmailService?.service_email || userProfile?.email || 'user@gmail.com'}
+                      : userConnection?.gmail_email || userProfile?.email || 'user@gmail.com'}
                   </div>
                 </div>
               </div>
-              <div className={`px-2 py-0.5 text-xs ${
-                !isConnectedServiceLoading && gmailService?.token_valid
-                  ? 'bg-green-100 text-green-800'
-                  : 'bg-yellow-100 text-yellow-800'
-              } rounded-full font-medium`}>
-                {isConnectedServiceLoading 
+              <div 
+                className={`px-2 py-0.5 text-xs ${
+                  !isConnectionLoading && userConnection?.gmail_connected
+                    ? 'bg-green-100 text-green-800'
+                    : 'bg-yellow-100 text-yellow-800 cursor-pointer hover:bg-yellow-200'
+                } rounded-full font-medium`}
+                onClick={!isConnectionLoading && !userConnection?.gmail_connected ? handleReconnectGmail : undefined}
+                role="button"
+                aria-label={userConnection?.gmail_connected ? "Connected" : "Click to reconnect Gmail"}
+              >
+                {isConnectionLoading 
                   ? 'Loading...' 
-                  : gmailService?.token_valid ? 'Connected' : 'Reconnect'}
+                  : userConnection?.gmail_connected ? 'Connected' : 'Reconnect'}
               </div>
             </div>
           </div>
@@ -445,9 +615,9 @@ const Settings = ({ onNavigate }: SettingsProps) => {
                 <div>
                   <div className="text-sm font-medium text-gray-900">Google Sheets</div>
                   <div className="text-xs text-gray-500">
-                    {isConnectedServiceLoading 
+                    {isConnectionLoading 
                       ? 'Loading...' 
-                      : sheetsService?.sheet_name || userSettingsData?.spreadsheet_name || 'Bills Tracker'}
+                      : defaultSheet?.sheet_name || userSettingsData?.spreadsheet_name || 'Bills Tracker'}
                   </div>
                 </div>
               </div>
@@ -455,9 +625,9 @@ const Settings = ({ onNavigate }: SettingsProps) => {
                 className="px-2 py-0.5 text-xs bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg font-medium transition-colors"
                 onClick={handleChangeSpreadsheet}
               >
-                {isConnectedServiceLoading 
+                {isConnectionLoading 
                   ? '...' 
-                  : sheetsService?.is_connected ? 'Change' : 'Connect'}
+                  : defaultSheet?.sheet_id ? 'Change' : 'Connect'}
               </button>
             </div>
           </div>

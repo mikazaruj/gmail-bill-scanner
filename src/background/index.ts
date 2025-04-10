@@ -915,22 +915,82 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case 'CREATE_SPREADSHEET':
-          const token = await getAccessToken();
-          if (!token) {
-            sendResponse({ success: false, error: 'Not authenticated' });
-            return;
-          }
+      try {
+        const { name } = message.payload;
+        
+        // Get authentication token
+        const token = await getAccessToken();
+        if (!token) {
+          sendResponse({ success: false, error: 'Not authenticated' });
+          return;
+        }
+        
+        // Import the sheets service
+        const { createBillsSpreadsheet } = await import('../services/sheets/sheetsService');
+        
+        // Create a new spreadsheet
+        const spreadsheetId = await createBillsSpreadsheet();
+        
+        // Return the spreadsheet ID
+        sendResponse({ 
+          success: true, 
+          spreadsheetId,
+          spreadsheetName: 'Gmail Bill Scanner - Bills Tracker'
+        });
+      } catch (error) {
+        console.error('Error creating spreadsheet:', error);
+        sendResponse({ 
+          success: false, 
+          error: error instanceof Error ? error.message : 'Unknown error' 
+        });
+      }
+      break;
+
+    case 'REAUTHENTICATE_GMAIL':
+      try {
+        // Revoke previous token to ensure we get a fresh one
+        await new Promise<void>((resolve) => {
+          chrome.identity.getAuthToken({ interactive: false }, (token) => {
+            if (token) {
+              chrome.identity.removeCachedAuthToken({ token }, () => {
+                // Once token is removed from cache, resolve
+                resolve();
+              });
+            } else {
+              // No token to remove
+              resolve();
+            }
+          });
+        });
+        
+        // Now authenticate with user interaction
+        const authResult = await authenticate();
+        
+        // If successful, update the connection
+        if (authResult.success && authResult.profile) {
+          // Update storage with Google profile
+          await chrome.storage.local.set({
+            'google_user_id': authResult.profile.id,
+            'google_profile': authResult.profile
+          });
           
-          try {
-            const result = await createSpreadsheet(token, 'Gmail Bill Scanner');
-            sendResponse({ success: true, spreadsheetId: result.spreadsheetId });
-          } catch (error) {
-            console.error('Error creating spreadsheet:', error);
-            sendResponse({ 
-              success: false, 
-              error: error instanceof Error ? error.message : 'Unknown error' 
-            });
-          }
+          sendResponse({
+            success: true,
+            profile: authResult.profile
+          });
+        } else {
+          sendResponse({
+            success: false,
+            error: authResult.error || 'Authentication failed'
+          });
+        }
+      } catch (error) {
+        console.error('Error reauthenticating Gmail:', error);
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
       break;
 
     case 'GET_PROCESSED_ITEMS_COUNT':
@@ -1235,9 +1295,76 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
       break;
 
+    case 'OPEN_SPREADSHEET_SELECTOR':
+      try {
+        // Get authentication token
+        const token = await getAccessToken();
+        if (!token) {
+          sendResponse({ success: false, error: 'Not authenticated' });
+          return;
+        }
+        
+        // Fetch user's existing spreadsheets from Google Drive
+        const { listUserSpreadsheets } = await import('../services/sheets/sheetsService');
+        const spreadsheets = await listUserSpreadsheets();
+        
+        // Open a new tab with a sheet selector UI
+        chrome.tabs.create({
+          url: chrome.runtime.getURL('sheets-selector.html')
+        }, async (tab) => {
+          // Store the spreadsheets list temporarily in storage for the selector page
+          await chrome.storage.local.set({ 
+            temp_spreadsheets_list: spreadsheets,
+            selector_callback_tab: sender.tab?.id || null
+          });
+        });
+        
+        // Return a success response
+        sendResponse({ success: true, message: 'Opening spreadsheet selector' });
+      } catch (error) {
+        console.error('Error opening spreadsheet selector:', error);
+        sendResponse({ 
+          success: false, 
+          error: error instanceof Error ? error.message : 'Unknown error' 
+        });
+      }
+      break;
+      
+    case 'SPREADSHEET_SELECTED':
+      try {
+        const { spreadsheetId, spreadsheetName } = message.payload;
+        
+        // Return the selected spreadsheet info to the original sender
+        const { selector_callback_tab } = await chrome.storage.local.get('selector_callback_tab');
+        
+        if (selector_callback_tab) {
+          chrome.tabs.sendMessage(selector_callback_tab, {
+            type: 'SPREADSHEET_SELECTION_RESULT',
+            payload: {
+              success: true,
+              spreadsheetId,
+              spreadsheetName
+            }
+          });
+        }
+        
+        // Clean up temporary storage
+        await chrome.storage.local.remove(['temp_spreadsheets_list', 'selector_callback_tab']);
+        
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error('Error handling spreadsheet selection:', error);
+        sendResponse({ 
+          success: false, 
+          error: error instanceof Error ? error.message : 'Unknown error' 
+        });
+      }
+      break;
+
     default:
-          console.warn('Unknown message type:', message?.type);
-      sendResponse({ success: false, error: 'Unknown message type' });
+      console.warn(`Unknown message type: ${message.type}`);
+      sendResponse({ success: false, error: `Unknown message type: ${message.type}` });
+      break;
   }
     } catch (error) {
       console.error('Error handling message:', error);

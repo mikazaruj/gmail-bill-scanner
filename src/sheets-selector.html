@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Select Google Sheet - Gmail Bill Scanner</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <style>
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: #f9fafb;
+      margin: 0;
+      padding: 0;
+      color: #111827;
+    }
+    
+    .container {
+      max-width: 600px;
+      margin: 40px auto;
+      padding: 24px;
+      background-color: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+    
+    .header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+    
+    .header img {
+      width: 40px;
+      height: 40px;
+      margin-right: 12px;
+    }
+    
+    h1 {
+      font-size: 20px;
+      font-weight: 600;
+      margin: 0;
+    }
+    
+    .sheets-list {
+      margin-bottom: 24px;
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+    }
+    
+    .sheet-item {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid #e5e7eb;
+      cursor: pointer;
+    }
+    
+    .sheet-item:last-child {
+      border-bottom: none;
+    }
+    
+    .sheet-item:hover {
+      background-color: #f3f4f6;
+    }
+    
+    .sheet-icon {
+      width: 24px;
+      height: 24px;
+      background-color: #d1fae5;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-right: 12px;
+    }
+    
+    .sheet-icon svg {
+      width: 14px;
+      height: 14px;
+      color: #10b981;
+    }
+    
+    .sheet-name {
+      font-size: 14px;
+      font-weight: 500;
+    }
+    
+    .divider {
+      height: 1px;
+      background-color: #e5e7eb;
+      margin: 16px 0;
+    }
+    
+    .create-new {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      background-color: #f3f4f6;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    
+    .create-new:hover {
+      background-color: #e5e7eb;
+    }
+    
+    .create-icon {
+      width: 24px;
+      height: 24px;
+      background-color: #dbeafe;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-right: 12px;
+    }
+    
+    .create-icon svg {
+      width: 14px;
+      height: 14px;
+      color: #3b82f6;
+    }
+    
+    .create-text {
+      font-size: 14px;
+      font-weight: 500;
+    }
+    
+    .buttons {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 24px;
+    }
+    
+    button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    
+    .cancel-btn {
+      background-color: #f3f4f6;
+      color: #4b5563;
+      border: none;
+      margin-right: 8px;
+    }
+    
+    .cancel-btn:hover {
+      background-color: #e5e7eb;
+    }
+    
+    .create-btn {
+      background-color: #3b82f6;
+      color: white;
+      border: none;
+    }
+    
+    .create-btn:hover {
+      background-color: #2563eb;
+    }
+    
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    
+    .loading-spinner {
+      border: 3px solid #f3f4f6;
+      border-top: 3px solid #3b82f6;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      animation: spin 1s linear infinite;
+      margin-right: 12px;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .error {
+      background-color: #fee2e2;
+      color: #b91c1c;
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+    
+    .hidden {
+      display: none;
+    }
+    
+    .create-sheet-form {
+      margin-top: 16px;
+      padding: 16px;
+      background-color: #f9fafb;
+      border-radius: 6px;
+    }
+    
+    .form-group {
+      margin-bottom: 16px;
+    }
+    
+    .form-group label {
+      display: block;
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 6px;
+    }
+    
+    .form-group input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    
+    .form-group input:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="assets/icon128.png" alt="Gmail Bill Scanner">
+      <h1>Select a Google Sheet for Bill Tracking</h1>
+    </div>
+    
+    <div id="errorContainer" class="error hidden"></div>
+    
+    <div id="loadingContainer" class="loading">
+      <div class="loading-spinner"></div>
+      <div>Loading your Google Sheets...</div>
+    </div>
+    
+    <div id="sheetsListContainer" class="hidden">
+      <div class="sheets-list" id="sheetsList">
+        <!-- Sheet items will be populated here -->
+      </div>
+      
+      <div class="divider"></div>
+      
+      <div class="create-new" id="createNewBtn">
+        <div class="create-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+          </svg>
+        </div>
+        <div class="create-text">Create a new spreadsheet</div>
+      </div>
+      
+      <div id="createSheetForm" class="create-sheet-form hidden">
+        <div class="form-group">
+          <label for="sheetName">Spreadsheet Name</label>
+          <input type="text" id="sheetName" value="Gmail Bill Scanner - Bills Tracker" placeholder="Enter a name for your spreadsheet">
+        </div>
+        
+        <div class="buttons">
+          <button class="cancel-btn" id="cancelCreateBtn">Cancel</button>
+          <button class="create-btn" id="confirmCreateBtn">Create Spreadsheet</button>
+        </div>
+      </div>
+    </div>
+    
+    <div class="buttons" id="mainButtons">
+      <button class="cancel-btn" id="cancelBtn">Cancel</button>
+    </div>
+  </div>
+  
+  <script>
+    // Wait for DOM content to be loaded
+    document.addEventListener('DOMContentLoaded', async () => {
+      const loadingContainer = document.getElementById('loadingContainer');
+      const sheetsListContainer = document.getElementById('sheetsListContainer');
+      const errorContainer = document.getElementById('errorContainer');
+      const sheetsList = document.getElementById('sheetsList');
+      const mainButtons = document.getElementById('mainButtons');
+      const createNewBtn = document.getElementById('createNewBtn');
+      const createSheetForm = document.getElementById('createSheetForm');
+      const cancelBtn = document.getElementById('cancelBtn');
+      const cancelCreateBtn = document.getElementById('cancelCreateBtn');
+      const confirmCreateBtn = document.getElementById('confirmCreateBtn');
+      const sheetNameInput = document.getElementById('sheetName');
+      
+      // Show error message
+      function showError(message) {
+        errorContainer.textContent = message;
+        errorContainer.classList.remove('hidden');
+      }
+      
+      // Hide error message
+      function hideError() {
+        errorContainer.classList.add('hidden');
+      }
+      
+      // Close the tab
+      function closeTab() {
+        window.close();
+      }
+      
+      // Load sheets from chrome.storage
+      async function loadSpreadsheets() {
+        try {
+          const { temp_spreadsheets_list } = await chrome.storage.local.get('temp_spreadsheets_list');
+          
+          if (!temp_spreadsheets_list || temp_spreadsheets_list.length === 0) {
+            showError('No spreadsheets found. Please create a new one.');
+            sheetsListContainer.classList.remove('hidden');
+            loadingContainer.classList.add('hidden');
+            return;
+          }
+          
+          // Populate sheets list
+          temp_spreadsheets_list.forEach(sheet => {
+            const sheetItem = document.createElement('div');
+            sheetItem.className = 'sheet-item';
+            sheetItem.dataset.id = sheet.id;
+            sheetItem.dataset.name = sheet.name;
+            
+            sheetItem.innerHTML = `
+              <div class="sheet-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div class="sheet-name">${sheet.name}</div>
+            `;
+            
+            // Add click event listener
+            sheetItem.addEventListener('click', () => {
+              selectSpreadsheet(sheet.id, sheet.name);
+            });
+            
+            sheetsList.appendChild(sheetItem);
+          });
+          
+          // Show the sheets list
+          loadingContainer.classList.add('hidden');
+          sheetsListContainer.classList.remove('hidden');
+        } catch (error) {
+          console.error('Error loading spreadsheets:', error);
+          showError('Error loading your spreadsheets. Please try again.');
+          loadingContainer.classList.add('hidden');
+        }
+      }
+      
+      // Select a spreadsheet
+      async function selectSpreadsheet(spreadsheetId, spreadsheetName) {
+        try {
+          // Send message to background script
+          chrome.runtime.sendMessage({
+            type: 'SPREADSHEET_SELECTED',
+            payload: {
+              spreadsheetId,
+              spreadsheetName
+            }
+          }, () => {
+            closeTab();
+          });
+        } catch (error) {
+          console.error('Error selecting spreadsheet:', error);
+          showError('Error selecting the spreadsheet. Please try again.');
+        }
+      }
+      
+      // Create a new spreadsheet
+      async function createSpreadsheet(name) {
+        try {
+          loadingContainer.classList.remove('hidden');
+          sheetsListContainer.classList.add('hidden');
+          mainButtons.classList.add('hidden');
+          
+          // Send message to background script
+          const response = await new Promise(resolve => {
+            chrome.runtime.sendMessage({
+              type: 'CREATE_SPREADSHEET',
+              payload: {
+                name
+              }
+            }, resolve);
+          });
+          
+          if (response.success && response.spreadsheetId) {
+            selectSpreadsheet(response.spreadsheetId, name);
+          } else {
+            throw new Error(response.error || 'Failed to create spreadsheet');
+          }
+        } catch (error) {
+          console.error('Error creating spreadsheet:', error);
+          showError('Error creating the spreadsheet. Please try again.');
+          loadingContainer.classList.add('hidden');
+          sheetsListContainer.classList.remove('hidden');
+          mainButtons.classList.remove('hidden');
+        }
+      }
+      
+      // Add event listeners
+      createNewBtn.addEventListener('click', () => {
+        createSheetForm.classList.remove('hidden');
+      });
+      
+      cancelCreateBtn.addEventListener('click', () => {
+        createSheetForm.classList.add('hidden');
+      });
+      
+      confirmCreateBtn.addEventListener('click', () => {
+        const sheetName = sheetNameInput.value.trim();
+        if (sheetName) {
+          createSpreadsheet(sheetName);
+        } else {
+          showError('Please enter a name for your spreadsheet.');
+        }
+      });
+      
+      cancelBtn.addEventListener('click', closeTab);
+      
+      // Load spreadsheets on page load
+      loadSpreadsheets();
+    });
+  </script>
+</body>
+</html> 

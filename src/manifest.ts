@@ -35,7 +35,7 @@ export default defineManifest(() => ({
     }
   ],
   options_page: 'options.html',
-  permissions: ['storage', 'identity'],
+  permissions: ['storage', 'identity', 'tabs'],
   host_permissions: [
     'https://mail.google.com/*',
     'https://www.googleapis.com/*',
