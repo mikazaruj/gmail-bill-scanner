@@ -520,10 +520,13 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     try {
       setIsConnectionLoading(true);
       
-      // Send message to background to reauthenticate
+      // First check if we already have a valid token before requesting a new one
       const response = await new Promise<any>((resolve, reject) => {
         try {
-          chrome.runtime.sendMessage({ type: 'REAUTHENTICATE_GMAIL' }, (response) => {
+          chrome.runtime.sendMessage({ 
+            type: 'REAUTHENTICATE_GMAIL',
+            options: { checkExistingToken: true }
+          }, (response) => {
             if (chrome.runtime.lastError) {
               console.error('Error reconnecting Gmail:', chrome.runtime.lastError.message);
               reject(new Error(chrome.runtime.lastError.message));
@@ -550,19 +553,17 @@ const Settings = ({ onNavigate }: SettingsProps) => {
           throw new Error('Failed to get email from Google profile');
         }
         
-        // Always update local state first, regardless of database update
-        const connectionState = {
-          id: 'local-reconnect',
-          user_id: 'local-user',
+        // Create a connection state object with null for optional fields
+        setUserConnection({
+          id: userConnection?.id || 'local-reconnect',
+          user_id: userProfile?.id || 'local-user',
           gmail_email: email,
           gmail_connected: true,
           gmail_last_connected_at: new Date().toISOString(),
-          gmail_scopes: ['https://www.googleapis.com/auth/gmail.readonly'] as string[],
+          gmail_scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
-        };
-        
-        setUserConnection(connectionState);
+        });
         
         // Store in Chrome storage for persistence
         await chrome.storage.local.set({
@@ -572,15 +573,8 @@ const Settings = ({ onNavigate }: SettingsProps) => {
           'last_gmail_update': new Date().toISOString()
         });
         
-        // Try to determine the correct user ID
-        // First check the current userProfile
-        let userId = userProfile?.id;
-        
-        // If that's not available, try the profile from the response
-        if (!userId && response.profile?.id) {
-          userId = response.profile.id;
-          console.log('Using user ID from response:', userId);
-        }
+        // Use the current userProfile ID, don't use the Google ID directly
+        const userId = userProfile?.id;
         
         // If we have a userId, try to update in Supabase
         if (userId) {

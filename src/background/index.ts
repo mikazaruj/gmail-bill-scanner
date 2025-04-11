@@ -868,6 +868,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'REAUTHENTICATE_GMAIL':
       try {
+        // Check if we should verify the existing token first
+        const checkExistingToken = message.options?.checkExistingToken === true;
+        
+        if (checkExistingToken) {
+          // First check if we already have a valid token
+          const hasValidToken = await new Promise<boolean>((resolve) => {
+            chrome.identity.getAuthToken({ interactive: false }, async (token) => {
+              if (chrome.runtime.lastError || !token) {
+                resolve(false);
+                return;
+              }
+              
+              try {
+                // Verify the token by fetching user info
+                const userInfo = await fetchGoogleUserInfo(token);
+                if (userInfo && userInfo.email) {
+                  // Token is valid and working - send response immediately
+                  sendResponse({
+                    success: true,
+                    profile: userInfo
+                  });
+                  resolve(true);
+                  return;
+                }
+                resolve(false);
+              } catch (error) {
+                resolve(false);
+              }
+            });
+          });
+          
+          // If we already sent a response, exit
+          if (hasValidToken) {
+            return true;
+          }
+        }
+        
+        // If no valid token or checkExistingToken is false, proceed with authentication
+        
         // Revoke previous token to ensure we get a fresh one
         await new Promise<void>((resolve) => {
           chrome.identity.getAuthToken({ interactive: false }, (token) => {
