@@ -15,11 +15,12 @@ import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../typ
 import { 
   isAuthenticated as isGoogleAuthenticated,
   getAccessToken as getGoogleAccessToken,
-  authenticate as googleAuthenticate
+  authenticate as googleAuthenticate,
+  fetchGoogleUserInfo,
+  fetchGoogleUserInfoExtended
 } from '../services/auth/googleAuth';
 import { signInWithGoogle, syncAuthState } from '../services/supabase/client';
 import { searchEmails } from '../services/gmail/gmailService';
-import { fetchGoogleUserInfo } from '../services/auth/googleApi';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -169,18 +170,48 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
       // Remove cached token
       await new Promise<void>((resolve) => {
         chrome.identity.removeCachedAuthToken({ token }, () => {
+          console.log('Removed cached auth token for refresh');
           resolve();
         });
       });
       
-      // Get new token
-      const newToken = await getGoogleAccessToken();
+      // Clear all cached auth tokens if first refresh fails
+      await new Promise<void>((resolve) => {
+        chrome.identity.clearAllCachedAuthTokens(() => {
+          console.log('Cleared all cached auth tokens for a fresh start');
+          resolve();
+        });
+      });
+      
+      // Get a completely new token with interactive mode
+      const newToken = await new Promise<string | null>((resolve) => {
+        console.log('Requesting new token with interactive mode...');
+        chrome.identity.getAuthToken({ 
+          interactive: true,
+          scopes: SCOPES
+        }, (token) => {
+          if (chrome.runtime.lastError || !token) {
+            console.log('Failed to get new token:', chrome.runtime.lastError?.message || 'No token');
+            resolve(null);
+            return;
+          }
+          console.log('Got fresh token with interactive mode');
+          resolve(token);
+        });
+      });
       
       if (!newToken) {
         throw new Error('Failed to refresh Google access token');
       }
       
-      const retryUserInfo = await fetchGoogleUserInfo(newToken);
+      // First try with the standard endpoint
+      let retryUserInfo = await fetchGoogleUserInfo(newToken);
+      
+      // If that fails, try the extended endpoint
+      if (!retryUserInfo || !retryUserInfo.email) {
+        console.log('Standard user info endpoint failed, trying extended endpoint...');
+        retryUserInfo = await fetchGoogleUserInfoExtended(newToken);
+      }
       
       if (!retryUserInfo || !retryUserInfo.email) {
         throw new Error('Failed to get user info from Google after token refresh');
@@ -1193,23 +1224,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
         
-        // Fetch user's existing spreadsheets from Google Drive
-        const { listUserSpreadsheets } = await import('../services/sheets/sheetsService');
-        const spreadsheets = await listUserSpreadsheets();
-        
-        // Open a new tab with a sheet selector UI
-        chrome.tabs.create({
-          url: chrome.runtime.getURL('sheets-selector.html')
-        }, async (tab) => {
-          // Store the spreadsheets list temporarily in storage for the selector page
-          await chrome.storage.local.set({ 
-            temp_spreadsheets_list: spreadsheets,
-            selector_callback_tab: sender.tab?.id || null
+        try {
+          // Use the Drive API directly to list files of type spreadsheet
+          const response = await fetch(
+            "https://www.googleapis.com/drive/v3/files?q=mimeType='application/vnd.google-apps.spreadsheet'",
+            {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+            }
+          );
+          
+          if (!response.ok) {
+            const error = await response.json();
+            throw new Error(`Drive API error: ${error.error?.message || "Unknown error"}`);
+          }
+          
+          const data = await response.json();
+          
+          // Transform the response into a simple list of spreadsheets
+          const spreadsheets = (data.files || []).map((file: { id: string; name: string }) => ({
+            id: file.id,
+            name: file.name,
+          }));
+          
+          // Open a new tab with the sheet selector UI
+          chrome.tabs.create({
+            url: chrome.runtime.getURL('sheets-selector.html')
+          }, async (tab) => {
+            // Store the spreadsheets list temporarily in storage for the selector page
+            await chrome.storage.local.set({
+              temp_spreadsheets_list: spreadsheets,
+              selector_callback_tab: sender.tab?.id || null
+            });
           });
-        });
-        
-        // Return a success response
-        sendResponse({ success: true, message: 'Opening spreadsheet selector' });
+          
+          // Return a success response
+          sendResponse({ success: true, message: 'Opening spreadsheet selector' });
+        } catch (error) {
+          console.error('Error fetching spreadsheets list:', error);
+          sendResponse({
+            success: false,
+            error: error instanceof Error ? error.message : 'Error fetching spreadsheets'
+          });
+        }
       } catch (error) {
         console.error('Error opening spreadsheet selector:', error);
         sendResponse({ 

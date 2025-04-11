@@ -118,11 +118,6 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         // Get current userId
         const userId = userProfile?.id;
         
-        // Skip if no user ID or if already initialized with the same user
-        if (!userId || (isInitializedRef.current && userId === previousUserIdRef.current)) {
-          return;
-        }
-        
         // Set loading states
         setIsLoading(true);
         setIsConnectionLoading(true);
@@ -131,8 +126,35 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         // Store the current userId for future comparisons
         previousUserIdRef.current = userId;
         
+        // Check if Gmail is already connected from local storage
+        const { gmail_connected, gmail_email } = await chrome.storage.local.get(['gmail_connected', 'gmail_email']);
+        
+        // If Gmail is connected in storage, update UI state immediately
+        if (gmail_connected && gmail_email) {
+          setUserConnection({
+            id: 'local-connection',
+            user_id: userId || 'local-user',
+            gmail_email: gmail_email,
+            gmail_connected: true,
+            gmail_last_connected_at: new Date().toISOString(),
+            gmail_scopes: ['https://www.googleapis.com/auth/gmail.readonly'] as string[],
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+        }
+        
+        // Skip database operations if no user ID or if already initialized with the same user
+        if (!userId || (isInitializedRef.current && userId === previousUserIdRef.current)) {
+          setIsLoading(false);
+          setIsConnectionLoading(false);
+          setIsFieldMappingLoading(false);
+          return;
+        }
+        
         // Ensure Google ID is in headers/storage
-        await ensureGoogleIdHeader(userId);
+        if (userId) {
+          await ensureGoogleIdHeader(userId);
+        }
         
         try {
           // Load user settings with defaults
@@ -520,86 +542,78 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       console.log('Gmail reconnect response:', response);
       
       if (response && response.success) {
-        // If successful, update gmail connection in Supabase
-        const userId = userProfile?.id;
+        // Extract email from the response
         const email = response.profile?.email;
-        
-        if (!userId) {
-          console.error('Missing user ID - user not logged in');
-          
-          // Still update local state if we have an email
-          if (email) {
-            setUserConnection({
-              id: 'local-reconnect',
-              user_id: 'local-user',
-              gmail_email: email,
-              gmail_connected: true,
-              gmail_last_connected_at: new Date().toISOString(),
-              gmail_scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            });
-            
-            // Store in Chrome storage for persistence
-            await chrome.storage.local.set({
-              'google_profile': response.profile,
-              'gmail_connected': true,
-              'gmail_email': email,
-              'last_gmail_update': new Date().toISOString()
-            });
-          }
-          return;
-        }
         
         if (!email) {
           console.error('Missing email from Google profile');
           throw new Error('Failed to get email from Google profile');
         }
         
-        try {
-          // Ensure Google ID is in headers/storage
-          await ensureGoogleIdHeader(userId);
-          
-          // Update Gmail connection using the new function
-          const success = await updateGmailConnection(
-            userId,
-            email,
-            true,
-            ['https://www.googleapis.com/auth/gmail.readonly'] // Add default scopes
-          );
-          
-          if (success) {
-            // Refresh user connection
-            const connection = await getUserConnection(userId);
-            setUserConnection(connection);
+        // Always update local state first, regardless of database update
+        const connectionState = {
+          id: 'local-reconnect',
+          user_id: 'local-user',
+          gmail_email: email,
+          gmail_connected: true,
+          gmail_last_connected_at: new Date().toISOString(),
+          gmail_scopes: ['https://www.googleapis.com/auth/gmail.readonly'] as string[],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+        
+        setUserConnection(connectionState);
+        
+        // Store in Chrome storage for persistence
+        await chrome.storage.local.set({
+          'google_profile': response.profile,
+          'gmail_connected': true,
+          'gmail_email': email,
+          'last_gmail_update': new Date().toISOString()
+        });
+        
+        // Try to determine the correct user ID
+        // First check the current userProfile
+        let userId = userProfile?.id;
+        
+        // If that's not available, try the profile from the response
+        if (!userId && response.profile?.id) {
+          userId = response.profile.id;
+          console.log('Using user ID from response:', userId);
+        }
+        
+        // If we have a userId, try to update in Supabase
+        if (userId) {
+          try {
+            // Ensure Google ID is in headers/storage
+            await ensureGoogleIdHeader(userId);
             
-            // Show success message
-            console.log('Successfully reconnected Gmail');
-          } else {
-            throw new Error('Failed to update Gmail connection in database');
+            // Update Gmail connection using the new function
+            await updateGmailConnection(
+              userId,
+              email,
+              true,
+              ['https://www.googleapis.com/auth/gmail.readonly'] // Add default scopes
+            );
+            
+            // No need to check success since we're already updated local UI state
+            try {
+              // Refresh user connection, but don't wait for it
+              getUserConnection(userId).then(connection => {
+                if (connection) {
+                  setUserConnection(connection);
+                }
+              });
+            } catch (refreshError) {
+              console.error('Error refreshing connection data:', refreshError);
+              // Already updated local state above, so no need to handle this error further
+            }
+          } catch (error) {
+            // Just log the error since we've already updated local UI state
+            console.error('Error updating Gmail connection in Supabase:', error);
           }
-        } catch (error) {
-          console.error('Error updating Gmail connection in Supabase:', error);
-          
-          // Still update local state
-          setUserConnection({
-            id: 'local-reconnect',
-            user_id: userId || 'local-user',
-            gmail_email: email,
-            gmail_connected: true,
-            gmail_last_connected_at: new Date().toISOString(),
-            gmail_scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          });
-          
-          // Store in Chrome storage for persistence
-          await chrome.storage.local.set({
-            'google_profile': response.profile,
-            'gmail_connected': true,
-            'gmail_email': email,
-            'last_gmail_update': new Date().toISOString()
-          });
+        } else {
+          console.log('No user ID available - Gmail connected in local mode only');
         }
       } else {
         console.error('Failed to reconnect Gmail:', response?.error || 'Unknown error');

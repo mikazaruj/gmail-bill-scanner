@@ -324,7 +324,7 @@ export const updateGmailConnection = async (
         gmail_email: gmailEmail,
         gmail_connected: isConnected,
         gmail_last_connected_at: isConnected ? new Date().toISOString() : null,
-        gmail_scopes: scopes.length > 0 ? scopes : undefined,
+        gmail_scopes: scopes.length > 0 ? scopes : null,
           updated_at: new Date().toISOString()
       }, {
         onConflict: 'user_id'

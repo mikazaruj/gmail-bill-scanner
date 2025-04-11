@@ -249,20 +249,59 @@ export async function getAccessToken(): Promise<string | null> {
  */
 export async function fetchGoogleUserInfo(token: string): Promise<any> {
   try {
+    console.log('Fetching Google user info with token prefix:', token.substring(0, 5) + '...');
+    
+    // Add timeout to the fetch request
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    
     const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: {
-        Authorization: `Bearer ${token}`
-      }
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      signal: controller.signal
     });
     
+    clearTimeout(timeoutId);
+    
     if (!response.ok) {
-      console.error('Failed to fetch Google user info:', response.status, response.statusText);
+      // Get more detailed error information
+      let errorText = '';
+      try {
+        const errorData = await response.json();
+        errorText = JSON.stringify(errorData);
+      } catch (e) {
+        errorText = await response.text();
+      }
+      
+      console.error('Failed to fetch Google user info:', {
+        status: response.status,
+        statusText: response.statusText,
+        errorDetails: errorText
+      });
+      
       return null;
     }
     
-    return await response.json();
-  } catch (error) {
-    console.error('Error fetching Google user info:', error);
+    const data = await response.json();
+    
+    // Log basic info about what we received (without exposing all personal data)
+    console.log('User info successfully retrieved:', {
+      hasEmail: !!data.email,
+      hasId: !!data.id,
+      hasName: !!data.name,
+      hasPicture: !!data.picture
+    });
+    
+    return data;
+  } catch (error: unknown) {
+    // Check if this is an abort error (timeout)
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.error('Timeout fetching Google user info - request took too long');
+    } else {
+      console.error('Error fetching Google user info:', error);
+    }
     return null;
   }
 }
@@ -273,15 +312,39 @@ export async function fetchGoogleUserInfo(token: string): Promise<any> {
  */
 export async function fetchGoogleUserInfoExtended(token: string): Promise<any> {
   try {
+    console.log('Fetching extended Google user info with token prefix:', token.substring(0, 5) + '...');
+    
+    // Add timeout to the fetch request
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    
     // Use the Google OpenID endpoint which includes the 'sub' field (Google's user ID)
     const response = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
       headers: {
-        Authorization: `Bearer ${token}`
-      }
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      signal: controller.signal
     });
     
+    clearTimeout(timeoutId);
+    
     if (!response.ok) {
-      console.error('Failed to fetch extended Google user info:', response.status, response.statusText);
+      // Get more detailed error information
+      let errorText = '';
+      try {
+        const errorData = await response.json();
+        errorText = JSON.stringify(errorData);
+      } catch (e) {
+        errorText = await response.text();
+      }
+      
+      console.error('Failed to fetch extended Google user info:', {
+        status: response.status,
+        statusText: response.statusText,
+        errorDetails: errorText
+      });
+      
       return null;
     }
     
@@ -293,9 +356,22 @@ export async function fetchGoogleUserInfoExtended(token: string): Promise<any> {
       console.log('Mapped OpenID sub field to id:', data.id);
     }
     
+    // Log basic info about what we received (without exposing all personal data)
+    console.log('Extended user info successfully retrieved:', {
+      hasEmail: !!data.email,
+      hasId: !!data.id || !!data.sub,
+      hasName: !!data.name,
+      hasPicture: !!data.picture
+    });
+    
     return data;
-  } catch (error) {
-    console.error('Error fetching extended Google user info:', error);
+  } catch (error: unknown) {
+    // Check if this is an abort error (timeout)
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.error('Timeout fetching extended Google user info - request took too long');
+    } else {
+      console.error('Error fetching extended Google user info:', error);
+    }
     return null;
   }
 } 
