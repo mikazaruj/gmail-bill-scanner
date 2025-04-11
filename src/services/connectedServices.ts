@@ -46,7 +46,7 @@ export const getUserConnection = async (userId: string): Promise<UserConnection 
       .single();
       
     if (error) throw error;
-    return data;
+      return data;
   } catch (error) {
     console.error('Error fetching user connection:', error);
     return getUserConnectionFromStorage();
@@ -277,21 +277,21 @@ export const updateSheetConnection = async (
     }
     
     // Upsert the sheet record
-    const { error } = await supabase
+      const { error } = await supabase
       .from('user_sheets')
       .upsert({
         user_id: userId,
-        sheet_id: sheetId,
-        sheet_name: sheetName,
+          sheet_id: sheetId,
+          sheet_name: sheetName,
         is_default: isDefault,
-        is_connected: true,
-        last_connected_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+          is_connected: true,
+          last_connected_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
       }, {
         onConflict: 'user_id, sheet_id'
-      });
-    
-    if (error) throw error;
+        });
+        
+      if (error) throw error;
     return true;
   } catch (error) {
     console.error('Error updating sheet connection:', error);
@@ -317,7 +317,7 @@ export const updateGmailConnection = async (
     });
     
     // Upsert the connection record
-    const { error } = await supabase
+      const { error } = await supabase
       .from('user_connections')
       .upsert({
         user_id: userId,
@@ -325,12 +325,12 @@ export const updateGmailConnection = async (
         gmail_connected: isConnected,
         gmail_last_connected_at: isConnected ? new Date().toISOString() : null,
         gmail_scopes: scopes.length > 0 ? scopes : undefined,
-        updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString()
       }, {
         onConflict: 'user_id'
-      });
-    
-    if (error) throw error;
+        });
+        
+      if (error) throw error;
     return true;
   } catch (error) {
     console.error('Error updating Gmail connection:', error);

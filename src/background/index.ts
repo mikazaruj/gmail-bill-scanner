@@ -152,114 +152,34 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
       }
     }
     
-    // Step 1: Get Google auth token using Chrome Identity API
-    const token = await new Promise<string>((resolve, reject) => {
-      // For sign-in attempts, try to use existing tokens first before prompting
-      const interactive = true; // Always use interactive mode to show account chooser if needed
-      
-      // Define all required scopes - these MUST match what's declared in manifest.json
-      const allScopes = [
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/drive.file",
-        "https://www.googleapis.com/auth/userinfo.email",
-        "https://www.googleapis.com/auth/userinfo.profile",
-        "openid",
-        "email",
-        "profile"
-      ];
-      
-      console.log('Requesting token with scopes:', allScopes.join(', '));
-      
-      // For sign-in attempts, don't clear tokens - try to use existing ones
-      chrome.identity.getAuthToken({ 
-        interactive: interactive,
-        scopes: allScopes
-      }, (token) => {
-        if (chrome.runtime.lastError) {
-          console.error('Authentication error:', chrome.runtime.lastError.message);
-          
-          // Special handling for user cancellation or permission denial
-          if (chrome.runtime.lastError.message.includes('The user did not approve access') || 
-              chrome.runtime.lastError.message.includes('canceled')) {
-            reject(new Error('Google authentication was canceled or denied. Please try again.'));
-            return;
-          }
-          
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        if (!token) {
-          reject(new Error('No token received'));
-          return;
-        }
-        
-        // Log detailed token information for debugging
-        console.log('Got Google auth token:', {
-          tokenPrefix: token.substring(0, 5) + '...',
-          tokenLength: token.length,
-          timestamp: new Date().toISOString()
-        });
-        
-        resolve(token);
-      });
-    });
+    // Get Google access token
+    const token = await getGoogleAccessToken();
     
-    console.log('Got Google auth token successfully');
+    if (!token) {
+      throw new Error('Failed to get Google access token');
+    }
     
-    // Save the token immediately to storage for reference
-    await chrome.storage.local.set({
-      'google_access_token': token,
-      'token_received_at': Date.now()
-    });
-    
-    // Step 2: Get user info from Google
-    console.log('=== Fetching user info with token ===');
-    console.log('Token prefix for user info fetch:', token.substring(0, 5) + '...');
+    // Get user info from Google
     let userInfo = await fetchGoogleUserInfo(token);
     
-    console.log('=== User info fetch result ===', {
-      success: !!userInfo,
-      hasEmail: !!userInfo?.email,
-      hasId: !!userInfo?.id,
-      googleId: userInfo?.id,
-      fullData: userInfo
-    });
-    
-    if (!userInfo) {
-      console.error('User info is null - token may be invalid');
+    // If user info fetch fails, try refreshing the token
+    if (!userInfo || !userInfo.email) {
+      console.log('Failed to get user info, attempting token refresh...');
       
-      // Try to refresh the token by removing cached token and getting a new one
-      console.log('Removing cached token and requesting a new one...');
+      // Remove cached token
       await new Promise<void>((resolve) => {
         chrome.identity.removeCachedAuthToken({ token }, () => {
-          console.log('Removed cached auth token');
           resolve();
         });
       });
       
-      // Get a new token
-      const newToken = await new Promise<string>((resolve, reject) => {
-        chrome.identity.getAuthToken({ 
-          interactive: true, 
-          scopes: [
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/drive.file",
-            "https://www.googleapis.com/auth/userinfo.email",
-            "https://www.googleapis.com/auth/userinfo.profile",
-            "openid",
-            "email",
-            "profile"
-          ]
-        }, (token) => {
-          if (chrome.runtime.lastError || !token) {
-            reject(new Error('Failed to get new token: ' + (chrome.runtime.lastError?.message || 'No token')));
-            return;
-          }
-          resolve(token);
-        });
-      });
+      // Get new token
+      const newToken = await getGoogleAccessToken();
       
-      console.log('Got new token, retry fetching user info...');
+      if (!newToken) {
+        throw new Error('Failed to refresh Google access token');
+      }
+      
       const retryUserInfo = await fetchGoogleUserInfo(newToken);
       
       if (!retryUserInfo || !retryUserInfo.email) {
@@ -295,8 +215,13 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
       console.log('Storing Google user ID in Chrome storage:', userInfo.id);
       await chrome.storage.local.set({
         'google_user_id': userInfo.id,
-        'google_profile': userInfo
+        'google_profile': userInfo,
+        'gmail_connected': true,
+        'gmail_email': userInfo.email,
+        'last_gmail_update': new Date().toISOString()
       });
+    } else {
+      throw new Error('Google user ID is missing from profile');
     }
 
     // Import Supabase client and functions
@@ -305,11 +230,6 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
       createLocalSession,
       storeGoogleToken 
     } = await import('../services/supabase/client');
-
-    // Ensure userInfo.id is not undefined before using it in the profile object
-    if (!userInfo.id) {
-      throw new Error('Google user ID is missing');
-    }
     
     console.log('Linking Google user to Supabase with Google ID:', userInfo.id);
     
@@ -324,61 +244,30 @@ async function authenticate(isSignUp: boolean = false): Promise<{ success: boole
     });
     
     if (!linkResult.success) {
-      console.error('Failed to link Google user:', linkResult.error);
-      throw new Error(`Failed to link Google account: ${linkResult.error}`);
+      throw new Error(linkResult.error || 'Failed to link Google user to Supabase');
     }
     
-    console.log('Successfully linked Google account with user ID:', linkResult.user?.id);
-    
-    if (!linkResult.user?.id) {
-      throw new Error('Failed to get user ID after linking Google account');
-    }
-    
-    // Store Google token for the user
-    try {
-      await storeGoogleToken(linkResult.user.id, token);
-      console.log('Stored Google token for user', linkResult.user.id);
-    } catch (tokenError) {
-      console.error('Failed to store Google token:', tokenError);
-      // Continue even if token storage failed
-    }
-    
-    // Create a local session
-    const sessionResult = await createLocalSession(linkResult.user.id, userInfo);
+    // Create local session
+    const sessionResult = await createLocalSession(userInfo.id, userInfo);
     
     if (!sessionResult.success) {
-      console.error('Failed to create local session:', sessionResult.error);
-      throw new Error(`Failed to create local session: ${sessionResult.error}`);
+      throw new Error(sessionResult.error || 'Failed to create local session');
     }
     
-    console.log('Local session created successfully');
+    // Store Google token
+    await storeGoogleToken(userInfo.id, token);
     
-    // Store additional information in Chrome storage for reference
-    await chrome.storage.local.set({
-      'supabase_user_id': linkResult.user.id,
-      'user_email': userInfo.email,
-      'user_profile': userInfo
-    });
-
-    // Return success with user profile and session
     return {
       success: true,
       isAuthenticated: true,
-      profile: {
-        id: linkResult.user.id,
-        email: userInfo.email,
-        name: userInfo.name || '',
-        picture: userInfo.picture || ''
-      },
-      message: 'Account created and linked successfully!',
-      newUser: !linkResult.user?.created_at || 
-               (new Date().getTime() - new Date(linkResult.user.created_at).getTime() < 60000)
+      profile: userInfo,
+      message: 'Successfully authenticated with Google'
     };
   } catch (error) {
     console.error('Authentication error:', error);
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Authentication failed',
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error during authentication',
       isAuthenticated: false
     };
   }
