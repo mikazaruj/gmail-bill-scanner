@@ -125,12 +125,6 @@ module.exports = {
       chunks: ['options'],
       cache: false
     }),
-    new HtmlWebpackPlugin({
-      template: './src/sheets-selector.html',
-      filename: 'sheets-selector.html',
-      chunks: [],
-      cache: false
-    }),
   ],
   resolve: {
     extensions: ['.js', '.jsx', '.ts', '.tsx', '.css'],

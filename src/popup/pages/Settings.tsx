@@ -211,7 +211,21 @@ const Settings = ({ onNavigate }: SettingsProps) => {
           setUserConnection(connection);
           
           const sheets = await getUserSheets(userId);
-          setUserSheets(sheets);
+          
+          // Check if sheets array is empty and handle appropriately
+          if (sheets && sheets.length > 0) {
+            setUserSheets(sheets);
+          } else {
+            // Explicitly set empty array to ensure UI shows "No sheet connected"
+            setUserSheets([]);
+            
+            // Also make sure userSettingsData reflects no connection
+            setUserSettingsData(prev => prev ? {
+              ...prev,
+              spreadsheet_id: null,
+              spreadsheet_name: null
+            } : null);
+          }
         } catch (servicesError) {
           console.error('Error fetching user connections:', servicesError);
           // Set empty objects/arrays if failed
@@ -384,12 +398,16 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       const safeName = sheetName || 'Unnamed Sheet';
       
       // Update state with selected spreadsheet
-      setUserSettingsData({
+      setUserSettingsData(prev => prev ? {
+        ...prev,
+        spreadsheet_id: sheetId,
+        spreadsheet_name: safeName,
+      } : {
         spreadsheet_id: sheetId,
         spreadsheet_name: safeName,
         scan_frequency: 'manual',
-        apply_labels: userSettingsData?.apply_labels || false,
-        label_name: userSettingsData?.label_name || null
+        apply_labels: false,
+        label_name: null
       });
       
       // Save to Chrome storage
@@ -416,6 +434,8 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       }
     } catch (error) {
       console.error('Error selecting spreadsheet:', error);
+      // Show user-friendly error message
+      alert('Failed to connect to Google Sheet. Please try again.');
     } finally {
       setIsConnectionLoading(false);
     }
@@ -441,12 +461,16 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       (response) => {
         if (response && response.success && response.spreadsheetId) {
           // Update the UI with the new spreadsheet
-          setUserSettingsData({
+          setUserSettingsData(prev => prev ? {
+            ...prev,
+            spreadsheet_id: response.spreadsheetId,
+            spreadsheet_name: sheetName,
+          } : {
             spreadsheet_id: response.spreadsheetId,
             spreadsheet_name: sheetName,
             scan_frequency: 'manual',
-            apply_labels: userSettingsData?.apply_labels || false,
-            label_name: userSettingsData?.label_name || null
+            apply_labels: false,
+            label_name: null
           });
           
           // Save to Chrome storage
@@ -746,10 +770,10 @@ const Settings = ({ onNavigate }: SettingsProps) => {
                     <div className="text-xs text-gray-500">Loading...</div>
                   ) : defaultSheet?.sheet_id || userSettingsData?.spreadsheet_id ? (
                     <div className="text-xs text-gray-500">
-                      {(defaultSheet?.sheet_name || userSettingsData?.spreadsheet_name || 'Bills Tracker')}
+                      {(defaultSheet?.sheet_name || userSettingsData?.spreadsheet_name)}
                     </div>
                   ) : (
-                    <div className="text-xs text-gray-500 italic">Not connected</div>
+                    <div className="text-xs text-gray-500 italic">No sheet connected</div>
                   )}
                 </div>
               </div>
@@ -765,9 +789,9 @@ const Settings = ({ onNavigate }: SettingsProps) => {
                 ) : isSheetDropdownOpen ? (
                   'Cancel'
                 ) : defaultSheet?.sheet_id || userSettingsData?.spreadsheet_id ? (
-                  'Change'
+                  'Change Sheet'
                 ) : (
-                  'Connect'
+                  'Choose Sheet'
                 )}
                 {!isConnectionLoading && !isSheetDropdownOpen && (
                   <ChevronDown size={12} className="ml-1" />
