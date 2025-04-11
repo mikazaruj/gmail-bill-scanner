@@ -1,5 +1,5 @@
 import React, { useState, useEffect, ChangeEvent, useContext, useRef, useCallback } from 'react';
-import { Mail, FileSpreadsheet } from 'lucide-react';
+import { Mail, FileSpreadsheet, ChevronDown, Loader, RefreshCw, PlusCircle } from 'lucide-react';
 import CollapsibleSection from '../components/CollapsibleSection';
 import SettingsToggle from '../components/SettingsToggle';
 import EmailSourceItem from '../components/EmailSourceItem';
@@ -87,6 +87,12 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     label_name: null
   };
   
+  // Google Sheets dropdown states
+  const [isSheetDropdownOpen, setIsSheetDropdownOpen] = useState<boolean>(false);
+  const [availableSheets, setAvailableSheets] = useState<Array<{id: string; name: string}>>([]);
+  const [isLoadingSheets, setIsLoadingSheets] = useState<boolean>(false);
+  const [sheetError, setSheetError] = useState<string | null>(null);
+  
   // Helper function to ensure Google ID is available in headers
   const ensureGoogleIdHeader = async (userId: string) => {
     try {
@@ -124,7 +130,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         setIsFieldMappingLoading(true);
         
         // Store the current userId for future comparisons
-        previousUserIdRef.current = userId;
+        previousUserIdRef.current = userId || null;
         
         // Check if Gmail is already connected from local storage
         const { gmail_connected, gmail_email } = await chrome.storage.local.get(['gmail_connected', 'gmail_email']);
@@ -310,99 +316,169 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     }
   };
   
-  const handleChangeSpreadsheet = async () => {
+  // Add this function to get sheets from Drive API
+  const loadAvailableSheets = useCallback(async () => {
     try {
-      setIsConnectionLoading(true);
-      // Open a dialog to select a new spreadsheet or create one
-      chrome.runtime.sendMessage({ type: 'OPEN_SPREADSHEET_SELECTOR' }, async (response) => {
-        if (response && response.success) {
-          console.log('Opening spreadsheet selector...');
-          
-          // Set up a listener for the message from the selector page
-          const messageListener = (message, sender, sendResponse) => {
-            if (message.type === 'SPREADSHEET_SELECTION_RESULT' && message.payload?.success) {
-              // Use a self-executing function to handle async code
-              (async () => {
-                try {
-                  const { spreadsheetId, spreadsheetName } = message.payload;
-                  
-                  if (spreadsheetId && spreadsheetName) {
-                    console.log('Spreadsheet selected:', spreadsheetId, spreadsheetName);
-                    
-                    // Update local state for user settings
-                    setUserSettingsData({
-                      ...(userSettingsData || defaultSettings),
-                      spreadsheet_id: spreadsheetId,
-                      spreadsheet_name: spreadsheetName
-                    });
-                    
-                    // Save to Chrome storage as a backup
-                    await chrome.storage.local.set({
-                      'sheet_id': spreadsheetId,
-                      'sheet_name': spreadsheetName,
-                      'last_updated': Date.now()
-                    });
-                    
-                    // Try to update Supabase if user is logged in
-                    const userId = userProfile?.id;
-                    if (userId) {
-                      try {
-                        // Ensure Google ID is in headers/storage
-                        await ensureGoogleIdHeader(userId);
-                        
-                        // Update sheet connection with new function
-                        const success = await updateSheetConnection(
-                          userId, 
-                          spreadsheetId, 
-                          spreadsheetName,
-                          true // Set as default
-                        );
-                        
-                        if (success) {
-                          // Refresh user sheets
-                          try {
-                            const sheets = await getUserSheets(userId);
-                            setUserSheets(sheets);
-                          } catch (refreshError) {
-                            console.error('Error refreshing user sheets:', refreshError);
-                          }
-                        }
-                      } catch (supabaseError) {
-                        console.error('Error updating spreadsheet in Supabase:', supabaseError);
-                        // User will still have local state updated
-                      }
-                    }
-                  }
-                } catch (error) {
-                  console.error('Error processing spreadsheet selection:', error);
-                } finally {
-                  // Remove the listener after handling the message
-                  chrome.runtime.onMessage.removeListener(messageListener);
-                  setIsConnectionLoading(false);
-                }
-              })();
-            }
-            // Return false to indicate we won't send a response asynchronously
-            return false;
-          };
-          
-          // Add the listener
-          chrome.runtime.onMessage.addListener(messageListener);
-          
-          // Set a timeout to remove the listener if no selection is made
-          setTimeout(() => {
-            chrome.runtime.onMessage.removeListener(messageListener);
-            setIsConnectionLoading(false);
-          }, 120000); // 2 minutes timeout
+      setIsLoadingSheets(true);
+      setSheetError(null);
+      
+      // Call to background script to get sheets
+      const response = await new Promise<any>((resolve) => {
+        chrome.runtime.sendMessage({ type: 'GET_AVAILABLE_SHEETS' }, (result) => {
+          resolve(result || { success: false, error: 'No response from extension' });
+        });
+      });
+      
+      if (response && response.success && Array.isArray(response.sheets)) {
+        setAvailableSheets(response.sheets);
+      } else {
+        setSheetError(response.error || 'Failed to load sheets');
+        setAvailableSheets([]);
+      }
+    } catch (error) {
+      console.error('Error loading sheets:', error);
+      setSheetError('Error loading Google Sheets');
+      setAvailableSheets([]);
+    } finally {
+      setIsLoadingSheets(false);
+    }
+  }, []);
+  
+  // Modify handleChangeSpreadsheet to toggle dropdown and load sheets only when opened
+  const handleChangeSpreadsheet = () => {
+    if (!isSheetDropdownOpen) {
+      // Start loading when opening the dropdown
+      console.log('Opening Google Sheets dropdown');
+      setIsLoadingSheets(true);
+      setIsSheetDropdownOpen(true);
+      
+      // Load available sheets
+      chrome.runtime.sendMessage({ type: 'GET_AVAILABLE_SHEETS' }, (result) => {
+        console.log('Got sheets result:', result);
+        setIsLoadingSheets(false);
+        
+        if (result && result.success && Array.isArray(result.sheets)) {
+          console.log('Found', result.sheets.length, 'sheets');
+          setAvailableSheets(result.sheets);
         } else {
-          console.error('Error opening spreadsheet selector:', response?.error);
-          setIsConnectionLoading(false);
+          console.error('Error loading sheets:', result?.error);
+          setSheetError(result?.error || 'Failed to load sheets');
+          setAvailableSheets([]);
         }
       });
+    } else {
+      // Just close the dropdown when it's already open
+      console.log('Closing Google Sheets dropdown');
+      setIsSheetDropdownOpen(false);
+    }
+  };
+  
+  // Add handler for selecting a sheet - simplified version
+  const handleSelectSheet = async (sheetId: string, sheetName: string) => {
+    try {
+      // Start loading
+      setIsConnectionLoading(true);
+      setIsSheetDropdownOpen(false);
+      
+      // Ensure sheetName is a string and not undefined
+      const safeName = sheetName || 'Unnamed Sheet';
+      
+      // Update state with selected spreadsheet
+      setUserSettingsData({
+        spreadsheet_id: sheetId,
+        spreadsheet_name: safeName,
+        scan_frequency: 'manual',
+        apply_labels: userSettingsData?.apply_labels || false,
+        label_name: userSettingsData?.label_name || null
+      });
+      
+      // Save to Chrome storage
+      await chrome.storage.local.set({
+        'sheet_id': sheetId,
+        'sheet_name': safeName,
+        'sheets_connected': true,
+        'last_updated': Date.now()
+      });
+      
+      // Update in Supabase if user is logged in
+      const userId = userProfile?.id;
+      if (userId) {
+        await ensureGoogleIdHeader(userId);
+        await updateSheetConnection(userId, sheetId, safeName, true);
+        
+        // Refresh user sheets
+        try {
+          const sheets = await getUserSheets(userId);
+          setUserSheets(sheets);
+        } catch (err) {
+          console.error('Error refreshing sheets:', err);
+        }
+      }
     } catch (error) {
-      console.error('Error in handleChangeSpreadsheet:', error);
+      console.error('Error selecting spreadsheet:', error);
+    } finally {
       setIsConnectionLoading(false);
     }
+  };
+  
+  // Simplified handler for creating a new sheet
+  const handleCreateNewSheet = () => {
+    // Hide dropdown while we show prompt
+    setIsSheetDropdownOpen(false);
+    
+    // Ask for spreadsheet name
+    const sheetName = prompt('Enter a name for your new spreadsheet:', 'Bills Tracker');
+    
+    // If user cancels prompt, do nothing
+    if (!sheetName) return;
+    
+    // Show loading indicator
+    setIsConnectionLoading(true);
+    
+    // Create the spreadsheet
+    chrome.runtime.sendMessage(
+      { type: 'CREATE_SPREADSHEET', payload: { name: sheetName } },
+      (response) => {
+        if (response && response.success && response.spreadsheetId) {
+          // Update the UI with the new spreadsheet
+          setUserSettingsData({
+            spreadsheet_id: response.spreadsheetId,
+            spreadsheet_name: sheetName,
+            scan_frequency: 'manual',
+            apply_labels: userSettingsData?.apply_labels || false,
+            label_name: userSettingsData?.label_name || null
+          });
+          
+          // Save to Chrome storage
+          chrome.storage.local.set({
+            'sheet_id': response.spreadsheetId,
+            'sheet_name': sheetName,
+            'sheets_connected': true,
+            'last_updated': Date.now()
+          });
+          
+          // Update Supabase if possible
+          if (userProfile && userProfile.id) {
+            const id = userProfile.id; // Create a local variable that TypeScript knows is string
+            ensureGoogleIdHeader(id)
+              .then(() => updateSheetConnection(
+                id,
+                response.spreadsheetId, 
+                sheetName, 
+                true
+              ))
+              .then(() => getUserSheets(id))
+              .then(sheets => setUserSheets(sheets))
+              .catch(err => console.error('Error updating sheet connection:', err));
+          }
+        } else {
+          alert('Failed to create spreadsheet: ' + (response?.error || 'Unknown error'));
+        }
+        
+        // Hide loading indicator
+        setIsConnectionLoading(false);
+      }
+    );
   };
   
   const handleToggleAutomaticProcessing = useCallback(async (checked: boolean) => {
@@ -666,21 +742,94 @@ const Settings = ({ onNavigate }: SettingsProps) => {
                 </div>
                 <div>
                   <div className="text-sm font-medium text-gray-900">Google Sheets</div>
-                  <div className="text-xs text-gray-500">
-                    {isConnectionLoading 
-                      ? 'Loading...' 
-                      : defaultSheet?.sheet_name || userSettingsData?.spreadsheet_name || 'Bills Tracker'}
-                  </div>
+                  {isConnectionLoading ? (
+                    <div className="text-xs text-gray-500">Loading...</div>
+                  ) : defaultSheet?.sheet_id || userSettingsData?.spreadsheet_id ? (
+                    <div className="text-xs text-gray-500">
+                      {(defaultSheet?.sheet_name || userSettingsData?.spreadsheet_name || 'Bills Tracker')}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-gray-500 italic">Not connected</div>
+                  )}
                 </div>
               </div>
               <button 
-                className="px-2 py-0.5 text-xs bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg font-medium transition-colors"
+                className="px-2 py-0.5 text-xs bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg font-medium transition-colors flex items-center"
                 onClick={handleChangeSpreadsheet}
+                disabled={isConnectionLoading}
+                aria-expanded={isSheetDropdownOpen}
+                aria-controls="sheet-dropdown"
               >
-                {isConnectionLoading 
-                  ? '...' 
-                  : defaultSheet?.sheet_id ? 'Change' : 'Connect'}
+                {isConnectionLoading ? (
+                  <Loader size={12} className="animate-spin mr-1" />
+                ) : isSheetDropdownOpen ? (
+                  'Cancel'
+                ) : defaultSheet?.sheet_id || userSettingsData?.spreadsheet_id ? (
+                  'Change'
+                ) : (
+                  'Connect'
+                )}
+                {!isConnectionLoading && !isSheetDropdownOpen && (
+                  <ChevronDown size={12} className="ml-1" />
+                )}
               </button>
+            </div>
+            
+            {/* Sheet selection dropdown - always rendered but conditionally visible */}
+            <div 
+              id="sheet-dropdown" 
+              className={`mt-2 p-1 bg-white border border-gray-200 rounded-md shadow-md ${isSheetDropdownOpen ? '' : 'hidden'}`}
+            >
+              {isLoadingSheets ? (
+                <div className="p-3 flex items-center justify-center">
+                  <Loader size={16} className="animate-spin mr-2" />
+                  <span className="text-xs text-gray-500">Loading your sheets...</span>
+                </div>
+              ) : sheetError ? (
+                <div className="p-3">
+                  <div className="text-xs text-red-500 mb-1">{sheetError}</div>
+                  <button 
+                    className="text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded-md flex items-center"
+                    onClick={() => handleChangeSpreadsheet()}
+                  >
+                    <RefreshCw size={10} className="mr-1" /> Try Again
+                  </button>
+                </div>
+              ) : availableSheets.length === 0 ? (
+                <div className="p-3">
+                  <div className="text-xs text-gray-500 mb-2">No spreadsheets found.</div>
+                  <button 
+                    className="text-xs px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-md flex items-center"
+                    onClick={handleCreateNewSheet}
+                  >
+                    <PlusCircle size={10} className="mr-1" /> Create New Sheet
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <div className="max-h-36 overflow-y-auto">
+                    {availableSheets.map(sheet => (
+                      <div 
+                        key={sheet.id}
+                        className="p-2 text-xs hover:bg-gray-100 cursor-pointer rounded-md flex items-center"
+                        onClick={() => handleSelectSheet(sheet.id, sheet.name)}
+                      >
+                        <FileSpreadsheet size={12} className="text-green-600 mr-1.5" />
+                        {sheet.name}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="border-t border-gray-100 mt-1 pt-1">
+                    <div 
+                      className="p-2 text-xs hover:bg-blue-50 cursor-pointer rounded-md flex items-center text-blue-600"
+                      onClick={handleCreateNewSheet}
+                    >
+                      <PlusCircle size={12} className="mr-1.5" />
+                      Create New Sheet
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

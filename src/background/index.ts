@@ -838,27 +838,87 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const { name } = message.payload;
         
-        // Get authentication token
+        // Get authentication token (scopes are configured in manifest.json)
         const token = await getAccessToken();
         if (!token) {
           sendResponse({ success: false, error: 'Not authenticated' });
           return;
         }
         
-        // Import the sheets service
-        const { createBillsSpreadsheet } = await import('../services/sheets/sheetsService');
-        
-        // Create a new spreadsheet
-        const spreadsheetId = await createBillsSpreadsheet();
-        
-        // Return the spreadsheet ID
-        sendResponse({ 
-          success: true, 
-          spreadsheetId,
-          spreadsheetName: 'Gmail Bill Scanner - Bills Tracker'
-        });
+        try {
+          // Create a new spreadsheet using Sheets API
+          const response = await fetch(
+            'https://sheets.googleapis.com/v4/spreadsheets',
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                properties: {
+                  title: name || 'Bills Tracker',
+                },
+                sheets: [
+                  {
+                    properties: {
+                      title: 'Bills',
+                      gridProperties: {
+                        frozenRowCount: 1,
+                      },
+                    },
+                  },
+                ],
+              }),
+            }
+          );
+          
+          if (!response.ok) {
+            const error = await response.json();
+            throw new Error(`Sheets API error: ${error.error?.message || 'Unknown error'}`);
+          }
+          
+          const data = await response.json();
+          const spreadsheetId = data.spreadsheetId;
+          
+          // Initialize the spreadsheet with headers
+          const headerResponse = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Bills!A1:I1?valueInputOption=RAW`,
+            {
+              method: 'PUT',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                range: 'Bills!A1:I1',
+                majorDimension: 'ROWS',
+                values: [
+                  ['Date', 'Merchant', 'Amount', 'Currency', 'Category', 'Due Date', 'Paid', 'Notes', 'Source']
+                ],
+              }),
+            }
+          );
+          
+          if (!headerResponse.ok) {
+            console.warn('Failed to initialize headers, but spreadsheet was created');
+          }
+          
+          // Return the spreadsheet ID and name
+          sendResponse({ 
+            success: true, 
+            spreadsheetId,
+            spreadsheetName: name || 'Bills Tracker'
+          });
+        } catch (error) {
+          console.error('Error creating spreadsheet:', error);
+          sendResponse({ 
+            success: false, 
+            error: error instanceof Error ? error.message : 'Unknown error' 
+          });
+        }
       } catch (error) {
-        console.error('Error creating spreadsheet:', error);
+        console.error('Error in CREATE_SPREADSHEET handler:', error);
         sendResponse({ 
           success: false, 
           error: error instanceof Error ? error.message : 'Unknown error' 
@@ -1254,7 +1314,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
       break;
 
-    case 'OPEN_SPREADSHEET_SELECTOR':
+    case 'GET_AVAILABLE_SHEETS':
       try {
         // Get authentication token
         const token = await getAccessToken();
@@ -1264,7 +1324,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         
         try {
-          // Use the Drive API directly to list files of type spreadsheet
+          // Use the Drive API to list files of type spreadsheet
           const response = await fetch(
             "https://www.googleapis.com/drive/v3/files?q=mimeType='application/vnd.google-apps.spreadsheet'",
             {
@@ -1289,62 +1349,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             name: file.name,
           }));
           
-          // Open a new tab with the sheet selector UI
-          chrome.tabs.create({
-            url: chrome.runtime.getURL('sheets-selector.html')
-          }, async (tab) => {
-            // Store the spreadsheets list temporarily in storage for the selector page
-            await chrome.storage.local.set({
-              temp_spreadsheets_list: spreadsheets,
-              selector_callback_tab: sender.tab?.id || null
-            });
-          });
-          
-          // Return a success response
-          sendResponse({ success: true, message: 'Opening spreadsheet selector' });
+          // Return the list of spreadsheets directly
+          sendResponse({ success: true, sheets: spreadsheets });
         } catch (error) {
-          console.error('Error fetching spreadsheets list:', error);
-          sendResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Error fetching spreadsheets'
+          console.error('Error fetching spreadsheets:', error);
+          sendResponse({ 
+            success: false, 
+            error: error instanceof Error ? error.message : 'Error fetching spreadsheets' 
           });
         }
       } catch (error) {
-        console.error('Error opening spreadsheet selector:', error);
+        console.error('Error in GET_AVAILABLE_SHEETS handler:', error);
         sendResponse({ 
           success: false, 
-          error: error instanceof Error ? error.message : 'Unknown error' 
-        });
-      }
-      break;
-      
-    case 'SPREADSHEET_SELECTED':
-      try {
-        const { spreadsheetId, spreadsheetName } = message.payload;
-        
-        // Return the selected spreadsheet info to the original sender
-        const { selector_callback_tab } = await chrome.storage.local.get('selector_callback_tab');
-        
-        if (selector_callback_tab) {
-          chrome.tabs.sendMessage(selector_callback_tab, {
-            type: 'SPREADSHEET_SELECTION_RESULT',
-            payload: {
-              success: true,
-              spreadsheetId,
-              spreadsheetName
-            }
-          });
-        }
-        
-        // Clean up temporary storage
-        await chrome.storage.local.remove(['temp_spreadsheets_list', 'selector_callback_tab']);
-        
-        sendResponse({ success: true });
-      } catch (error) {
-        console.error('Error handling spreadsheet selection:', error);
-        sendResponse({ 
-          success: false, 
-          error: error instanceof Error ? error.message : 'Unknown error' 
+          error: error instanceof Error ? error.message : 'Error handling spreadsheet request' 
         });
       }
       break;
