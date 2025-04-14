@@ -1420,6 +1420,115 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       break;
 
+    case 'INSERT_TRUSTED_SOURCE':
+      try {
+        const { userId, emailAddress, description, isActive, googleUserId } = message.payload || {};
+        
+        if (!userId || !emailAddress) {
+          sendResponse({ 
+            success: false, 
+            error: 'Missing required parameters: userId and emailAddress are required' 
+          });
+          return;
+        }
+        
+        console.log('Background: Inserting trusted source with service role:', 
+          { userId, emailAddress, description, googleUserId });
+        
+        // Import the client module to access the Supabase client
+        import('../services/supabase/client').then(async (module) => {
+          try {
+            // Get the Supabase client with service role key (only available in background)
+            if (!module.supabase) {
+              throw new Error('Supabase client not available');
+            }
+            
+            // Get service role client if available (this should be a secure function that doesn't expose the key)
+            const supabaseAdmin = await module.getSupabaseClient() || module.supabase;
+            
+            // Insert the record directly with the service role key
+            const { data, error } = await supabaseAdmin
+              .from('email_sources')
+              .insert({
+                user_id: userId,
+                email_address: emailAddress,
+                description: description || null,
+                is_active: isActive !== false
+              })
+              .select()
+              .single();
+            
+            if (error) {
+              console.error('Background: Error inserting trusted source:', error);
+              
+              // Check if it might be a unique constraint error
+              if (error.code === '23505') {
+                // Try to fetch the existing record instead
+                const { data: existingData, error: fetchError } = await supabaseAdmin
+                  .from('email_sources')
+                  .select('*')
+                  .eq('user_id', userId)
+                  .eq('email_address', emailAddress)
+                  .is('deleted_at', null)
+                  .single();
+                
+                if (fetchError) {
+                  console.error('Background: Error fetching existing record:', fetchError);
+                  sendResponse({ 
+                    success: false, 
+                    error: fetchError.message || 'Failed to fetch existing record'
+                  });
+                  return;
+                }
+                
+                if (existingData) {
+                  console.log('Background: Found existing record:', existingData);
+                  sendResponse({ 
+                    success: true, 
+                    data: existingData,
+                    message: 'Retrieved existing record'
+                  });
+                  return;
+                }
+              }
+              
+              sendResponse({ 
+                success: false, 
+                error: error.message || 'Failed to insert trusted source'
+              });
+              return;
+            }
+            
+            console.log('Background: Successfully inserted trusted source:', data);
+            sendResponse({ 
+              success: true, 
+              data,
+              message: 'Successfully inserted trusted source'
+            });
+          } catch (error) {
+            console.error('Background: Error in service role operation:', error);
+            sendResponse({
+              success: false, 
+              error: error instanceof Error ? error.message : 'Unknown error in service operation'
+            });
+          }
+        }).catch(error => {
+          console.error('Background: Error importing client module:', error);
+          sendResponse({
+            success: false,
+            error: 'Failed to import service functions'
+          });
+        });
+        return true; // Keep the response channel open
+      } catch (error) {
+        console.error('Background: Error processing trusted source insert:', error);
+        sendResponse({ 
+          success: false, 
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+      break;
+
     default:
       console.warn(`Unknown message type: ${message.type}`);
       sendResponse({ success: false, error: `Unknown message type: ${message.type}` });

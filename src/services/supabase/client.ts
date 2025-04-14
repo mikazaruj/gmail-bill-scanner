@@ -656,25 +656,35 @@ export async function getGoogleCredentials(userId: string) {
 }
 
 /**
- * Get trusted email sources for the current user
- * Uses Google User ID passed in headers for RLS policies
+ * Get trusted sources for the current user
+ * Uses service role to bypass RLS policies
  */
 export async function getTrustedSources() {
   try {
-    console.log('Getting trusted sources for current user using Google User ID header');
-  const supabase = await getSupabaseClient();
-  
-    // With the X-Google-User-ID header set, RLS policies will filter appropriately
-    const { data, error } = await supabase
-    .from('email_sources')
+    console.log('Getting trusted sources using service role client');
+    
+    // Get current user ID from storage
+    const { supabase_user_id } = await chrome.storage.local.get('supabase_user_id');
+    
+    if (!supabase_user_id) {
+      console.error('No Supabase user ID available');
+      return [];
+    }
+    
+    // Use supabaseAdmin (service role client) instead of regular client
+    const { data, error } = await supabaseAdmin
+      .from('email_sources')
       .select('*')
-      .eq('is_active', true);
+      .eq('user_id', supabase_user_id)
+      .eq('is_active', true)
+      .is('deleted_at', null);
     
     if (error) {
       console.error('Error getting trusted sources:', error);
       return [];
     }
     
+    console.log('Successfully retrieved trusted sources:', data?.length || 0);
     return data || [];
   } catch (error) {
     console.error('Failed to get trusted sources:', error);
@@ -684,12 +694,10 @@ export async function getTrustedSources() {
 
 /**
  * Add a trusted email source
- * Uses Google User ID passed in headers for RLS policies
+ * Uses service role to bypass RLS policies
  */
 export async function addTrustedSource(emailAddress: string, description?: string) {
   try {
-  const supabase = await getSupabaseClient();
-  
     // Get current user ID from storage
     const { supabase_user_id } = await chrome.storage.local.get('supabase_user_id');
     
@@ -698,20 +706,30 @@ export async function addTrustedSource(emailAddress: string, description?: strin
       return { success: false, error: 'User not authenticated' };
     }
     
-    const { data, error } = await supabase
-    .from('email_sources')
+    console.log('Adding trusted source with service role:', {
+      user_id: supabase_user_id,
+      email_address: emailAddress,
+      description
+    });
+    
+    // Use supabaseAdmin (service role client) instead of regular client
+    const { data, error } = await supabaseAdmin
+      .from('email_sources')
       .insert({
         user_id: supabase_user_id,
         email_address: emailAddress,
         description: description || null,
         is_active: true
-      });
+      })
+      .select()
+      .single();
     
     if (error) {
       console.error('Error adding trusted source:', error);
       return { success: false, error: error.message };
     }
     
+    console.log('Successfully added trusted source:', data);
     return { success: true, data };
   } catch (error) {
     console.error('Failed to add trusted source:', error);
@@ -742,20 +760,25 @@ export async function recordProcessedItem(
   extractedData?: any,
   errorMessage?: string
 ) {
-  const supabase = await getSupabaseClient();
-  
-  return await supabase
-    .from('processed_items')
-    .insert({
-      user_id: userId,
-      message_id: messageId,
-      source_email: sourceEmail,
-      processed_at: new Date().toISOString(),
-      status: status,
-      sheet_id: sheetId || null,
-      extracted_data: extractedData || null,
-      error_message: errorMessage || null
-    });
+  try {
+    console.log('Recording processed item with service role for user:', userId);
+    
+    return await supabaseAdmin
+      .from('processed_items')
+      .insert({
+        user_id: userId,
+        message_id: messageId,
+        source_email: sourceEmail,
+        processed_at: new Date().toISOString(),
+        status: status,
+        sheet_id: sheetId || null,
+        extracted_data: extractedData || null,
+        error_message: errorMessage || null
+      });
+  } catch (error) {
+    console.error('Error recording processed item:', error);
+    return { error: 'Failed to record processed item' };
+  }
 }
 
 /**
@@ -764,15 +787,25 @@ export async function recordProcessedItem(
  * @returns User settings
  */
 export async function getUserSettings(userId: string) {
-  const supabase = await getSupabaseClient();
-  
-  const { data } = await supabase
-    .from('user_settings')
-    .select('*')
-    .eq('user_id', userId)
-    .maybeSingle();
+  try {
+    console.log('Getting user settings with service role for user:', userId);
     
-  return data;
+    const { data, error } = await supabaseAdmin
+      .from('user_settings')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+    
+    if (error) {
+      console.error('Error getting user settings:', error);
+      return null;
+    }
+      
+    return data;
+  } catch (error) {
+    console.error('Error getting user settings:', error);
+    return null;
+  }
 }
 
 /**
@@ -791,37 +824,53 @@ export async function saveUserSettings(
     label_name?: string | null;
   }
 ) {
-  const supabase = await getSupabaseClient();
-  
-  // Check if settings already exist for this user
-  const { data } = await supabase
-    .from('user_settings')
-    .select('id')
-    .eq('user_id', userId)
-    .maybeSingle();
-  
-  if (data) {
-    // Update existing settings
-    return await supabase
+  try {
+    console.log('Saving user settings with service role for user:', userId);
+    
+    // Check if settings already exist for this user
+    const { data, error: queryError } = await supabaseAdmin
       .from('user_settings')
-      .update({
-        ...settings,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', data.id);
-  } else {
-    // Insert new settings
-    return await supabase
-      .from('user_settings')
-      .insert({
-        user_id: userId,
-        ...settings,
-        scan_frequency: settings.scan_frequency || 'manual',
-        apply_labels: settings.apply_labels !== undefined ? settings.apply_labels : false,
-        label_name: settings.label_name || null,
-        spreadsheet_id: settings.spreadsheet_id || null,
-        spreadsheet_name: settings.spreadsheet_name || null
-      });
+      .select('id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    
+    if (queryError) {
+      console.error('Error checking user settings:', queryError);
+      return { error: queryError };
+    }
+    
+    if (data) {
+      // Update existing settings
+      console.log('Updating existing settings for user:', userId);
+      const { error } = await supabaseAdmin
+        .from('user_settings')
+        .update({
+          ...settings,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', data.id);
+        
+      return { error };
+    } else {
+      // Insert new settings
+      console.log('Creating new settings for user:', userId);
+      const { error } = await supabaseAdmin
+        .from('user_settings')
+        .insert({
+          user_id: userId,
+          ...settings,
+          scan_frequency: settings.scan_frequency || 'manual',
+          apply_labels: settings.apply_labels !== undefined ? settings.apply_labels : false,
+          label_name: settings.label_name || null,
+          spreadsheet_id: settings.spreadsheet_id || null,
+          spreadsheet_name: settings.spreadsheet_name || null
+        });
+        
+      return { error };
+    }
+  } catch (error) {
+    console.error('Error saving user settings:', error);
+    return { error: 'Failed to save user settings' };
   }
 }
 
@@ -957,7 +1006,7 @@ export async function deleteAccount() {
   // Delete user data from public tables
   await supabase.from('user_settings').delete().eq('user_id', user.id);
   await supabase.from('google_credentials').delete().eq('user_id', user.id);
-  await supabase.from('email_sources').delete().eq('user_id', user.id);
+  await supabaseAdmin.from('email_sources').delete().eq('user_id', user.id);
   await supabase.from('processed_items').delete().eq('user_id', user.id);
   
   // Finally delete the user's auth account

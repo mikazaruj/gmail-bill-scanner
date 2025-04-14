@@ -21,7 +21,7 @@ import {
   UserSheet 
 } from '../../services/connectedServices';
 import { resolveUserIdentity, ensureUserRecord } from '../../services/identity/userIdentityService';
-import { getTrustedSourcesView, addTrustedSource, removeTrustedSource, TrustedSourceView } from '../../services/trustedSources';
+import { getTrustedSourcesView, addTrustedSource, removeTrustedSource, deleteTrustedSource, TrustedSourceView } from '../../services/trustedSources';
 import { getFieldMappings, FieldMapping } from '../../services/fieldMapping';
 
 // Add types for gapi
@@ -71,6 +71,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState<boolean>(false);
   const [emailToDelete, setEmailToDelete] = useState<string>('');
+  const [isDeleteAction, setIsDeleteAction] = useState<boolean>(false);
   
   // New connection state with the updated data structure
   const [userConnection, setUserConnection] = useState<UserConnection | null>(null);
@@ -366,28 +367,43 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     try {
       // Pass userId if available to enable Supabase sync
       const userId = userProfile?.id;
-      if (!userId) return;
+      if (!userId) {
+        console.error('No user ID available, cannot add trusted source to Supabase');
+        return;
+      }
+      
+      console.log('Adding trusted source:', { email, description, userId });
       
       // Ensure Google ID is in headers/storage
       await ensureGoogleIdHeader(userId);
       
+      // Call the addTrustedSource service function with the userId parameter
       const updatedSources = await addTrustedSource(email, userId, description);
+      console.log('Trusted sources updated:', updatedSources);
+      
       // Refresh trusted sources from the view to get updated counts
       const sources = await getTrustedSourcesView(userId);
       setTrustedSources(sources);
+      
+      // Show success message (you can implement this with a toast notification or similar)
+      console.log('Successfully added trusted source:', email);
     } catch (error) {
       console.error('Error adding trusted source:', error);
+      // Show error message to user
+      alert(`Failed to add trusted source: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
   
-  const handleShowDeleteModal = (email: string) => {
+  const handleShowDeleteModal = (email: string, isDelete: boolean = false) => {
     setEmailToDelete(email);
+    setIsDeleteAction(isDelete);
     setIsDeleteModalOpen(true);
   };
   
   const handleCloseDeleteModal = () => {
     setIsDeleteModalOpen(false);
     setEmailToDelete('');
+    setIsDeleteAction(false);
   };
   
   const handleDeleteSource = async () => {
@@ -396,17 +412,33 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     try {
       // Pass userId if available to enable Supabase sync
       const userId = userProfile?.id;
-      if (!userId) return;
+      if (!userId) {
+        console.error('No user ID available, cannot remove/delete trusted source');
+        return;
+      }
       
       // Ensure Google ID is in headers/storage
       await ensureGoogleIdHeader(userId);
       
-      await removeTrustedSource(emailToDelete, userId);
+      // Call the appropriate function based on the action type
+      if (isDeleteAction) {
+        console.log('Permanently deleting trusted source:', emailToDelete);
+        await deleteTrustedSource(emailToDelete, userId);
+      } else {
+        console.log('Removing (deactivating) trusted source:', emailToDelete);
+        await removeTrustedSource(emailToDelete, userId);
+      }
+      
       // Refresh trusted sources from the view to get updated counts
       const sources = await getTrustedSourcesView(userId);
       setTrustedSources(sources);
+      
+      // Close the modal
+      handleCloseDeleteModal();
     } catch (error) {
-      console.error('Error removing trusted source:', error);
+      console.error('Error removing/deleting trusted source:', error);
+      // Show error message to user
+      alert(`Failed to ${isDeleteAction ? 'delete' : 'remove'} trusted source: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
   
@@ -1036,7 +1068,8 @@ const Settings = ({ onNavigate }: SettingsProps) => {
                   key={source.id || source.email_address}
                   email={source.email_address || ''}
                   description={source.description}
-                  onRemove={() => handleShowDeleteModal(source.email_address)}
+                  onRemove={() => handleShowDeleteModal(source.email_address, false)}
+                  onDelete={() => handleShowDeleteModal(source.email_address, true)}
                 />
               ))}
             </div>
@@ -1187,6 +1220,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         onClose={handleCloseDeleteModal}
         onConfirm={handleDeleteSource}
         email={emailToDelete}
+        isDelete={isDeleteAction}
       />
       
       {/* Create Sheet Modal */}
