@@ -21,6 +21,7 @@ import {
 } from '../services/auth/googleAuth';
 import { signInWithGoogle, syncAuthState } from '../services/supabase/client';
 import { searchEmails } from '../services/gmail/gmailService';
+import { ensureUserRecord } from '../services/identity/userIdentityService';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -836,6 +837,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'CREATE_SPREADSHEET':
       try {
+        console.log('CREATE_SPREADSHEET message received:', message);
         const { name } = message.payload;
         
         // Get authentication token (scopes are configured in manifest.json)
@@ -1242,8 +1244,59 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ 
           success: false, 
           error: error instanceof Error ? error.message : 'Logout failed' 
-            });
-          }
+        });
+      }
+      break;
+
+    case 'GOOGLE_AUTH_COMPLETED':
+      try {
+        console.log('Background: Processing Google auth completion');
+        const profile = message.profile;
+        
+        if (!profile || !profile.id || !profile.email) {
+          console.error('Missing required profile data');
+          sendResponse({
+            success: false,
+            error: 'Missing required profile data'
+          });
+          return;
+        }
+        
+        console.log('Google auth completed for:', {
+          id: profile.id,
+          email: profile.email,
+          name: profile.name || '(no name)'
+        });
+        
+        // Store the profile in Chrome storage
+        await chrome.storage.local.set({
+          'google_user_id': profile.id,
+          'google_profile': profile,
+          'gmail_connected': true,
+          'gmail_email': profile.email,
+          'last_gmail_update': new Date().toISOString()
+        });
+        
+        // Ensure the user record exists in Supabase
+        if (profile.id && profile.email) {
+          const supabaseUserId = await ensureUserRecord(profile.id, profile.email);
+          console.log('Ensured user record with Supabase ID:', supabaseUserId);
+          
+          sendResponse({ 
+            success: true, 
+            profile, 
+            supabaseUserId 
+          });
+        } else {
+          sendResponse({ success: true, profile });
+        }
+      } catch (error) {
+        console.error('Error handling Google auth completion:', error);
+        sendResponse({ 
+          success: false, 
+          error: error instanceof Error ? error.message : 'Unknown error' 
+        });
+      }
       break;
 
     case 'LINK_GOOGLE_USER':
@@ -1310,8 +1363,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({
           success: false,
           error: error instanceof Error ? error.message : 'Unknown error'
-            });
-          }
+        });
+      }
       break;
 
     case 'GET_AVAILABLE_SHEETS':

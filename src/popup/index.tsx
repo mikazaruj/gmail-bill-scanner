@@ -12,7 +12,6 @@ import {
 import '../debug-tools';
 
 // Context Providers
-import { AuthProvider } from './context/AuthContext';
 import { ScanProvider } from './context/ScanContext';
 import { SettingsProvider } from './context/SettingsContext';
 
@@ -91,7 +90,7 @@ export const PopupContent = () => {
   const [authError, setAuthError] = useState<string | null>(null);
   const [isReturningUser, setIsReturningUser] = useState<boolean>(false);
   
-  const { isAuthenticated, isLoading, error, refreshAuthStatus, userProfile } = useAuth();
+  const { isAuthenticated, isLoading, userProfile, refreshProfile } = useAuth();
   
   // Hardcoded default scan values until we fix the import issues
   const scanValues = {
@@ -142,7 +141,7 @@ export const PopupContent = () => {
           console.log('Auto-logging in returning user');
           try {
             // We'll try to refresh the auth status first
-            await refreshAuthStatus();
+            await refreshProfile();
             
             // If that didn't work, explicitly login
             if (!isAuthenticated) {
@@ -227,7 +226,7 @@ export const PopupContent = () => {
       
       if (response?.success) {
         // Refresh the auth status to update the UI
-        await refreshAuthStatus();
+        await refreshProfile();
       } else if (response?.error) {
         setAuthError(response.error);
         console.error('Login error response:', response);
@@ -270,7 +269,7 @@ export const PopupContent = () => {
       
       if (response?.success) {
         // Refresh the auth status to update the UI
-        await refreshAuthStatus();
+        await refreshProfile();
       } else if (response?.error) {
         setAuthError(response.error);
         console.error('Sign up error response:', response);
@@ -303,12 +302,12 @@ export const PopupContent = () => {
     );
   }
 
-  if (error) {
+  if (authError) {
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
         <div className="error-message">
-          <p>{error}</p>
+          <p>{authError}</p>
         </div>
         
         <div className="action-container">

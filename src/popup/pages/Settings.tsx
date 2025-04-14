@@ -20,7 +20,7 @@ import {
   UserConnection,
   UserSheet 
 } from '../../services/connectedServices';
-import { getSupabaseUserIdFromGoogleId } from '../../services/supabase/client';
+import { resolveUserIdentity, ensureUserRecord } from '../../services/identity/userIdentityService';
 import { getTrustedSourcesView, addTrustedSource, removeTrustedSource, TrustedSourceView } from '../../services/trustedSources';
 import { getFieldMappings, FieldMapping } from '../../services/fieldMapping';
 
@@ -104,6 +104,10 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   const [isLoadingSheets, setIsLoadingSheets] = useState<boolean>(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
   
+  // Create new sheet modal state
+  const [isCreateSheetModalOpen, setIsCreateSheetModalOpen] = useState<boolean>(false);
+  const [newSheetName, setNewSheetName] = useState<string>('Bills Tracker');
+  
   // Add supabaseUserId state
   const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
   
@@ -135,23 +139,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // Get current userId from profile or alternative sources
-        const userId = userProfile?.id;
+        // Use our improved identity resolution
+        const identity = await resolveUserIdentity();
         
-        // Try to get Google ID directly from storage
-        const { google_user_id } = await chrome.storage.local.get('google_user_id');
-        console.log('Retrieved Google User ID from storage:', google_user_id);
-        
-        // Get the Supabase UUID from Google ID if available
-        const supabaseUserId = google_user_id ? await getSupabaseUserIdFromGoogleId(google_user_id) : null;
-        console.log('Retrieved Supabase User ID:', supabaseUserId);
-        
-        // Use either the profile ID, Supabase ID from Google ID, or Google ID as the effective user ID
-        // Prioritize Supabase UUID format for database operations
-        const effectiveId = userId || supabaseUserId || google_user_id || null;
-        setEffectiveUserId(effectiveId);
-        
-        console.log('Using effective user ID:', effectiveId);
+        console.log('Resolved user identity:', identity);
+        setEffectiveUserId(identity.supabaseId);
         
         // Set loading states
         setIsLoading(true);
@@ -159,7 +151,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         setIsFieldMappingLoading(true);
         
         // Store the current userId for future comparisons
-        previousUserIdRef.current = effectiveId;
+        previousUserIdRef.current = identity.supabaseId;
         
         // First load data from Chrome storage to ensure quick UI updates
         try {
@@ -182,7 +174,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
             console.log('Found sheet in storage:', sheet_id, sheet_name);
             const userSheet = convertToUserSheet(
               { id: sheet_id, name: sheet_name },
-              effectiveId ? supabaseUserId : null
+              identity.supabaseId
             );
             setSelectedSheet(userSheet);
           }
@@ -194,7 +186,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
           if (gmail_connected && gmail_email) {
             setUserConnection({
               id: 'local-connection',
-              user_id: effectiveId || 'local-user',
+              user_id: identity.supabaseId || 'local-user',
               gmail_email: gmail_email,
               gmail_connected: true,
               gmail_last_connected_at: new Date().toISOString(),
@@ -209,7 +201,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         }
         
         // If no user ID, we're done after loading from storage
-        if (!effectiveId) {
+        if (!identity.supabaseId) {
           console.log('No effective user ID, using only storage data');
           setIsLoading(false);
           setIsConnectionLoading(false);
@@ -218,7 +210,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         }
         
         // Skip additional database operations if already initialized with the same user
-        if (isInitializedRef.current && effectiveId === previousUserIdRef.current) {
+        if (isInitializedRef.current && identity.supabaseId === previousUserIdRef.current) {
           console.log('Already initialized for this user, skipping DB queries');
           setIsLoading(false);
           setIsConnectionLoading(false);
@@ -226,12 +218,9 @@ const Settings = ({ onNavigate }: SettingsProps) => {
           return;
         }
         
-        // Ensure Google ID is in headers/storage
-        await ensureGoogleIdHeader(effectiveId);
-        
         try {
           // Load user settings with defaults
-          const userSettings = await getUserSettingsWithDefaults(supabaseUserId || effectiveId);
+          const userSettings = await getUserSettingsWithDefaults(identity.supabaseId);
           
           // Create settings object for comparison
           const newSettings = {
@@ -274,10 +263,10 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         // Try loading other data in parallel with error handling for each
         try {
           // Load connection data using the new functions
-          const connection = await getUserConnection(supabaseUserId || effectiveId);
+          const connection = await getUserConnection(identity.supabaseId);
           setUserConnection(connection);
           
-          const sheets = await getUserSheets(supabaseUserId || effectiveId);
+          const sheets = await getUserSheets(identity.supabaseId);
           
           // Check if sheets array is empty and handle appropriately
           if (sheets && sheets.length > 0) {
@@ -325,7 +314,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         }
         
         try {
-          const sources = await getTrustedSourcesView(supabaseUserId || effectiveId);
+          const sources = await getTrustedSourcesView(identity.supabaseId);
           setTrustedSources(sources);
           
           // Set plan limits based on first trusted source
@@ -340,7 +329,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         }
         
         try {
-          const mappings = await getFieldMappings(supabaseUserId || effectiveId);
+          const mappings = await getFieldMappings(identity.supabaseId);
           setFieldMappings(mappings);
         } catch (mappingsError) {
           console.error('Error fetching field mappings:', mappingsError);
@@ -501,9 +490,9 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       setIsConnectionLoading(true);
       setSheetError(null);
       
-      // Get the Supabase UUID from Google ID
-      const supabaseUserId = effectiveUserId ? await getSupabaseUserIdFromGoogleId(effectiveUserId) : null;
-      console.log('Using Supabase user ID for sheet selection:', supabaseUserId);
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      console.log('User identity for sheet selection:', identity);
       
       // Save to Chrome storage first for immediate UI update
       await chrome.storage.local.set({
@@ -521,23 +510,33 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         }));
       });
       
-      // If we have a Supabase UUID, update the database
-      if (supabaseUserId) {
+      // If we have a Supabase UUID or Google ID, update the database
+      if (identity.supabaseId || identity.googleId) {
         try {
-          // Update sheet connection in Supabase
-          await updateSheetConnection(
-            supabaseUserId,
-            sheet.sheet_id,
-            sheet.sheet_name,
-            true
-          );
-          console.log('Updated sheet in Supabase');
+          // If we have a Google ID and email but no Supabase ID, ensure user record exists
+          let supabaseId = identity.supabaseId;
+          if (!supabaseId && identity.googleId && identity.email) {
+            supabaseId = await ensureUserRecord(identity.googleId, identity.email);
+          }
+          
+          if (supabaseId) {
+            // Update sheet connection in Supabase
+            await updateSheetConnection(
+              supabaseId,
+              sheet.sheet_id,
+              sheet.sheet_name,
+              true
+            );
+            console.log('Updated sheet in Supabase');
+          } else {
+            console.warn('No Supabase ID available after ensure, skipping database update');
+          }
         } catch (dbError) {
           console.error('Error updating sheet in Supabase:', dbError);
           // Don't throw here - we still want to update local storage
         }
       } else {
-        console.log('No Supabase user ID available, skipping database update');
+        console.log('No user identity available, skipping database update');
       }
       
       // Update settings data
@@ -559,31 +558,33 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   };
   
   // Update the handleCreateNewSheet function to handle null cases
-  const handleCreateNewSheet = async () => {
+  const handleCreateNewSheet = async (sheetName: string = 'Bills Tracker') => {
     try {
       setIsConnectionLoading(true);
       setSheetError(null);
       
-      // Get the Supabase UUID from Google ID
-      const supabaseUserId = effectiveUserId ? await getSupabaseUserIdFromGoogleId(effectiveUserId) : null;
-      console.log('Using Supabase user ID for new sheet creation:', supabaseUserId);
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      console.log('User identity for new sheet creation:', identity);
       
       // Create new sheet
       const response = await chrome.runtime.sendMessage({
         type: 'CREATE_SPREADSHEET',
-        name: 'Bills Tracker'
+        payload: {
+          name: sheetName
+        }
       });
       
       if (!response || !response.success) {
         throw new Error(response?.error || 'Failed to create spreadsheet');
       }
       
-      const { sheetId, sheetName } = response;
+      const { spreadsheetId, spreadsheetName } = response;
       
       // Save to Chrome storage first for immediate UI update
       await chrome.storage.local.set({
-        'sheet_id': sheetId,
-        'sheet_name': sheetName,
+        'sheet_id': spreadsheetId,
+        'sheet_name': spreadsheetName,
         'sheets_connected': true,
         'last_updated': Date.now()
       });
@@ -591,9 +592,9 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Create a new sheet object for the UI
       const newSheet: UserSheet = {
         id: crypto.randomUUID(),
-        user_id: supabaseUserId || 'local-user',
-        sheet_id: sheetId,
-        sheet_name: sheetName,
+        user_id: identity.supabaseId || 'local-user',
+        sheet_id: spreadsheetId,
+        sheet_name: spreadsheetName,
         is_connected: true,
         is_default: true,
         last_connected_at: new Date().toISOString(),
@@ -604,30 +605,40 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Update UI immediately
       setUserSheets(prevSheets => [newSheet, ...prevSheets]);
       
-      // If we have a Supabase UUID, update the database
-      if (supabaseUserId) {
+      // If we have a Supabase UUID or Google ID, update the database
+      if (identity.supabaseId || identity.googleId) {
         try {
-          // Update sheet connection in Supabase
-          await updateSheetConnection(
-            supabaseUserId,
-            sheetId,
-            sheetName,
-            true
-          );
-          console.log('Updated new sheet in Supabase');
+          // If we have a Google ID and email but no Supabase ID, ensure user record exists
+          let supabaseId = identity.supabaseId;
+          if (!supabaseId && identity.googleId && identity.email) {
+            supabaseId = await ensureUserRecord(identity.googleId, identity.email);
+          }
+          
+          if (supabaseId) {
+            // Update sheet connection in Supabase
+            await updateSheetConnection(
+              supabaseId,
+              spreadsheetId,
+              spreadsheetName,
+              true
+            );
+            console.log('Updated new sheet in Supabase');
+          } else {
+            console.warn('No Supabase ID available after ensure, skipping database update');
+          }
         } catch (dbError) {
           console.error('Error updating new sheet in Supabase:', dbError);
           // Don't throw here - we still want to update local storage
         }
       } else {
-        console.log('No Supabase user ID available, skipping database update');
+        console.log('No user identity available, skipping database update');
       }
       
       // Update settings data
       setUserSettingsData(prev => ({
         ...prev,
-        spreadsheet_id: sheetId,
-        spreadsheet_name: sheetName,
+        spreadsheet_id: spreadsheetId,
+        spreadsheet_name: spreadsheetName,
         scan_frequency: prev?.scan_frequency || 'manual',
         apply_labels: prev?.apply_labels || false,
         label_name: prev?.label_name || null
@@ -644,32 +655,38 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   const handleToggleAutomaticProcessing = useCallback(async (checked: boolean) => {
     updateSettings({ automaticProcessing: checked });
     
-    // Update in Supabase if user is logged in
-    if (effectiveUserId) {
-      await ensureGoogleIdHeader(effectiveUserId);
-      await updateUserPreference(effectiveUserId, 'automatic_processing', checked);
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'automatic_processing', checked);
     }
-  }, [effectiveUserId, updateSettings]);
+  }, [updateSettings]);
   
   const handleToggleWeeklySchedule = useCallback(async (checked: boolean) => {
     updateSettings({ weeklySchedule: checked });
     
-    // Update in Supabase if user is logged in
-    if (effectiveUserId) {
-      await ensureGoogleIdHeader(effectiveUserId);
-      await updateUserPreference(effectiveUserId, 'weekly_schedule', checked);
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'weekly_schedule', checked);
     }
-  }, [effectiveUserId, updateSettings]);
+  }, [updateSettings]);
   
   const handleToggleProcessAttachments = useCallback(async (checked: boolean) => {
     updateSettings({ processAttachments: checked });
     
-    // Update in Supabase if user is logged in
-    if (effectiveUserId) {
-      await ensureGoogleIdHeader(effectiveUserId);
-      await updateUserPreference(effectiveUserId, 'process_attachments', checked);
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'process_attachments', checked);
     }
-  }, [effectiveUserId, updateSettings]);
+  }, [updateSettings]);
   
   const handleToggleApplyLabels = useCallback(async (checked: boolean) => {
     if (userSettingsData) {
@@ -679,12 +696,14 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       });
     }
     
-    // Update in Supabase if user is logged in
-    if (effectiveUserId) {
-      await ensureGoogleIdHeader(effectiveUserId);
-      await updateUserPreference(effectiveUserId, 'apply_labels', checked);
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'apply_labels', checked);
     }
-  }, [effectiveUserId, userSettingsData]);
+  }, [userSettingsData]);
   
   const handleChangeLabelName = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -696,44 +715,52 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       });
     }
     
-    // Update in Supabase if user is logged in
-    if (effectiveUserId) {
-      await ensureGoogleIdHeader(effectiveUserId);
-      await updateUserPreference(effectiveUserId, 'label_name', value);
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'label_name', value);
     }
-  }, [effectiveUserId, userSettingsData]);
+  }, [userSettingsData]);
   
   const handleChangeMaxResults = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const value = parseInt(e.target.value) || 50;
     updateSettings({ maxResults: value });
     
-    // Update in Supabase if user is logged in
-    if (effectiveUserId) {
-      await ensureGoogleIdHeader(effectiveUserId);
-      await updateUserPreference(effectiveUserId, 'max_results', value);
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'max_results', value);
     }
-  }, [effectiveUserId, updateSettings]);
+  }, [updateSettings]);
   
   const handleChangeSearchDays = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const value = parseInt(e.target.value) || 30;
     updateSettings({ searchDays: value });
     
-    // Update in Supabase if user is logged in
-    if (effectiveUserId) {
-      await ensureGoogleIdHeader(effectiveUserId);
-      await updateUserPreference(effectiveUserId, 'search_days', value);
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'search_days', value);
     }
-  }, [effectiveUserId, updateSettings]);
+  }, [updateSettings]);
   
   const handleSaveSettings = useCallback(async () => {
     // Save to Chrome storage via context
     await saveSettings();
     
-    // Also save all preferences to Supabase if user is authenticated
-    if (effectiveUserId) {
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Also save all preferences to Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
       try {
-        await ensureGoogleIdHeader(effectiveUserId);
-        await updateMultipleUserPreferences(effectiveUserId, {
+        await updateMultipleUserPreferences(identity.supabaseId, {
           automatic_processing: settingsRef.current.automaticProcessing,
           weekly_schedule: settingsRef.current.weeklySchedule,
           process_attachments: settingsRef.current.processAttachments,
@@ -746,7 +773,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         console.error('Error saving user settings to Supabase:', error);
       }
     }
-  }, [effectiveUserId, saveSettings, userSettingsData]);
+  }, [saveSettings, userSettingsData]);
   
   // Get default sheet
   const defaultSheet = userSheets.find(sheet => sheet.is_default);
@@ -960,7 +987,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
                   <div className="text-xs text-gray-500 mb-2">No spreadsheets found.</div>
                   <button 
                     className="text-xs px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-md flex items-center"
-                    onClick={handleCreateNewSheet}
+                    onClick={() => setIsCreateSheetModalOpen(true)}
                   >
                     <PlusCircle size={10} className="mr-1" /> Create New Sheet
                   </button>
@@ -985,7 +1012,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
                   <div className="border-t border-gray-100 mt-1 pt-1">
                     <div 
                       className="p-2 text-xs hover:bg-blue-50 cursor-pointer rounded-md flex items-center text-blue-600"
-                      onClick={handleCreateNewSheet}
+                      onClick={() => setIsCreateSheetModalOpen(true)}
                     >
                       <PlusCircle size={12} className="mr-1.5" />
                       Create New Sheet
@@ -1161,6 +1188,43 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         onConfirm={handleDeleteSource}
         email={emailToDelete}
       />
+      
+      {/* Create Sheet Modal */}
+      {isCreateSheetModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-lg p-4 w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-3">Create New Sheet</h3>
+            <div className="mb-4">
+              <label className="block text-sm text-gray-700 mb-1">Sheet Name</label>
+              <input
+                type="text"
+                className="w-full p-2 border border-gray-300 rounded"
+                value={newSheetName}
+                onChange={(e) => setNewSheetName(e.target.value)}
+                placeholder="Enter sheet name"
+              />
+            </div>
+            <div className="flex justify-end space-x-2">
+              <button
+                className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded"
+                onClick={() => setIsCreateSheetModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded"
+                onClick={() => {
+                  setIsCreateSheetModalOpen(false);
+                  handleCreateNewSheet(newSheetName);
+                }}
+                disabled={!newSheetName.trim()}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,4 +1,5 @@
 import { supabase } from './supabase/client';
+import { resolveUserIdentity, ensureUserRecord } from './identity/userIdentityService';
 
 export interface ServiceStatus {
   id: string;
@@ -36,36 +37,92 @@ export interface UserSheet {
   updated_at: string;
 }
 
-// Gets the user's Gmail connection from the new user_connections table
+/**
+ * Get user connection information
+ * @param userId User ID (either Supabase ID or Google ID)
+ * @returns UserConnection object if found, null otherwise
+ */
 export const getUserConnection = async (userId: string): Promise<UserConnection | null> => {
   try {
+    console.log('Getting user connection for user ID:', userId);
+    
+    // Resolve user identity to ensure we have the correct Supabase ID
+    const identity = await resolveUserIdentity();
+    const supabaseId = identity.supabaseId;
+    
+    if (!supabaseId) {
+      console.log('No Supabase ID available, falling back to storage for getUserConnection');
+      return getUserConnectionFromStorage();
+    }
+    
+    // Query the user_connections table to find the connection
     const { data, error } = await supabase
       .from('user_connections')
       .select('*')
-      .eq('user_id', userId)
-      .single();
-      
-    if (error) throw error;
-      return data;
+      .eq('user_id', supabaseId)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error fetching user connection:', error);
+      return getUserConnectionFromStorage();
+    }
+
+    // Return the connection if found
+    if (data) {
+      console.log('Found user connection:', data);
+      return data as UserConnection;
+    }
+    
+    // No connection found in database, try storage
+    console.log('No user connection found in database, checking storage');
+    return getUserConnectionFromStorage();
   } catch (error) {
-    console.error('Error fetching user connection:', error);
+    console.error('Error in getUserConnection:', error);
     return getUserConnectionFromStorage();
   }
 };
 
-// Gets the user's connected sheets from the new user_sheets table
+/**
+ * Get user's Google Sheets
+ * @param userId User ID (either Supabase ID or Google ID)
+ * @returns Array of UserSheet objects
+ */
 export const getUserSheets = async (userId: string): Promise<UserSheet[]> => {
   try {
+    console.log('Getting user sheets for user ID:', userId);
+    
+    // Resolve user identity to ensure we have the correct Supabase ID
+    const identity = await resolveUserIdentity();
+    const supabaseId = identity.supabaseId;
+    
+    if (!supabaseId) {
+      console.log('No Supabase ID available, falling back to storage for getUserSheets');
+      return getUserSheetFromStorage();
+    }
+    
+    // Query the user_sheets table to find the sheets
     const { data, error } = await supabase
       .from('user_sheets')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', supabaseId)
       .order('is_default', { ascending: false });
-      
-    if (error) throw error;
-    return data || [];
+
+    if (error) {
+      console.error('Error fetching user sheets:', error);
+      return getUserSheetFromStorage();
+    }
+
+    // Return the sheets if found
+    if (data && data.length > 0) {
+      console.log(`Found ${data.length} user sheets`);
+      return data as UserSheet[];
+    }
+    
+    // No sheets found in database, try storage
+    console.log('No user sheets found in database, checking storage');
+    return getUserSheetFromStorage();
   } catch (error) {
-    console.error('Error fetching user sheets:', error);
+    console.error('Error in getUserSheets:', error);
     return getUserSheetFromStorage();
   }
 };
@@ -90,9 +147,12 @@ export const getUserConnectionFromStorage = async (): Promise<UserConnection | n
     await chrome.storage.local.set({ 'gmail_token_valid': isGmailTokenValid });
     
     if (google_profile) {
+      // Try to get a resolved identity for the user_id field
+      const identity = await resolveUserIdentity();
+      
       return {
         id: 'local-connection',
-        user_id: 'local-user',
+        user_id: identity.supabaseId || 'local-user',
         gmail_email: google_profile.email || null,
         gmail_connected: isGmailTokenValid,
         gmail_last_connected_at: isGmailTokenValid ? new Date().toISOString() : null,
@@ -109,13 +169,17 @@ export const getUserConnectionFromStorage = async (): Promise<UserConnection | n
   }
 };
 
-// Fallback method to get Google Sheets from Chrome storage
+/**
+ * Get a single sheet from storage
+ * @returns Array of UserSheet objects
+ */
 export const getUserSheetFromStorage = async (): Promise<UserSheet[]> => {
   try {
-    const {
-      sheet_id,
-      sheet_name,
-      sheets_connected
+    // Get sheet data from Chrome storage
+    const { 
+      sheet_id, 
+      sheet_name, 
+      sheets_connected 
     } = await chrome.storage.local.get([
       'sheet_id',
       'sheet_name',
@@ -124,14 +188,18 @@ export const getUserSheetFromStorage = async (): Promise<UserSheet[]> => {
     
     const sheets: UserSheet[] = [];
     
+    // If sheet data exists, create a UserSheet object
     if (sheet_id) {
+      // Try to get a resolved identity for the user_id field
+      const identity = await resolveUserIdentity();
+      
       sheets.push({
         id: 'local-sheet',
-        user_id: 'local-user',
+        user_id: identity.supabaseId || 'local-user',
         sheet_id: sheet_id,
         sheet_name: sheet_name || 'Bills Tracker',
         is_default: true,
-        is_connected: true,
+        is_connected: sheets_connected !== false,
         last_connected_at: new Date().toISOString(),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -148,9 +216,13 @@ export const getUserSheetFromStorage = async (): Promise<UserSheet[]> => {
 // For backward compatibility, convert new data structure to old ServiceStatus format
 export const getConnectedServices = async (userId: string): Promise<ServiceStatus[]> => {
   try {
+    // Resolve user identity to ensure we have the correct Supabase ID
+    const identity = await resolveUserIdentity();
+    const effectiveUserId = identity.supabaseId || userId;
+    
     const [connection, sheets] = await Promise.all([
-      getUserConnection(userId),
-      getUserSheets(userId)
+      getUserConnection(effectiveUserId),
+      getUserSheets(effectiveUserId)
     ]);
     
     const services: ServiceStatus[] = [];
@@ -202,7 +274,7 @@ export const getConnectedServices = async (userId: string): Promise<ServiceStatu
     if (connection) {
       services.push({
         id: 'local-gmail',
-        user_id: 'local-user',
+        user_id: connection.user_id || 'local-user',
         service_type: 'gmail',
         service_email: connection.gmail_email,
         sheet_id: null,
@@ -214,20 +286,22 @@ export const getConnectedServices = async (userId: string): Promise<ServiceStatu
       });
     }
     
-    sheets.forEach(sheet => {
-      services.push({
-        id: 'local-sheets',
-        user_id: 'local-user',
-        service_type: 'sheets',
-        service_email: null,
-        sheet_id: sheet.sheet_id,
-        sheet_name: sheet.sheet_name,
-        is_connected: sheet.is_connected,
-        last_connected_at: sheet.last_connected_at,
-        token_expires_at: null,
-        token_valid: true
+    if (sheets.length > 0) {
+      sheets.forEach(sheet => {
+        services.push({
+          id: 'local-sheets',
+          user_id: sheet.user_id || 'local-user',
+          service_type: 'sheets',
+          service_email: null,
+          sheet_id: sheet.sheet_id,
+          sheet_name: sheet.sheet_name,
+          is_connected: sheet.is_connected,
+          last_connected_at: sheet.last_connected_at,
+          token_expires_at: null,
+          token_valid: true
+        });
       });
-    });
+    }
     
     return services;
   }
@@ -252,7 +326,14 @@ export const checkGmailTokenValidity = async (): Promise<boolean> => {
   }
 };
 
-// Update sheet connection using the new user_sheets table
+/**
+ * Update or create a sheet connection in Supabase
+ * @param userId User ID (either Supabase ID or Google ID)
+ * @param sheetId Google Sheet ID
+ * @param sheetName Google Sheet name
+ * @param isDefault Whether this sheet should be the default
+ * @returns Success status
+ */
 export const updateSheetConnection = async (
   userId: string,
   sheetId: string,
@@ -260,6 +341,17 @@ export const updateSheetConnection = async (
   isDefault = true
 ): Promise<boolean> => {
   try {
+    console.log('Updating sheet connection for user:', userId);
+    
+    // First, ensure we have a valid Supabase ID
+    const identity = await resolveUserIdentity();
+    let supabaseId = identity.supabaseId;
+    
+    // If we don't have a Supabase ID but have a Google ID and email, try to ensure a user record
+    if (!supabaseId && identity.googleId && identity.email) {
+      supabaseId = await ensureUserRecord(identity.googleId, identity.email);
+    }
+    
     // Store in local storage for fallback
     await chrome.storage.local.set({
       sheet_id: sheetId,
@@ -267,31 +359,75 @@ export const updateSheetConnection = async (
       sheets_connected: true,
       last_sheet_update: new Date().toISOString()
     });
+
+    // If we still don't have a Supabase ID, we can't update the database
+    if (!supabaseId) {
+      console.log('No Supabase ID available, sheet connection only stored locally');
+      return true; // Return true since we saved to local storage
+    }
     
     // If setting this sheet as default, first update all other sheets to not be default
     if (isDefault) {
       await supabase
         .from('user_sheets')
         .update({ is_default: false })
-        .eq('user_id', userId);
+        .eq('user_id', supabaseId);
     }
     
-    // Upsert the sheet record
-      const { error } = await supabase
+    // Get current time
+    const now = new Date().toISOString();
+    
+    // Check if the sheet already exists for this user
+    const { data: existingSheets, error: queryError } = await supabase
       .from('user_sheets')
-      .upsert({
-        user_id: userId,
+      .select('id')
+      .eq('user_id', supabaseId)
+      .eq('sheet_id', sheetId);
+      
+    if (queryError) {
+      console.error('Error checking for existing sheet:', queryError);
+      return true; // Return true since we saved to local storage
+    }
+    
+    // If the sheet already exists, update it
+    if (existingSheets && existingSheets.length > 0) {
+      const { error } = await supabase
+        .from('user_sheets')
+        .update({
+          sheet_name: sheetName,
+          is_default: isDefault,
+          is_connected: true,
+          last_connected_at: now,
+          updated_at: now
+        })
+        .eq('id', existingSheets[0].id);
+        
+      if (error) {
+        console.error('Error updating sheet connection:', error);
+        return true; // Return true since we saved to local storage
+      }
+    } else {
+      // If sheet doesn't exist, insert a new one
+      const { error } = await supabase
+        .from('user_sheets')
+        .insert({
+          user_id: supabaseId,
           sheet_id: sheetId,
           sheet_name: sheetName,
-        is_default: isDefault,
+          is_default: isDefault,
           is_connected: true,
-          last_connected_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'user_id, sheet_id'
+          last_connected_at: now,
+          created_at: now,
+          updated_at: now
         });
         
-      if (error) throw error;
+      if (error) {
+        console.error('Error inserting sheet connection:', error);
+        return true; // Return true since we saved to local storage
+      }
+    }
+    
+    console.log('Successfully updated sheet connection in database');
     return true;
   } catch (error) {
     console.error('Error updating sheet connection:', error);
@@ -300,7 +436,14 @@ export const updateSheetConnection = async (
   }
 };
 
-// Update Gmail connection using the new user_connections table
+/**
+ * Update Gmail connection in Supabase
+ * @param userId User ID (either Supabase ID or Google ID)
+ * @param gmailEmail Gmail email address
+ * @param isConnected Whether Gmail is connected
+ * @param scopes OAuth scopes
+ * @returns Success status
+ */
 export const updateGmailConnection = async (
   userId: string,
   gmailEmail: string,
@@ -308,6 +451,17 @@ export const updateGmailConnection = async (
   scopes: string[] = []
 ): Promise<boolean> => {
   try {
+    console.log('Updating Gmail connection for user:', userId);
+    
+    // First, ensure we have a valid Supabase ID
+    const identity = await resolveUserIdentity();
+    let supabaseId = identity.supabaseId;
+    
+    // If we don't have a Supabase ID but have a Google ID and email, try to ensure a user record
+    if (!supabaseId && identity.googleId && identity.email) {
+      supabaseId = await ensureUserRecord(identity.googleId, identity.email);
+    }
+    
     // Update local storage first as a fallback
     await chrome.storage.local.set({
       gmail_connected: isConnected,
@@ -316,21 +470,65 @@ export const updateGmailConnection = async (
       last_gmail_update: new Date().toISOString()
     });
     
-    // Upsert the connection record
-      const { error } = await supabase
+    // If we still don't have a Supabase ID, we can't update the database
+    if (!supabaseId) {
+      console.log('No Supabase ID available, Gmail connection only stored locally');
+      return true; // Return true since we saved to local storage
+    }
+    
+    // Get current time
+    const now = new Date().toISOString();
+    
+    // Check if a connection record already exists
+    const { data: existingConnection, error: queryError } = await supabase
       .from('user_connections')
-      .upsert({
-        user_id: userId,
-        gmail_email: gmailEmail,
-        gmail_connected: isConnected,
-        gmail_last_connected_at: isConnected ? new Date().toISOString() : null,
-        gmail_scopes: scopes.length > 0 ? scopes : null,
-          updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'user_id'
+      .select('id')
+      .eq('user_id', supabaseId)
+      .maybeSingle();
+      
+    if (queryError) {
+      console.error('Error checking for existing connection:', queryError);
+      return true; // Return true since we saved to local storage
+    }
+    
+    // If connection exists, update it
+    if (existingConnection) {
+      const { error } = await supabase
+        .from('user_connections')
+        .update({
+          gmail_email: gmailEmail,
+          gmail_connected: isConnected,
+          gmail_last_connected_at: isConnected ? now : null,
+          gmail_scopes: scopes.length > 0 ? scopes : null,
+          updated_at: now
+        })
+        .eq('id', existingConnection.id);
+        
+      if (error) {
+        console.error('Error updating Gmail connection:', error);
+        return true; // Return true since we saved to local storage
+      }
+    } else {
+      // If connection doesn't exist, insert a new one
+      const { error } = await supabase
+        .from('user_connections')
+        .insert({
+          user_id: supabaseId,
+          gmail_email: gmailEmail,
+          gmail_connected: isConnected,
+          gmail_last_connected_at: isConnected ? now : null,
+          gmail_scopes: scopes.length > 0 ? scopes : null,
+          created_at: now,
+          updated_at: now
         });
         
-      if (error) throw error;
+      if (error) {
+        console.error('Error inserting Gmail connection:', error);
+        return true; // Return true since we saved to local storage
+      }
+    }
+    
+    console.log('Successfully updated Gmail connection in database');
     return true;
   } catch (error) {
     console.error('Error updating Gmail connection:', error);

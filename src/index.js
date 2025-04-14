@@ -2,7 +2,6 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import './globals.css';
 // Import all components directly instead of using dynamic imports
-import { AuthProvider } from './popup/context/AuthContext';
 import { ScanProvider } from './popup/context/ScanContext';
 import { SettingsProvider } from './popup/context/SettingsContext';
 import { PopupContent } from './popup/index';
@@ -44,11 +43,9 @@ if (!rootElement) {
     // Render the correct page component directly instead of using dynamic imports
     if (currentPage === 'popup') {
       root.render(
-        React.createElement(AuthProvider, null,
-          React.createElement(ScanProvider, null,
-            React.createElement(SettingsProvider, null,
-              React.createElement(PopupContent, null)
-            )
+        React.createElement(ScanProvider, null,
+          React.createElement(SettingsProvider, null,
+            React.createElement(PopupContent, null)
           )
         )
       );
