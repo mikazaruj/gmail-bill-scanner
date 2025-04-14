@@ -1870,3 +1870,46 @@ export async function testRpcCall() {
     };
   }
 }
+
+/**
+ * Get Supabase user ID from Google ID
+ * This is important because database operations need UUID format
+ * @param googleId Google ID to lookup
+ * @returns Supabase UUID if found, or null if not
+ */
+export async function getSupabaseUserIdFromGoogleId(googleId: string): Promise<string | null> {
+  try {
+    if (!googleId) {
+      console.error('No Google ID provided to getSupabaseUserIdFromGoogleId');
+      return null;
+    }
+    
+    console.log('Getting Supabase user ID for Google ID:', googleId);
+    
+    // First check local storage for a cached mapping
+    const { supabase_user_id } = await chrome.storage.local.get(['supabase_user_id']);
+    
+    if (supabase_user_id) {
+      console.log('Found Supabase user ID in storage:', supabase_user_id);
+      return supabase_user_id;
+    }
+    
+    // Use the existing findUserByGoogleId function
+    const user = await findUserByGoogleId(googleId);
+    
+    if (user && user.id) {
+      console.log('Found Supabase user ID from database lookup:', user.id);
+      
+      // Cache this mapping for future use
+      await chrome.storage.local.set({ 'supabase_user_id': user.id });
+      
+      return user.id;
+    }
+    
+    console.log('Could not find Supabase user ID for Google ID:', googleId);
+    return null;
+  } catch (error) {
+    console.error('Error in getSupabaseUserIdFromGoogleId:', error);
+    return null;
+  }
+}

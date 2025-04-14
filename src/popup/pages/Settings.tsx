@@ -16,17 +16,25 @@ import {
   getUserSheets, 
   updateSheetConnection, 
   updateGmailConnection,
+  getUserSheetFromStorage,
   UserConnection,
   UserSheet 
 } from '../../services/connectedServices';
+import { getSupabaseUserIdFromGoogleId } from '../../services/supabase/client';
 import { getTrustedSourcesView, addTrustedSource, removeTrustedSource, TrustedSourceView } from '../../services/trustedSources';
 import { getFieldMappings, FieldMapping } from '../../services/fieldMapping';
+
+// Add types for gapi
+declare global {
+  interface Window {
+    gapi: any;
+  }
+}
 
 interface SettingsProps {
   onNavigate: (tab: string) => void;
 }
 
-// Define UserSettings interface from our types
 interface UserSettings {
   spreadsheet_id: string | null;
   spreadsheet_name: string | null;
@@ -36,6 +44,7 @@ interface UserSettings {
 }
 
 const Settings = ({ onNavigate }: SettingsProps) => {
+  const { userProfile, logout } = useAuth();
   const settingsContext = useContext(SettingsContext);
   
   const { 
@@ -49,7 +58,8 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   
-  const { userProfile } = useAuth();
+  // Add new state for the user ID
+  const [effectiveUserId, setEffectiveUserId] = useState<string | null>(null);
   
   // Add refs to track initialization and previous user ID
   const isInitializedRef = useRef<boolean>(false);
@@ -89,9 +99,13 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   
   // Google Sheets dropdown states
   const [isSheetDropdownOpen, setIsSheetDropdownOpen] = useState<boolean>(false);
-  const [availableSheets, setAvailableSheets] = useState<Array<{id: string; name: string}>>([]);
+  const [availableSheets, setAvailableSheets] = useState<any[]>([]);
+  const [selectedSheet, setSelectedSheet] = useState<UserSheet | null>(null);
   const [isLoadingSheets, setIsLoadingSheets] = useState<boolean>(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
+  
+  // Add supabaseUserId state
+  const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
   
   // Helper function to ensure Google ID is available in headers
   const ensureGoogleIdHeader = async (userId: string) => {
@@ -121,8 +135,23 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // Get current userId
+        // Get current userId from profile or alternative sources
         const userId = userProfile?.id;
+        
+        // Try to get Google ID directly from storage
+        const { google_user_id } = await chrome.storage.local.get('google_user_id');
+        console.log('Retrieved Google User ID from storage:', google_user_id);
+        
+        // Get the Supabase UUID from Google ID if available
+        const supabaseUserId = google_user_id ? await getSupabaseUserIdFromGoogleId(google_user_id) : null;
+        console.log('Retrieved Supabase User ID:', supabaseUserId);
+        
+        // Use either the profile ID, Supabase ID from Google ID, or Google ID as the effective user ID
+        // Prioritize Supabase UUID format for database operations
+        const effectiveId = userId || supabaseUserId || google_user_id || null;
+        setEffectiveUserId(effectiveId);
+        
+        console.log('Using effective user ID:', effectiveId);
         
         // Set loading states
         setIsLoading(true);
@@ -130,27 +159,67 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         setIsFieldMappingLoading(true);
         
         // Store the current userId for future comparisons
-        previousUserIdRef.current = userId || null;
+        previousUserIdRef.current = effectiveId;
         
-        // Check if Gmail is already connected from local storage
-        const { gmail_connected, gmail_email } = await chrome.storage.local.get(['gmail_connected', 'gmail_email']);
-        
-        // If Gmail is connected in storage, update UI state immediately
-        if (gmail_connected && gmail_email) {
-          setUserConnection({
-            id: 'local-connection',
-            user_id: userId || 'local-user',
-            gmail_email: gmail_email,
-            gmail_connected: true,
-            gmail_last_connected_at: new Date().toISOString(),
-            gmail_scopes: ['https://www.googleapis.com/auth/gmail.readonly'] as string[],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          });
+        // First load data from Chrome storage to ensure quick UI updates
+        try {
+          console.log('Loading initial data from storage');
+          // Get sheet data from storage first (regardless of login status)
+          const { 
+            sheet_id, 
+            sheet_name, 
+            sheets_connected 
+          } = await chrome.storage.local.get([
+            'sheet_id',
+            'sheet_name',
+            'sheets_connected'
+          ]);
+          
+          console.log('Storage data:', { sheet_id, sheet_name, sheets_connected });
+          
+          // If sheet data exists in storage, update UI immediately
+          if (sheet_id && sheet_name) {
+            console.log('Found sheet in storage:', sheet_id, sheet_name);
+            const userSheet = convertToUserSheet(
+              { id: sheet_id, name: sheet_name },
+              effectiveId ? supabaseUserId : null
+            );
+            setSelectedSheet(userSheet);
+          }
+          
+          // Check if Gmail is already connected from local storage
+          const { gmail_connected, gmail_email } = await chrome.storage.local.get(['gmail_connected', 'gmail_email']);
+          
+          // If Gmail is connected in storage, update UI state immediately
+          if (gmail_connected && gmail_email) {
+            setUserConnection({
+              id: 'local-connection',
+              user_id: effectiveId || 'local-user',
+              gmail_email: gmail_email,
+              gmail_connected: true,
+              gmail_last_connected_at: new Date().toISOString(),
+              gmail_scopes: ['https://www.googleapis.com/auth/gmail.readonly'] as string[],
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            });
+          }
+        } catch (storageError) {
+          console.error('Error loading from storage:', storageError);
+          // Continue with other data loading operations
         }
         
-        // Skip database operations if no user ID or if already initialized with the same user
-        if (!userId || (isInitializedRef.current && userId === previousUserIdRef.current)) {
+        // If no user ID, we're done after loading from storage
+        if (!effectiveId) {
+          console.log('No effective user ID, using only storage data');
+          setIsLoading(false);
+          setIsConnectionLoading(false);
+          setIsFieldMappingLoading(false);
+          return;
+        }
+        
+        // Skip additional database operations if already initialized with the same user
+        if (isInitializedRef.current && effectiveId === previousUserIdRef.current) {
+          console.log('Already initialized for this user, skipping DB queries');
           setIsLoading(false);
           setIsConnectionLoading(false);
           setIsFieldMappingLoading(false);
@@ -158,13 +227,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         }
         
         // Ensure Google ID is in headers/storage
-        if (userId) {
-          await ensureGoogleIdHeader(userId);
-        }
+        await ensureGoogleIdHeader(effectiveId);
         
         try {
           // Load user settings with defaults
-          const userSettings = await getUserSettingsWithDefaults(userId);
+          const userSettings = await getUserSettingsWithDefaults(supabaseUserId || effectiveId);
           
           // Create settings object for comparison
           const newSettings = {
@@ -207,34 +274,58 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         // Try loading other data in parallel with error handling for each
         try {
           // Load connection data using the new functions
-          const connection = await getUserConnection(userId);
+          const connection = await getUserConnection(supabaseUserId || effectiveId);
           setUserConnection(connection);
           
-          const sheets = await getUserSheets(userId);
+          const sheets = await getUserSheets(supabaseUserId || effectiveId);
           
           // Check if sheets array is empty and handle appropriately
           if (sheets && sheets.length > 0) {
             setUserSheets(sheets);
-          } else {
-            // Explicitly set empty array to ensure UI shows "No sheet connected"
-            setUserSheets([]);
             
-            // Also make sure userSettingsData reflects no connection
-            setUserSettingsData(prev => prev ? {
-              ...prev,
-              spreadsheet_id: null,
-              spreadsheet_name: null
-            } : null);
+            // If we got sheets from DB, update settings with the default sheet
+            const defaultSheet = sheets.find(sheet => sheet.is_default);
+            if (defaultSheet) {
+              setUserSettingsData(prev => prev ? {
+                ...prev,
+                spreadsheet_id: defaultSheet.sheet_id,
+                spreadsheet_name: defaultSheet.sheet_name,
+              } : {
+                spreadsheet_id: defaultSheet.sheet_id,
+                spreadsheet_name: defaultSheet.sheet_name,
+                scan_frequency: 'manual',
+                apply_labels: false,
+                label_name: null
+              });
+            }
+          } else {
+            // Do NOT overwrite existing sheets if we already loaded from storage
+            // Only set empty array if we don't have any sheets from storage
+            if (userSheets.length === 0) {
+              // Explicitly set empty array to ensure UI shows "No sheet connected"
+              setUserSheets([]);
+              
+              // Also make sure userSettingsData reflects no connection
+              setUserSettingsData(prev => prev ? {
+                ...prev,
+                spreadsheet_id: null,
+                spreadsheet_name: null
+              } : null);
+            }
           }
         } catch (servicesError) {
           console.error('Error fetching user connections:', servicesError);
-          // Set empty objects/arrays if failed
-          setUserConnection(null);
-          setUserSheets([]);
+          // Only set empty objects/arrays if we don't have data from storage
+          if (!userConnection) {
+            setUserConnection(null);
+          }
+          if (userSheets.length === 0) {
+            setUserSheets([]);
+          }
         }
         
         try {
-          const sources = await getTrustedSourcesView(userId);
+          const sources = await getTrustedSourcesView(supabaseUserId || effectiveId);
           setTrustedSources(sources);
           
           // Set plan limits based on first trusted source
@@ -249,7 +340,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         }
         
         try {
-          const mappings = await getFieldMappings(userId);
+          const mappings = await getFieldMappings(supabaseUserId || effectiveId);
           setFieldMappings(mappings);
         } catch (mappingsError) {
           console.error('Error fetching field mappings:', mappingsError);
@@ -358,182 +449,227 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     }
   }, []);
   
-  // Modify handleChangeSpreadsheet to toggle dropdown and load sheets only when opened
-  const handleChangeSpreadsheet = () => {
-    if (!isSheetDropdownOpen) {
-      // Start loading when opening the dropdown
-      console.log('Opening Google Sheets dropdown');
-      setIsLoadingSheets(true);
-      setIsSheetDropdownOpen(true);
-      
-      // Load available sheets
-      chrome.runtime.sendMessage({ type: 'GET_AVAILABLE_SHEETS' }, (result) => {
-        console.log('Got sheets result:', result);
-        setIsLoadingSheets(false);
-        
-        if (result && result.success && Array.isArray(result.sheets)) {
-          console.log('Found', result.sheets.length, 'sheets');
-          setAvailableSheets(result.sheets);
-        } else {
-          console.error('Error loading sheets:', result?.error);
-          setSheetError(result?.error || 'Failed to load sheets');
-          setAvailableSheets([]);
-        }
-      });
-    } else {
+  // Helper function to convert a simple sheet object to UserSheet
+  const convertToUserSheet = (sheet: { id: string; name: string }, userId: string | null): UserSheet => {
+    return {
+      id: sheet.id,
+      user_id: userId || 'local-user',
+      sheet_id: sheet.id,
+      sheet_name: sheet.name,
+      is_default: true,
+      is_connected: true,
+      last_connected_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+  };
+  
+  // Update the handleSheetDropdownClick function to handle null cases
+  const handleSheetDropdownClick = async () => {
+    if (isSheetDropdownOpen) {
       // Just close the dropdown when it's already open
       console.log('Closing Google Sheets dropdown');
       setIsSheetDropdownOpen(false);
+      return;
+    }
+    
+    try {
+      setIsLoadingSheets(true);
+      setSheetError(null);
+      setIsSheetDropdownOpen(true);
+      
+      // Load available sheets
+      await loadAvailableSheets();
+      
+      // Convert available sheets to UserSheet format and update state
+      if (availableSheets && availableSheets.length > 0) {
+        const sheets = availableSheets.map(sheet => convertToUserSheet(sheet, 'local-user'));
+        setUserSheets(sheets);
+      }
+      
+    } catch (error) {
+      console.error('Error loading sheets:', error);
+      setSheetError('Failed to load sheets');
+    } finally {
+      setIsLoadingSheets(false);
     }
   };
   
-  // Add handler for selecting a sheet - simplified version
-  const handleSelectSheet = async (sheetId: string, sheetName: string) => {
+  // Update the handleSelectSheet function to handle null cases
+  const handleSelectSheet = async (sheet: UserSheet) => {
     try {
-      // Start loading
       setIsConnectionLoading(true);
-      setIsSheetDropdownOpen(false);
+      setSheetError(null);
       
-      // Ensure sheetName is a string and not undefined
-      const safeName = sheetName || 'Unnamed Sheet';
+      // Get the Supabase UUID from Google ID
+      const supabaseUserId = effectiveUserId ? await getSupabaseUserIdFromGoogleId(effectiveUserId) : null;
+      console.log('Using Supabase user ID for sheet selection:', supabaseUserId);
       
-      // Update state with selected spreadsheet
-      setUserSettingsData(prev => prev ? {
-        ...prev,
-        spreadsheet_id: sheetId,
-        spreadsheet_name: safeName,
-      } : {
-        spreadsheet_id: sheetId,
-        spreadsheet_name: safeName,
-        scan_frequency: 'manual',
-        apply_labels: false,
-        label_name: null
-      });
-      
-      // Save to Chrome storage
+      // Save to Chrome storage first for immediate UI update
       await chrome.storage.local.set({
-        'sheet_id': sheetId,
-        'sheet_name': safeName,
+        'sheet_id': sheet.sheet_id,
+        'sheet_name': sheet.sheet_name,
         'sheets_connected': true,
         'last_updated': Date.now()
       });
       
-      // Update in Supabase if user is logged in
-      const userId = userProfile?.id;
-      if (userId) {
-        await ensureGoogleIdHeader(userId);
-        await updateSheetConnection(userId, sheetId, safeName, true);
-        
-        // Refresh user sheets
+      // Update UI immediately
+      setUserSheets(prevSheets => {
+        return prevSheets.map(s => ({
+          ...s,
+          is_connected: s.sheet_id === sheet.sheet_id
+        }));
+      });
+      
+      // If we have a Supabase UUID, update the database
+      if (supabaseUserId) {
         try {
-          const sheets = await getUserSheets(userId);
-          setUserSheets(sheets);
-        } catch (err) {
-          console.error('Error refreshing sheets:', err);
+          // Update sheet connection in Supabase
+          await updateSheetConnection(
+            supabaseUserId,
+            sheet.sheet_id,
+            sheet.sheet_name,
+            true
+          );
+          console.log('Updated sheet in Supabase');
+        } catch (dbError) {
+          console.error('Error updating sheet in Supabase:', dbError);
+          // Don't throw here - we still want to update local storage
         }
+      } else {
+        console.log('No Supabase user ID available, skipping database update');
       }
+      
+      // Update settings data
+      setUserSettingsData(prev => ({
+        ...prev,
+        spreadsheet_id: sheet.sheet_id,
+        spreadsheet_name: sheet.sheet_name,
+        scan_frequency: prev?.scan_frequency || 'manual',
+        apply_labels: prev?.apply_labels || false,
+        label_name: prev?.label_name || null
+      }));
+      
     } catch (error) {
-      console.error('Error selecting spreadsheet:', error);
-      // Show user-friendly error message
-      alert('Failed to connect to Google Sheet. Please try again.');
+      console.error('Error selecting sheet:', error);
+      setSheetError(error instanceof Error ? error.message : 'Failed to select sheet');
     } finally {
       setIsConnectionLoading(false);
     }
   };
   
-  // Simplified handler for creating a new sheet
-  const handleCreateNewSheet = () => {
-    // Hide dropdown while we show prompt
-    setIsSheetDropdownOpen(false);
-    
-    // Ask for spreadsheet name
-    const sheetName = prompt('Enter a name for your new spreadsheet:', 'Bills Tracker');
-    
-    // If user cancels prompt, do nothing
-    if (!sheetName) return;
-    
-    // Show loading indicator
-    setIsConnectionLoading(true);
-    
-    // Create the spreadsheet
-    chrome.runtime.sendMessage(
-      { type: 'CREATE_SPREADSHEET', payload: { name: sheetName } },
-      (response) => {
-        if (response && response.success && response.spreadsheetId) {
-          // Update the UI with the new spreadsheet
-          setUserSettingsData(prev => prev ? {
-            ...prev,
-            spreadsheet_id: response.spreadsheetId,
-            spreadsheet_name: sheetName,
-          } : {
-            spreadsheet_id: response.spreadsheetId,
-            spreadsheet_name: sheetName,
-            scan_frequency: 'manual',
-            apply_labels: false,
-            label_name: null
-          });
-          
-          // Save to Chrome storage
-          chrome.storage.local.set({
-            'sheet_id': response.spreadsheetId,
-            'sheet_name': sheetName,
-            'sheets_connected': true,
-            'last_updated': Date.now()
-          });
-          
-          // Update Supabase if possible
-          if (userProfile && userProfile.id) {
-            const id = userProfile.id; // Create a local variable that TypeScript knows is string
-            ensureGoogleIdHeader(id)
-              .then(() => updateSheetConnection(
-                id,
-                response.spreadsheetId, 
-                sheetName, 
-                true
-              ))
-              .then(() => getUserSheets(id))
-              .then(sheets => setUserSheets(sheets))
-              .catch(err => console.error('Error updating sheet connection:', err));
-          }
-        } else {
-          alert('Failed to create spreadsheet: ' + (response?.error || 'Unknown error'));
-        }
-        
-        // Hide loading indicator
-        setIsConnectionLoading(false);
+  // Update the handleCreateNewSheet function to handle null cases
+  const handleCreateNewSheet = async () => {
+    try {
+      setIsConnectionLoading(true);
+      setSheetError(null);
+      
+      // Get the Supabase UUID from Google ID
+      const supabaseUserId = effectiveUserId ? await getSupabaseUserIdFromGoogleId(effectiveUserId) : null;
+      console.log('Using Supabase user ID for new sheet creation:', supabaseUserId);
+      
+      // Create new sheet
+      const response = await chrome.runtime.sendMessage({
+        type: 'CREATE_SPREADSHEET',
+        name: 'Bills Tracker'
+      });
+      
+      if (!response || !response.success) {
+        throw new Error(response?.error || 'Failed to create spreadsheet');
       }
-    );
+      
+      const { sheetId, sheetName } = response;
+      
+      // Save to Chrome storage first for immediate UI update
+      await chrome.storage.local.set({
+        'sheet_id': sheetId,
+        'sheet_name': sheetName,
+        'sheets_connected': true,
+        'last_updated': Date.now()
+      });
+      
+      // Create a new sheet object for the UI
+      const newSheet: UserSheet = {
+        id: crypto.randomUUID(),
+        user_id: supabaseUserId || 'local-user',
+        sheet_id: sheetId,
+        sheet_name: sheetName,
+        is_connected: true,
+        is_default: true,
+        last_connected_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      
+      // Update UI immediately
+      setUserSheets(prevSheets => [newSheet, ...prevSheets]);
+      
+      // If we have a Supabase UUID, update the database
+      if (supabaseUserId) {
+        try {
+          // Update sheet connection in Supabase
+          await updateSheetConnection(
+            supabaseUserId,
+            sheetId,
+            sheetName,
+            true
+          );
+          console.log('Updated new sheet in Supabase');
+        } catch (dbError) {
+          console.error('Error updating new sheet in Supabase:', dbError);
+          // Don't throw here - we still want to update local storage
+        }
+      } else {
+        console.log('No Supabase user ID available, skipping database update');
+      }
+      
+      // Update settings data
+      setUserSettingsData(prev => ({
+        ...prev,
+        spreadsheet_id: sheetId,
+        spreadsheet_name: sheetName,
+        scan_frequency: prev?.scan_frequency || 'manual',
+        apply_labels: prev?.apply_labels || false,
+        label_name: prev?.label_name || null
+      }));
+      
+    } catch (error) {
+      console.error('Error creating new sheet:', error);
+      setSheetError(error instanceof Error ? error.message : 'Failed to create spreadsheet');
+    } finally {
+      setIsConnectionLoading(false);
+    }
   };
   
   const handleToggleAutomaticProcessing = useCallback(async (checked: boolean) => {
     updateSettings({ automaticProcessing: checked });
     
     // Update in Supabase if user is logged in
-    if (userProfile?.id) {
-      await ensureGoogleIdHeader(userProfile.id);
-      await updateUserPreference(userProfile.id, 'automatic_processing', checked);
+    if (effectiveUserId) {
+      await ensureGoogleIdHeader(effectiveUserId);
+      await updateUserPreference(effectiveUserId, 'automatic_processing', checked);
     }
-  }, [userProfile?.id, updateSettings]);
+  }, [effectiveUserId, updateSettings]);
   
   const handleToggleWeeklySchedule = useCallback(async (checked: boolean) => {
     updateSettings({ weeklySchedule: checked });
     
     // Update in Supabase if user is logged in
-    if (userProfile?.id) {
-      await ensureGoogleIdHeader(userProfile.id);
-      await updateUserPreference(userProfile.id, 'weekly_schedule', checked);
+    if (effectiveUserId) {
+      await ensureGoogleIdHeader(effectiveUserId);
+      await updateUserPreference(effectiveUserId, 'weekly_schedule', checked);
     }
-  }, [userProfile?.id, updateSettings]);
+  }, [effectiveUserId, updateSettings]);
   
   const handleToggleProcessAttachments = useCallback(async (checked: boolean) => {
     updateSettings({ processAttachments: checked });
     
     // Update in Supabase if user is logged in
-    if (userProfile?.id) {
-      await ensureGoogleIdHeader(userProfile.id);
-      await updateUserPreference(userProfile.id, 'process_attachments', checked);
+    if (effectiveUserId) {
+      await ensureGoogleIdHeader(effectiveUserId);
+      await updateUserPreference(effectiveUserId, 'process_attachments', checked);
     }
-  }, [userProfile?.id, updateSettings]);
+  }, [effectiveUserId, updateSettings]);
   
   const handleToggleApplyLabels = useCallback(async (checked: boolean) => {
     if (userSettingsData) {
@@ -544,11 +680,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     }
     
     // Update in Supabase if user is logged in
-    if (userProfile?.id) {
-      await ensureGoogleIdHeader(userProfile.id);
-      await updateUserPreference(userProfile.id, 'apply_labels', checked);
+    if (effectiveUserId) {
+      await ensureGoogleIdHeader(effectiveUserId);
+      await updateUserPreference(effectiveUserId, 'apply_labels', checked);
     }
-  }, [userProfile?.id, userSettingsData]);
+  }, [effectiveUserId, userSettingsData]);
   
   const handleChangeLabelName = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -561,43 +697,43 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     }
     
     // Update in Supabase if user is logged in
-    if (userProfile?.id) {
-      await ensureGoogleIdHeader(userProfile.id);
-      await updateUserPreference(userProfile.id, 'label_name', value);
+    if (effectiveUserId) {
+      await ensureGoogleIdHeader(effectiveUserId);
+      await updateUserPreference(effectiveUserId, 'label_name', value);
     }
-  }, [userProfile?.id, userSettingsData]);
+  }, [effectiveUserId, userSettingsData]);
   
   const handleChangeMaxResults = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const value = parseInt(e.target.value) || 50;
     updateSettings({ maxResults: value });
     
     // Update in Supabase if user is logged in
-    if (userProfile?.id) {
-      await ensureGoogleIdHeader(userProfile.id);
-      await updateUserPreference(userProfile.id, 'max_results', value);
+    if (effectiveUserId) {
+      await ensureGoogleIdHeader(effectiveUserId);
+      await updateUserPreference(effectiveUserId, 'max_results', value);
     }
-  }, [userProfile?.id, updateSettings]);
+  }, [effectiveUserId, updateSettings]);
   
   const handleChangeSearchDays = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const value = parseInt(e.target.value) || 30;
     updateSettings({ searchDays: value });
     
     // Update in Supabase if user is logged in
-    if (userProfile?.id) {
-      await ensureGoogleIdHeader(userProfile.id);
-      await updateUserPreference(userProfile.id, 'search_days', value);
+    if (effectiveUserId) {
+      await ensureGoogleIdHeader(effectiveUserId);
+      await updateUserPreference(effectiveUserId, 'search_days', value);
     }
-  }, [userProfile?.id, updateSettings]);
+  }, [effectiveUserId, updateSettings]);
   
   const handleSaveSettings = useCallback(async () => {
     // Save to Chrome storage via context
     await saveSettings();
     
     // Also save all preferences to Supabase if user is authenticated
-    if (userProfile?.id) {
+    if (effectiveUserId) {
       try {
-        await ensureGoogleIdHeader(userProfile.id);
-        await updateMultipleUserPreferences(userProfile.id, {
+        await ensureGoogleIdHeader(effectiveUserId);
+        await updateMultipleUserPreferences(effectiveUserId, {
           automatic_processing: settingsRef.current.automaticProcessing,
           weekly_schedule: settingsRef.current.weeklySchedule,
           process_attachments: settingsRef.current.processAttachments,
@@ -610,7 +746,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         console.error('Error saving user settings to Supabase:', error);
       }
     }
-  }, [userProfile?.id, saveSettings, userSettingsData]);
+  }, [effectiveUserId, saveSettings, userSettingsData]);
   
   // Get default sheet
   const defaultSheet = userSheets.find(sheet => sheet.is_default);
@@ -779,7 +915,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
               </div>
               <button 
                 className="px-2 py-0.5 text-xs bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg font-medium transition-colors flex items-center"
-                onClick={handleChangeSpreadsheet}
+                onClick={handleSheetDropdownClick}
                 disabled={isConnectionLoading}
                 aria-expanded={isSheetDropdownOpen}
                 aria-controls="sheet-dropdown"
@@ -814,7 +950,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
                   <div className="text-xs text-red-500 mb-1">{sheetError}</div>
                   <button 
                     className="text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded-md flex items-center"
-                    onClick={() => handleChangeSpreadsheet()}
+                    onClick={() => handleSheetDropdownClick()}
                   >
                     <RefreshCw size={10} className="mr-1" /> Try Again
                   </button>
@@ -832,16 +968,19 @@ const Settings = ({ onNavigate }: SettingsProps) => {
               ) : (
                 <div>
                   <div className="max-h-36 overflow-y-auto">
-                    {availableSheets.map(sheet => (
-                      <div 
-                        key={sheet.id}
-                        className="p-2 text-xs hover:bg-gray-100 cursor-pointer rounded-md flex items-center"
-                        onClick={() => handleSelectSheet(sheet.id, sheet.name)}
-                      >
-                        <FileSpreadsheet size={12} className="text-green-600 mr-1.5" />
-                        {sheet.name}
-                      </div>
-                    ))}
+                    {availableSheets.map(sheet => {
+                      const userSheet = convertToUserSheet(sheet, 'local-user');
+                      return (
+                        <div 
+                          key={sheet.id}
+                          className="p-2 text-xs hover:bg-gray-100 cursor-pointer rounded-md flex items-center"
+                          onClick={() => handleSelectSheet(userSheet)}
+                        >
+                          <FileSpreadsheet size={12} className="text-green-600 mr-1.5" />
+                          {sheet.name}
+                        </div>
+                      );
+                    })}
                   </div>
                   <div className="border-t border-gray-100 mt-1 pt-1">
                     <div 
