@@ -115,18 +115,33 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   // Helper function to ensure Google ID is available in headers
   const ensureGoogleIdHeader = async (userId: string) => {
     try {
+      // First check if we have a Google ID in storage
       const { google_user_id } = await chrome.storage.local.get('google_user_id');
       
       if (!google_user_id) {
+        console.log('No Google user ID found in storage, fetching from server');
+        
+        // Attempt to get Google ID by calling the background service
         // This is a simplified version - in a real implementation,
         // you would fetch the Google ID from Supabase if not present
-        chrome.runtime.sendMessage({ type: 'GET_GOOGLE_USER_ID', userId }, 
-          async (response) => {
-            if (response && response.google_user_id) {
-              await chrome.storage.local.set({ 'google_user_id': response.google_user_id });
-            }
-          }
-        );
+        const response = await new Promise<any>((resolve) => {
+          chrome.runtime.sendMessage({ 
+            type: 'GET_GOOGLE_USER_ID', 
+            userId 
+          }, (response) => {
+            resolve(response || { success: false });
+          });
+        });
+        
+        if (response && response.google_user_id) {
+          console.log('Received Google ID from server:', response.google_user_id);
+          await chrome.storage.local.set({ 'google_user_id': response.google_user_id });
+          return response.google_user_id;
+        } else {
+          console.error('Failed to get Google ID from server');
+        }
+      } else {
+        console.log('Found existing Google ID in storage:', google_user_id);
       }
       
       return google_user_id;
@@ -380,7 +395,12 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       console.log('Adding trusted source:', { email, description, userId });
       
       // Ensure Google ID is in headers/storage
-      await ensureGoogleIdHeader(userId);
+      const googleId = await ensureGoogleIdHeader(userId);
+      if (!googleId) {
+        console.warn('Could not retrieve Google ID, RLS policies might fail');
+      } else {
+        console.log('Using Google ID for RLS:', googleId);
+      }
 
       console.log('About to call addTrustedSource service function');
       
@@ -431,7 +451,12 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       console.log('User ID available:', userId);
       
       // Ensure Google ID is in headers/storage
-      await ensureGoogleIdHeader(userId);
+      const googleId = await ensureGoogleIdHeader(userId);
+      if (!googleId) {
+        console.warn('Could not retrieve Google ID, RLS policies might fail');
+      } else {
+        console.log('Using Google ID for RLS:', googleId);
+      }
       
       console.log('About to call trusted source service function');
       

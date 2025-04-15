@@ -108,6 +108,20 @@ Required scopes:
 - Only extracted bill data is stored in the user's own Google Sheets
 - User authentication is handled securely using OAuth 2.0
 
+## Database Schema Management
+
+This project includes a database schema management system to keep your codebase in sync with the Supabase database structure:
+
+```bash
+# Update local schema files from database
+npm run update-schema
+
+# Check for differences between local schema and database
+npm run diff-schema
+```
+
+The schema files are stored in the `schema/` directory and automatically checked during commits. See [Schema Management Documentation](./schema/README.md) for more details.
+
 ## License
 
 MIT

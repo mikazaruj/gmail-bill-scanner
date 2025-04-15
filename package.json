@@ -9,7 +9,11 @@
     "build": "webpack --mode=production",
     "postbuild": "node fix-csp.js",
     "package": "npm run build && cd dist && zip -r ../extension.zip *",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "update-schema": "node schema/schema-updater.js",
+    "diff-schema": "node schema/schema-diff.js",
+    "update-schema:mcp": "node schema/mcp-schema-updater.js",
+    "test-schema:mcp": "node schema/test-mcp-updater.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.3",
@@ -38,6 +42,8 @@
     "css-loader": "^6.11.0",
     "dotenv": "^16.4.7",
     "html-webpack-plugin": "^5.6.3",
+    "husky": "^8.0.3",
+    "lint-staged": "^13.3.0",
     "mini-css-extract-plugin": "^2.9.2",
     "postcss": "^8.5.3",
     "postcss-loader": "^7.3.4",
@@ -55,6 +61,16 @@
     "permissions": [
       "storage",
       "identity"
+    ]
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged"
+    }
+  },
+  "lint-staged": {
+    "*.{js,ts,tsx}": [
+      "node schema/check-schema.js"
     ]
   }
 }

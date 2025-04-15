@@ -237,8 +237,8 @@ type Database = {
 // Environment variables - loaded from .env.local
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://eipfspwyqzejhmybpofk.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTE0NzQ2MTAsImV4cCI6MjAyNzA1MDYxMH0.RKGuiOWMG1igzPYTbXJa1wRsaTiPxXy_9r5JCEZ5BNQ';
-// Service role key for admin operations
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcxMTQ3NDYxMCwiZXhwIjoyMDI3MDUwNjEwfQ.X2Qd0fOJ20tQu4VexcTwuBZEO-lsmCJU5dC7vxDKoRg';
+// Service role key is no longer needed and removed for security
+// const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'your-service-role-key-here';
 
 // Chrome extension URL for OAuth redirects (no longer used but kept for reference)
 const EXTENSION_URL = chrome.runtime.getURL('');
@@ -247,7 +247,6 @@ const EXTENSION_URL = chrome.runtime.getURL('');
 console.log('Supabase config:', { 
   url: SUPABASE_URL.substring(0, 20) + '...',  // Only log part of URL for security
   hasKey: !!SUPABASE_ANON_KEY,
-  hasServiceKey: !!SUPABASE_SERVICE_ROLE_KEY,
   extensionUrl: EXTENSION_URL
 });
 
@@ -315,20 +314,6 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, 
   }
 });
 
-// Create an admin client with service role key for admin operations
-export const supabaseAdmin = createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-    detectSessionInUrl: false
-  },
-  global: {
-    headers: {
-      'x-application-name': 'gmail-bill-scanner-admin'
-    }
-  }
-});
-
 // Export the function to get the client
 export async function getSupabaseClient() {
   // Get Google user ID from Chrome storage
@@ -342,11 +327,14 @@ export async function getSupabaseClient() {
   };
   
   // Add Google ID to headers for RLS policies if available
+  // IMPORTANT: Use the exact header name that matches your RLS policy
   if (google_user_id) {
-    headers['X-Google-User-ID'] = google_user_id;
+    // This must match exactly with what's in your RLS policy:
+    // current_setting('request.headers.google_user_id', true)::text
+    headers['google_user_id'] = google_user_id;
     console.log('Setting Supabase headers with Google ID:', headers);
   } else {
-    console.log('No Google user ID available for Supabase headers');
+    console.log('No Google user ID available for Supabase headers - RLS policies will not work');
   }
   
   // Create a fresh client each time to avoid auth issues
@@ -672,7 +660,7 @@ export async function getTrustedSources() {
     }
     
     // Use supabaseAdmin (service role client) instead of regular client
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('email_sources')
       .select('*')
       .eq('user_id', supabase_user_id)
@@ -713,7 +701,7 @@ export async function addTrustedSource(emailAddress: string, description?: strin
     });
     
     // Use supabaseAdmin (service role client) instead of regular client
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('email_sources')
       .insert({
         user_id: supabase_user_id,
@@ -763,7 +751,7 @@ export async function recordProcessedItem(
   try {
     console.log('Recording processed item with service role for user:', userId);
     
-    return await supabaseAdmin
+    return await supabase
       .from('processed_items')
       .insert({
         user_id: userId,
@@ -790,7 +778,7 @@ export async function getUserSettings(userId: string) {
   try {
     console.log('Getting user settings with service role for user:', userId);
     
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('user_settings')
       .select('*')
       .eq('user_id', userId)
@@ -828,7 +816,7 @@ export async function saveUserSettings(
     console.log('Saving user settings with service role for user:', userId);
     
     // Check if settings already exist for this user
-    const { data, error: queryError } = await supabaseAdmin
+    const { data, error: queryError } = await supabase
       .from('user_settings')
       .select('id')
       .eq('user_id', userId)
@@ -842,7 +830,7 @@ export async function saveUserSettings(
     if (data) {
       // Update existing settings
       console.log('Updating existing settings for user:', userId);
-      const { error } = await supabaseAdmin
+      const { error } = await supabase
         .from('user_settings')
         .update({
           ...settings,
@@ -854,7 +842,7 @@ export async function saveUserSettings(
     } else {
       // Insert new settings
       console.log('Creating new settings for user:', userId);
-      const { error } = await supabaseAdmin
+      const { error } = await supabase
         .from('user_settings')
         .insert({
           user_id: userId,
@@ -993,25 +981,44 @@ function generateSecurePassword(): string {
 }
 
 /**
- * Delete the current user's account and all associated data
+ * Delete account
+ * @returns Success/failure
  */
 export async function deleteAccount() {
-  const supabase = await getSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  if (!user) {
-    throw new Error('No user found to delete');
+  try {
+    // Get current user
+    const supabase = await getSupabaseClient();
+    const { data: { user }, error } = await supabase.auth.getUser();
+    
+    if (error || !user) {
+      console.error('Error getting user for account deletion:', error);
+      return { success: false, error: error?.message || 'User not found' };
+    }
+    
+    console.log('Deleting account for user:', user.id);
+    
+    // Delete related data
+    await supabase.from('user_settings').delete().eq('user_id', user.id);
+    await supabase.from('google_credentials').delete().eq('user_id', user.id);
+    await supabase.from('email_sources').delete().eq('user_id', user.id);
+    await supabase.from('processed_items').delete().eq('user_id', user.id);
+    
+    // Finally, delete the user account
+    const { error: deleteError } = await supabase.auth.admin.deleteUser(user.id);
+    
+    if (deleteError) {
+      console.error('Error deleting user account:', deleteError);
+      return { success: false, error: deleteError.message };
+    }
+    
+    // Clear local session
+    await clearStoredSession();
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error deleting account:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
-
-  // Delete user data from public tables
-  await supabase.from('user_settings').delete().eq('user_id', user.id);
-  await supabase.from('google_credentials').delete().eq('user_id', user.id);
-  await supabaseAdmin.from('email_sources').delete().eq('user_id', user.id);
-  await supabase.from('processed_items').delete().eq('user_id', user.id);
-  
-  // Finally delete the user's auth account
-  const { error } = await supabase.auth.admin.deleteUser(user.id);
-  if (error) throw error;
 }
 
 /**
@@ -1818,105 +1825,27 @@ export async function verifyUserByGoogleId(googleId: string): Promise<{
 }
 
 /**
- * Comprehensive RPC testing function that tests auth user creation first
+ * Test RPC call
+ * @returns Test response
  */
 export async function testRpcCall() {
   try {
-    console.log('Starting comprehensive RPC test...');
     const supabase = await getSupabaseClient();
     
-    // Use test data with random elements to avoid conflicts
-    const testEmail = `test-${Math.random().toString(36).substring(2, 10)}@example.com`;
-    const testGoogleId = `test-${Math.random().toString(36).substring(2, 15)}`;
-    const testUserId = crypto.randomUUID();
-    
-    console.log('Test parameters:', {
-      email: testEmail,
-      googleId: testGoogleId,
-      userId: testUserId
+    // This is just a test RPC call
+    const { data, error } = await supabase.rpc('get_google_user_id', {
+      google_id: 'test'
     });
     
-    // Test 1: First try manual auth user creation to test permissions
-    console.log('Test 1: Testing auth user creation directly...');
-    let authUserCreated = false;
-    
-    try {
-      // This won't work unless using admin key, but let's try it to verify
-      const { error: authError } = await supabase.rpc('admin_create_auth_user', {
-        user_email: testEmail,
-        user_id: testUserId
-      });
-      
-      if (authError) {
-        console.log('Auth user creation failed as expected:', authError.message);
-      } else {
-        console.log('Auth user creation succeeded unexpectedly - check RLS settings');
-        authUserCreated = true;
-      }
-    } catch (error) {
-      console.log('Auth user creation exception as expected:', error instanceof Error ? error.message : String(error));
+    if (error) {
+      console.error('Error making RPC call:', error);
+      return { success: false, error: error.message };
     }
     
-    // Test 2: Try the full RPC function
-    console.log('Test 2: Testing full create_auth_and_public_user RPC...');
-    const { data: rpcData, error: rpcError } = await supabase.rpc('create_auth_and_public_user', {
-      user_email: testEmail,
-      google_id: testGoogleId,
-      user_name: 'Test User',
-      avatar_url: null
-    });
-    
-    if (rpcError) {
-      console.log('RPC call failed:', rpcError);
-      
-      // Test 3: Try direct insertion to the public.users table
-      console.log('Test 3: Testing direct insert to public.users...');
-      const directUserId = crypto.randomUUID();
-      const { error: directError } = await supabase
-        .from('users')
-        .insert({
-          id: directUserId,
-          email: testEmail,
-          auth_id: directUserId,
-          google_user_id: testGoogleId,
-          plan: 'free',
-          quota_bills_monthly: 50,
-          quota_bills_used: 0
-        });
-      
-      if (directError) {
-        console.log('Direct insert failed too:', directError);
-    return {
-      success: false,
-          errorTypes: ['rpc', 'direct_insert'],
-          rpcError: rpcError.message,
-          directError: directError.message,
-          conclusion: 'Both RPC and direct insert failed - check permissions and constraints'
-        };
-      } else {
-        console.log('Direct insert succeeded when RPC failed');
-        return {
-          success: false,
-          errorTypes: ['rpc'],
-          error: rpcError.message,
-          conclusion: 'The RPC function failed but direct insert worked - likely permission issue in the SECURITY DEFINER function'
-        };
-      }
-    } else {
-      console.log('RPC call succeeded:', rpcData);
-      return {
-        success: true,
-        data: rpcData,
-        conclusion: 'The RPC function is working properly'
-      };
-    }
+    return { success: true, data };
   } catch (error) {
-    console.error('Test exception:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      conclusion: 'An unexpected error occurred during testing'
-    };
+    console.error('Error in test RPC call:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 }
 

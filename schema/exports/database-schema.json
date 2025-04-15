@@ -1,0 +1,180 @@
+{
+  "project": {
+    "id": "eipfspwyqzejhmybpofk",
+    "url": "https://eipfspwyqzejhmybpofk.supabase.co",
+    "region": "eu-central-1"
+  },
+  "tables": [
+    {
+      "name": "email_sources",
+      "schema": "public"
+    },
+    {
+      "name": "field_definitions",
+      "schema": "public"
+    },
+    {
+      "name": "payment_methods",
+      "schema": "public"
+    },
+    {
+      "name": "payment_transactions",
+      "schema": "public"
+    },
+    {
+      "name": "processed_items",
+      "schema": "public"
+    },
+    {
+      "name": "subscription_plans",
+      "schema": "public"
+    },
+    {
+      "name": "user_connections",
+      "schema": "public"
+    },
+    {
+      "name": "user_field_mappings",
+      "schema": "public"
+    },
+    {
+      "name": "user_preferences",
+      "schema": "public",
+      "columns": [
+        {"name": "id", "type": "uuid", "nullable": false},
+        {"name": "user_id", "type": "uuid", "nullable": true},
+        {"name": "automatic_processing", "type": "boolean", "nullable": true},
+        {"name": "weekly_schedule", "type": "boolean", "nullable": true},
+        {"name": "schedule_day", "type": "text", "nullable": true},
+        {"name": "schedule_time", "type": "text", "nullable": true},
+        {"name": "process_attachments", "type": "boolean", "nullable": true},
+        {"name": "max_results", "type": "integer", "nullable": true},
+        {"name": "search_days", "type": "integer", "nullable": true},
+        {"name": "created_at", "type": "timestamp with time zone", "nullable": true},
+        {"name": "updated_at", "type": "timestamp with time zone", "nullable": true},
+        {"name": "apply_labels", "type": "boolean", "nullable": true},
+        {"name": "label_name", "type": "text", "nullable": true}
+      ]
+    },
+    {
+      "name": "user_sheets",
+      "schema": "public",
+      "columns": [
+        {"name": "id", "type": "uuid", "nullable": false},
+        {"name": "user_id", "type": "uuid", "nullable": true},
+        {"name": "sheet_id", "type": "text", "nullable": false},
+        {"name": "sheet_name", "type": "text", "nullable": false},
+        {"name": "is_default", "type": "boolean", "nullable": true},
+        {"name": "is_connected", "type": "boolean", "nullable": true},
+        {"name": "last_connected_at", "type": "timestamp with time zone", "nullable": true},
+        {"name": "created_at", "type": "timestamp with time zone", "nullable": true},
+        {"name": "updated_at", "type": "timestamp with time zone", "nullable": true}
+      ]
+    },
+    {
+      "name": "user_subscriptions",
+      "schema": "public"
+    },
+    {
+      "name": "users",
+      "schema": "public"
+    }
+  ],
+  "views": [
+    {
+      "name": "user_dashboard_view",
+      "schema": "public"
+    },
+    {
+      "name": "trusted_sources_view",
+      "schema": "public"
+    },
+    {
+      "name": "user_profiles",
+      "schema": "public"
+    },
+    {
+      "name": "field_mapping_view",
+      "schema": "public"
+    },
+    {
+      "name": "user_stats",
+      "schema": "public"
+    },
+    {
+      "name": "user_profile_view",
+      "schema": "public"
+    },
+    {
+      "name": "user_settings_view",
+      "schema": "public"
+    }
+  ],
+  "functions": [
+    {
+      "name": "create_auth_and_public_user",
+      "schema": "public"
+    },
+    {
+      "name": "create_public_user_bypass_fk",
+      "schema": "public"
+    },
+    {
+      "name": "create_public_user",
+      "schema": "public"
+    },
+    {
+      "name": "set_google_user_id",
+      "schema": "public"
+    },
+    {
+      "name": "upsert_google_token",
+      "schema": "public"
+    },
+    {
+      "name": "get_google_user_id",
+      "schema": "public"
+    },
+    {
+      "name": "link_google_user",
+      "schema": "public"
+    },
+    {
+      "name": "check_email_exists",
+      "schema": "public"
+    },
+    {
+      "name": "get_supabase_user_id_from_google_id",
+      "schema": "public"
+    },
+    {
+      "name": "handle_new_auth_user",
+      "schema": "public"
+    },
+    {
+      "name": "add_trusted_email_source",
+      "schema": "public"
+    },
+    {
+      "name": "get_trusted_email_sources",
+      "schema": "public"
+    },
+    {
+      "name": "increment_bills_used",
+      "schema": "public"
+    }
+  ],
+  "triggers": [
+    {
+      "name": "on_processed_item_created",
+      "event": "INSERT",
+      "table": "processed_items",
+      "function": "increment_bills_used"
+    }
+  ],
+  "metadata": {
+    "generated_at": "2024-07-02T10:00:00Z",
+    "generator": "MCP Schema Tools",
+    "supabase_version": "15.8.1.054"
+  }
+} 

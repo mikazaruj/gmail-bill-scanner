@@ -1,5 +1,5 @@
 import { TrustedSource } from '../types/TrustedSource';
-import { supabase, supabaseAdmin } from './supabase/client';
+import { getSupabaseClient } from './supabase/client';
 import {
   addTrustedSource as addSource,
   getUserSettings as getSettings,
@@ -25,7 +25,7 @@ export async function loadLocalTrustedSources(): Promise<TrustedSource[]> {
 }
 
 // Normalize trusted source data format
-function normalizeTrustedSource(source: TrustedSource): TrustedSource {
+function normalizeTrustedSource(source: any): TrustedSource {
   // If the source is from old format, convert it
   if (source.email && !source.email_address) {
     return {
@@ -62,11 +62,14 @@ export interface TrustedSourceView extends TrustedSource {
 // Get trusted sources from the trusted_sources_view
 export async function getTrustedSourcesView(userId: string): Promise<TrustedSourceView[]> {
   try {
-    console.log('Getting trusted sources view with service role for user:', userId);
+    console.log('Getting trusted sources view for user:', userId);
     
-    // Skip the view query and go straight to the table since we know the view doesn't exist
-    console.log('View might be missing, directly querying email_sources table');
-    const sourceResponse = await supabaseAdmin
+    // Get a client with the proper headers
+    const supabase = await getSupabaseClient();
+    
+    // Directly query the email_sources table
+    console.log('Directly querying email_sources table with regular client');
+    const { data, error } = await supabase
       .from('email_sources')
       .select('*')
       .eq('user_id', userId)
@@ -74,23 +77,22 @@ export async function getTrustedSourcesView(userId: string): Promise<TrustedSour
       .is('deleted_at', null);
       
     console.log('email_sources response:', {
-      status: sourceResponse.status,
-      statusText: sourceResponse.statusText,
-      error: sourceResponse.error,
-      count: sourceResponse.data?.length || 0
+      status: data ? 200 : 'failed',
+      error: error,
+      count: data?.length || 0
     });
       
-    if (sourceResponse.error) {
-      console.error('Error querying email_sources table:', sourceResponse.error);
-      throw sourceResponse.error;
+    if (error) {
+      console.error('Error querying email_sources table:', error);
+      throw error;
     }
     
     // Convert to the TrustedSourceView format with default limits
-    const sourcesWithDefaults = (sourceResponse.data || []).map(source => ({
+    const sourcesWithDefaults = (data || []).map(source => ({
       ...source,
       plan: 'free',
       max_trusted_sources: 3, // Default for free plan
-      total_sources: sourceResponse.data?.length || 0,
+      total_sources: data?.length || 0,
       is_limited: true
     }));
     
@@ -120,31 +122,27 @@ export async function getTrustedSourcesView(userId: string): Promise<TrustedSour
 // Sync from Supabase and update local cache
 export async function syncTrustedSources(userId: string): Promise<TrustedSource[]> {
   try {
-    console.log('Syncing trusted sources with service role for user:', userId);
-    
     // Get from Supabase
-    const { data, error } = await supabaseAdmin
+    const supabase = await getSupabaseClient();
+    const { data, error } = await supabase
       .from('email_sources')
       .select('*')
       .eq('user_id', userId)
       .eq('is_active', true)
       .is('deleted_at', null);
-      
+    
     if (error) throw error;
     
-    // Normalize data format
+    // Convert to our normalized format
     const normalizedData = (data || []).map(normalizeTrustedSource);
     
-    // Update local cache for performance
+    // Update local cache
     await saveLocalTrustedSources(normalizedData);
     
     return normalizedData;
   } catch (error) {
-    console.error('Failed to sync trusted sources:', error);
-    
-    // Fall back to cache if available
-    const cachedSources = await loadLocalTrustedSources();
-    return cachedSources.map(normalizeTrustedSource);
+    console.error('Error syncing trusted sources:', error);
+    return await loadLocalTrustedSources();
   }
 }
 
@@ -189,20 +187,16 @@ export async function addTrustedSource(email: string, userId?: string, descripti
       added_date: Date.now()  // For backward compatibility
     };
     
-    // If userId is provided, save to Supabase first
+    // Add to Supabase if userId is provided
     if (userId) {
-      console.log('Saving trusted source to Supabase with service role:', { userId, email, description });
+      console.log('Adding trusted source to Supabase with regular client:', { email, userId, description });
       
       try {
-        // Get Google user ID from storage
-        const { google_user_id } = await chrome.storage.local.get('google_user_id');
-        const { google_id } = await chrome.storage.local.get('google_id');
+        // Get a client with the proper headers
+        const supabase = await getSupabaseClient();
         
-        console.log('Google IDs available:', { google_user_id, google_id });
-        
-        // Try inserting directly with supabaseAdmin first
-        console.log('Directly inserting with supabaseAdmin');
-        const { data, error } = await supabaseAdmin
+        // Insert the new source
+        const { data, error } = await supabase
           .from('email_sources')
           .insert({
             user_id: userId,
@@ -214,46 +208,23 @@ export async function addTrustedSource(email: string, userId?: string, descripti
           .single();
           
         if (error) {
-          console.error('Error inserting trusted source directly:', error);
-          
-          // Fall back to using the background service
-          console.log('Falling back to background service');
-          
-          // Try using background service to insert with service role (bypassing RLS)
-          const response = await new Promise<any>((resolve) => {
-            chrome.runtime.sendMessage({
-              type: 'INSERT_TRUSTED_SOURCE',
-              payload: {
-                userId,
-                emailAddress: email,
-                description,
-                isActive: true,
-                googleUserId: google_user_id || google_id || null
-              }
-            }, (result) => {
-              console.log('Background service response:', result);
-              resolve(result || { success: false, error: 'No response from background service' });
-            });
-          });
-          
-          // Check if the background operation was successful
-          if (response && response.success && response.data) {
-            console.log('Successfully added trusted source via background service:', response.data);
-            newSource = normalizeTrustedSource(response.data);
-          } else {
-            console.error('Background service failed:', response?.error || 'Unknown error');
-            throw new Error(response?.error || 'Failed to add trusted source');
-          }
+          console.error('Error adding trusted source directly:', error);
+          // Continue with local storage operation
         } else if (data) {
-          console.log('Successfully added trusted source directly:', data);
-          newSource = normalizeTrustedSource(data);
+          console.log('Successfully added trusted source:', data);
+          // Update our local object with the database data
+          newSource = {
+            ...normalizeTrustedSource(data),
+            email: email,  // Keep backward compatibility
+            added_date: Date.now() // Keep backward compatibility
+          };
         }
       } catch (dbError) {
-        console.error('Database error when adding trusted source:', dbError);
-        throw dbError; // Rethrow to handle at the caller level
+        console.error('Database error adding trusted source:', dbError);
+        // Continue with local storage operation
       }
     } else {
-      console.log('No userId provided, skipping Supabase insertion');
+      console.log('No userId provided, skipping Supabase insert');
     }
     
     // Update local cache
@@ -268,7 +239,8 @@ export async function addTrustedSource(email: string, userId?: string, descripti
     return updatedSources;
   } catch (error) {
     console.error('Error adding trusted source:', error);
-    throw error; // Rethrow to handle at the caller level
+    // Return current sources rather than throwing
+    return await loadLocalTrustedSources();
   }
 }
 
@@ -277,12 +249,14 @@ export async function removeTrustedSource(email: string, userId?: string): Promi
   try {
     // Remove from Supabase if userId is provided
     if (userId) {
-      console.log('Removing trusted source from Supabase (setting is_active=false):', { email, userId });
+      console.log('Removing trusted source from Supabase with regular client:', { email, userId });
       
       try {
-        // Try removing directly with supabaseAdmin first
-        console.log('Directly removing with supabaseAdmin');
-        const { data, error } = await supabaseAdmin
+        // Get a client with the proper headers
+        const supabase = await getSupabaseClient();
+        
+        // Update is_active to false
+        const { data, error } = await supabase
           .from('email_sources')
           .update({ is_active: false })
           .eq('user_id', userId)
@@ -293,50 +267,19 @@ export async function removeTrustedSource(email: string, userId?: string): Promi
           
         if (error) {
           console.error('Error removing trusted source directly:', error);
-          
-          // Fall back to using the background service
-          console.log('Falling back to background service');
-          
-          // Get Google user ID from storage
-          const { google_user_id } = await chrome.storage.local.get('google_user_id');
-          const { google_id } = await chrome.storage.local.get('google_id');
-          
-          console.log('Google IDs available:', { google_user_id, google_id });
-          
-          // Try using background service first (bypassing RLS)
-          const response = await new Promise<any>((resolve) => {
-            chrome.runtime.sendMessage({
-              type: 'REMOVE_TRUSTED_SOURCE',
-              payload: {
-                userId,
-                emailAddress: email,
-                googleUserId: google_user_id || google_id || null
-              }
-            }, (result) => {
-              console.log('Background service response:', result);
-              resolve(result || { success: false, error: 'No response from background service' });
-            });
-          });
-          
-          // Check if background service was successful
-          if (response && response.success) {
-            console.log('Successfully removed trusted source via background service:', response.data);
-          } else {
-            console.error('Background service failed:', response?.error || 'Unknown error');
-            throw new Error(response?.error || 'Failed to remove trusted source');
-          }
+          // Continue with local storage operation
         } else {
-          console.log('Successfully removed trusted source directly:', data);
+          console.log('Successfully removed trusted source (set inactive):', data);
         }
       } catch (dbError) {
         console.error('Database error removing trusted source:', dbError);
-        throw dbError; // Rethrow to handle at the caller level
+        // Continue with local storage operation
       }
     } else {
       console.log('No userId provided, skipping Supabase update');
     }
     
-    // Update local cache
+    // Update local cache regardless of Supabase success
     const localSources = await loadLocalTrustedSources();
     console.log('Current local trusted sources:', localSources.length);
     
@@ -352,7 +295,8 @@ export async function removeTrustedSource(email: string, userId?: string): Promi
     return updatedSources;
   } catch (error) {
     console.error('Error removing trusted source:', error);
-    throw error; // Rethrow to handle at the caller level
+    // Return current sources rather than throwing
+    return await loadLocalTrustedSources();
   }
 }
 
@@ -361,12 +305,14 @@ export async function deleteTrustedSource(email: string, userId?: string): Promi
   try {
     // Delete from Supabase if userId is provided
     if (userId) {
-      console.log('Deleting trusted source from Supabase (setting deleted_at):', { email, userId });
+      console.log('Deleting trusted source from Supabase with regular client:', { email, userId });
       
       try {
-        // Try direct deletion first
-        console.log('Directly deleting with supabaseAdmin');
-        const { data, error } = await supabaseAdmin
+        // Get a client with the proper headers
+        const supabase = await getSupabaseClient();
+        
+        // Update deleted_at timestamp
+        const { data, error } = await supabase
           .from('email_sources')
           .update({ deleted_at: new Date().toISOString() })
           .eq('user_id', userId)
@@ -376,36 +322,13 @@ export async function deleteTrustedSource(email: string, userId?: string): Promi
         
         if (error) {
           console.error('Error deleting trusted source directly:', error);
-          
-          // Fall back to using the background service
-          console.log('Falling back to background service for deletion');
-          
-          // Try using background service
-          const response = await new Promise<any>((resolve) => {
-            chrome.runtime.sendMessage({
-              type: 'DELETE_TRUSTED_SOURCE',
-              payload: {
-                userId,
-                emailAddress: email
-              }
-            }, (result) => {
-              console.log('Background service deletion response:', result);
-              resolve(result || { success: false, error: 'No response from background service' });
-            });
-          });
-          
-          if (!response || !response.success) {
-            console.error('Background service deletion failed:', response?.error || 'Unknown error');
-            throw new Error(response?.error || 'Failed to delete trusted source');
-          }
-          
-          console.log('Successfully deleted trusted source via background service:', response.data);
+          // Continue with local storage operation
         } else {
-          console.log('Successfully deleted trusted source directly:', data);
+          console.log('Successfully deleted trusted source (set deleted_at):', data);
         }
       } catch (dbError) {
         console.error('Database error deleting trusted source:', dbError);
-        throw dbError; // Rethrow to handle at the caller level
+        // Continue with local storage operation
       }
     } else {
       console.log('No userId provided, skipping Supabase update');
@@ -427,64 +350,100 @@ export async function deleteTrustedSource(email: string, userId?: string): Promi
     return updatedSources;
   } catch (error) {
     console.error('Error deleting trusted source:', error);
-    throw error; // Rethrow to handle at the caller level
+    // Return current sources rather than throwing
+    return await loadLocalTrustedSources();
   }
 }
 
-// Get inactive trusted sources (is_active = false, deleted_at = null)
+// Get all trusted sources (active and inactive, excluding deleted)
+export async function getAllTrustedSources(userId: string): Promise<TrustedSource[]> {
+  try {
+    console.log('Getting all trusted sources for user:', userId);
+    
+    // Get a client with the proper headers
+    const supabase = await getSupabaseClient();
+    
+    const { data, error } = await supabase
+      .from('email_sources')
+      .select('*')
+      .eq('user_id', userId)
+      .is('deleted_at', null);
+    
+    if (error) throw error;
+    
+    return (data || []).map(normalizeTrustedSource);
+  } catch (error) {
+    console.error('Error fetching all trusted sources:', error);
+    return [];
+  }
+}
+
+// Get inactive trusted sources (is_active = false, not deleted)
 export async function getInactiveTrustedSources(userId: string): Promise<TrustedSource[]> {
   try {
-    console.log('Getting inactive trusted sources with service role for user:', userId);
+    console.log('Getting inactive trusted sources for user:', userId);
     
-    const { data, error } = await supabaseAdmin
+    const supabase = await getSupabaseClient();
+    const { data, error } = await supabase
       .from('email_sources')
       .select('*')
       .eq('user_id', userId)
       .eq('is_active', false)
       .is('deleted_at', null);
-      
+
     if (error) throw error;
-    
-    // Normalize data format
-    const normalizedData = (data || []).map(normalizeTrustedSource);
-    
-    return normalizedData;
+
+    return (data || []).map(normalizeTrustedSource);
   } catch (error) {
     console.error('Error fetching inactive trusted sources:', error);
     return [];
   }
 }
 
-// Reactivate a source that was previously removed
-export async function reactivateTrustedSource(email: string, userId?: string): Promise<TrustedSource[]> {
+// Reactivate a trusted source
+export async function reactivateTrustedSource(email: string, userId: string): Promise<TrustedSource[]> {
   try {
-    if (!userId) {
-      console.log('No userId provided, skipping reactivation');
-      return await loadLocalTrustedSources();
-    }
+    console.log('Reactivating trusted source:', email);
     
-    console.log('Reactivating trusted source in Supabase with service role:', { email, userId });
-    
-    // Use service role client to bypass RLS
-    const { error } = await supabaseAdmin
+    const supabase = await getSupabaseClient();
+    const { error } = await supabase
       .from('email_sources')
       .update({ is_active: true })
       .eq('user_id', userId)
       .eq('email_address', email)
       .is('deleted_at', null);
-    
-    if (error) {
-      console.error('Error reactivating trusted source in Supabase:', error);
-      throw error;
-    }
-    
-    console.log('Successfully reactivated trusted source');
-    
-    // Sync all sources from Supabase after reactivation
-    return await syncTrustedSources(userId);
+
+    if (error) throw error;
+
+    return getTrustedSources(userId);
   } catch (error) {
     console.error('Error reactivating trusted source:', error);
-    return await loadLocalTrustedSources();
+    return [];
+  }
+}
+
+// Regular getTrustedSources function
+export async function getTrustedSources(userId: string): Promise<TrustedSource[]> {
+  try {
+    console.log('Getting trusted sources for user:', userId);
+    
+    const supabase = await getSupabaseClient();
+    const { data, error } = await supabase
+      .from('email_sources')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .is('deleted_at', null);
+
+    if (error) throw error;
+
+    // Normalize data format
+    const normalizedData = (data || []).map(normalizeTrustedSource);
+
+    return normalizedData;
+  } catch (error) {
+    console.error('Error fetching trusted sources:', error);
+    return [];
   }
 }
 
@@ -554,66 +513,30 @@ export async function saveUserSettings(
   }
 }
 
-export async function getTrustedSources(userId: string): Promise<TrustedSource[]> {
+// Simpler database tables check
+export async function checkDatabaseTables(): Promise<{
+  exists: boolean;
+  tables: string[];
+}> {
   try {
-    console.log('Getting trusted sources with service role for user:', userId);
-    const { data, error } = await supabaseAdmin
+    console.log('Checking if database tables exist');
+    
+    // Use regular client, just check if email_sources exists with a simple count query
+    const supabase = await getSupabaseClient();
+    
+    // Just try to count records
+    const { count, error } = await supabase
       .from('email_sources')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('deleted_at', null);
-
-    if (error) throw error;
-
-    // Normalize data format
-    const normalizedData = (data || []).map(normalizeTrustedSource);
-
-    return normalizedData;
-  } catch (error) {
-    console.error('Error fetching trusted sources:', error);
-    return [];
-  }
-}
-
-// New function to check database tables and views
-export async function checkDatabaseTables(): Promise<{ exists: boolean; tables: string[] }> {
-  try {
-    console.log('Checking if database tables and views exist');
+      .select('*', { count: 'exact', head: true });
     
-    // Query to list all tables and views in the public schema
-    const { data, error } = await supabaseAdmin.rpc('list_tables_and_views');
-    
-    if (error) {
-      console.error('Error checking database tables:', error);
-      
-      // Try an alternative approach with a direct query
-      const { data: tableData, error: tableError } = await supabaseAdmin
-        .from('pg_catalog.pg_tables')
-        .select('tablename')
-        .eq('schemaname', 'public');
-      
-      if (tableError) {
-        console.error('Error with alternative table check:', tableError);
-        return { exists: false, tables: [] };
-      }
-      
-      const tables = tableData?.map(t => t.tablename) || [];
-      console.log('Tables found with alternative method:', tables);
-      
-      return {
-        exists: tables.includes('email_sources'),
-        tables
-      };
+    // If no error, the table exists
+    if (!error) {
+      console.log('email_sources table exists');
+      return { exists: true, tables: ['email_sources'] };
     }
     
-    const tables = data || [];
-    console.log('Database tables and views:', tables);
-    
-    return {
-      exists: tables.includes('email_sources') || tables.includes('trusted_sources_view'),
-      tables: tables
-    };
+    console.error('Error checking tables:', error);
+    return { exists: false, tables: [] };
   } catch (error) {
     console.error('Error checking database tables:', error);
     return { exists: false, tables: [] };
