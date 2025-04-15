@@ -5,6 +5,7 @@ import {
   getUserSettings as getSettings,
   saveUserSettings as saveSettings
 } from './supabase/client';
+import { resolveUserIdentity } from './identity/userIdentityService';
 
 // Save to local Chrome storage
 export async function saveLocalTrustedSources(sources: TrustedSource[]): Promise<void> {
@@ -166,191 +167,311 @@ export async function loadTrustedSources(userId?: string): Promise<TrustedSource
   }
 }
 
-// Add a new trusted source to both Supabase and local cache
-export async function addTrustedSource(email: string, userId?: string, description: string = ''): Promise<TrustedSource[]> {
+/**
+ * Debug function to retrieve request details, including headers and user info
+ */
+export async function debug_request_details(userId: string) {
   try {
-    // Check if the email already exists in local cache first (for quick validation)
-    const localSources = await loadLocalTrustedSources();
-    if (localSources.some(source => 
-        (source.email_address && source.email_address.toLowerCase() === email.toLowerCase()) || 
-        (source.email && source.email.toLowerCase() === email.toLowerCase()))) {
-      console.log('Email already exists in local cache:', email);
-      return localSources;
+    const supabase = await getSupabaseClient();
+    
+    // Call our new debug_headers function
+    const { data: headerData, error: headerError } = await supabase
+      .rpc('debug_headers');
+    
+    if (headerError) {
+      console.error('Error getting header debug info:', headerError);
+      return { success: false, error: headerError };
     }
     
-    // Create new trusted source object
-    let newSource: TrustedSource = {
-      email_address: email,
-      description,
-      is_active: true,
-      email: email,  // For backward compatibility
-      added_date: Date.now()  // For backward compatibility
+    // Check if user exists with this ID
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('id, email, google_user_id')
+      .eq('id', userId)
+      .single();
+    
+    if (userError) {
+      console.log('Error checking user existence:', userError);
+    }
+    
+    return {
+      success: true,
+      headers: headerData,
+      user: userData || null
     };
-    
-    // Add to Supabase if userId is provided
-    if (userId) {
-      console.log('Adding trusted source to Supabase with regular client:', { email, userId, description });
-      
-      try {
-        // Get a client with the proper headers
-        const supabase = await getSupabaseClient();
-        
-        // Insert the new source
-        const { data, error } = await supabase
-          .from('email_sources')
-          .insert({
-            user_id: userId,
-            email_address: email,
-            description: description || null,
-            is_active: true
-          })
-          .select()
-          .single();
-          
-        if (error) {
-          console.error('Error adding trusted source directly:', error);
-          // Continue with local storage operation
-        } else if (data) {
-          console.log('Successfully added trusted source:', data);
-          // Update our local object with the database data
-          newSource = {
-            ...normalizeTrustedSource(data),
-            email: email,  // Keep backward compatibility
-            added_date: Date.now() // Keep backward compatibility
-          };
-        }
-      } catch (dbError) {
-        console.error('Database error adding trusted source:', dbError);
-        // Continue with local storage operation
-      }
-    } else {
-      console.log('No userId provided, skipping Supabase insert');
-    }
-    
-    // Update local cache
-    const updatedSources = [...localSources.filter(source => 
-      (source.email_address && source.email_address.toLowerCase() !== email.toLowerCase()) &&
-      (source.email && source.email.toLowerCase() !== email.toLowerCase())
-    ), newSource];
-    
-    await saveLocalTrustedSources(updatedSources);
-    console.log('Updated local cache with new trusted source');
-    
-    return updatedSources;
   } catch (error) {
-    console.error('Error adding trusted source:', error);
-    // Return current sources rather than throwing
-    return await loadLocalTrustedSources();
+    console.error('Error in debug_request_details:', error);
+    return { success: false, error };
   }
 }
 
-// Remove a trusted source from both Supabase and local cache (sets is_active to false)
-export async function removeTrustedSource(email: string, userId?: string): Promise<TrustedSource[]> {
+/**
+ * Adds a trusted source to the database
+ */
+export async function addTrustedSource(
+  email: string,
+  userId: string,
+  description?: string
+): Promise<TrustedSourceView[]> {
   try {
-    // Remove from Supabase if userId is provided
-    if (userId) {
-      console.log('Removing trusted source from Supabase with regular client:', { email, userId });
+    console.log('Adding trusted source to Supabase with regular client:', { email, userId, description });
+    
+    // Use resolveUserIdentity to guarantee we have the correct Supabase ID
+    const identity = await resolveUserIdentity();
+    
+    // Use the Supabase ID from identity if available, fall back to passed userId if needed
+    const effectiveUserId = identity.supabaseId || userId;
+    
+    console.log('Using effective user ID for database operation:', effectiveUserId);
+    
+    // Create new source record
+    const supabase = await getSupabaseClient();
+    
+    // First try to call our debug function to see if headers are being passed correctly
+    const debugInfo = await debug_request_details(effectiveUserId);
+    console.log('Debug info before adding trusted source:', debugInfo);
+    
+    const { data, error } = await supabase
+      .from('email_sources')
+      .insert({
+        email_address: email,
+        user_id: effectiveUserId, // Use the resolved Supabase ID
+        description: description || '',
+        is_active: true
+      })
+      .select();
+    
+    if (error) {
+      console.error('Error adding trusted source directly:', error);
       
-      try {
-        // Get a client with the proper headers
-        const supabase = await getSupabaseClient();
+      // Special handling for permission errors (RLS failures)
+      if (error.code === '42501') { // PostgreSQL permission error code
+        console.log('Permission error encountered. Checking user and headers...');
         
-        // Update is_active to false
+        // Get detailed debug info
+        const detailedDebugInfo = await debug_request_details(effectiveUserId);
+        console.log('Detailed debug info after permission error:', detailedDebugInfo);
+        
+        // Check if the user exists with this ID
+        const { data: userExists, error: userCheckError } = await supabase
+          .from('users')
+          .select('id, email, google_user_id')
+          .eq('id', effectiveUserId)
+          .single();
+        
+        if (userCheckError) {
+          console.error('Error checking if user exists:', userCheckError);
+        } else if (!userExists) {
+          console.error('User does not exist with ID:', effectiveUserId);
+        } else {
+          console.log('User exists:', userExists);
+          
+          // Try to see if RLS knows about this user's Google ID
+          const googleId = userExists.google_user_id;
+          if (googleId) {
+            const { data: googleCheck } = await supabase
+              .from('users')
+              .select('id')
+              .eq('google_user_id', googleId)
+              .single();
+            
+            console.log('Google ID lookup result:', googleCheck);
+          }
+        }
+      }
+      
+      // Try to fall back to the local storage approach for immediate UI updates
+      const localSources = await loadLocalTrustedSources();
+      const existingSource = localSources.find(s => 
+        (s.email_address && s.email_address.toLowerCase() === email.toLowerCase()) || 
+        (s.email && s.email.toLowerCase() === email.toLowerCase())
+      );
+      
+      if (!existingSource) {
+        const newSource: TrustedSource = {
+          id: crypto.randomUUID(),
+          user_id: effectiveUserId,
+          email_address: email,
+          email: email,
+          description: description || '',
+          is_active: true,
+          created_at: new Date().toISOString(),
+          deleted_at: null,
+          added_date: Date.now()
+        };
+        
+        // Update local cache with new trusted source
+        console.log('Updated local cache with new trusted source');
+        const updatedSources = [...localSources, newSource];
+        await saveLocalTrustedSources(updatedSources);
+        
+        // Return local sources as trusted source view format
+        return convertLocalToTrustedSourceViews(updatedSources);
+      }
+      
+      // Re-throw error for upper layers to handle
+      throw error;
+    }
+    
+    // Fetch the latest data to ensure UI is in sync with DB
+    return await getTrustedSourcesView(effectiveUserId);
+  } catch (error) {
+    console.error('Error in addTrustedSource:', error);
+    throw error;
+  }
+}
+
+/**
+ * Helper function to convert local trusted sources to view format
+ */
+function convertLocalToTrustedSourceViews(sources: TrustedSource[]): TrustedSourceView[] {
+  return sources.filter(s => s.is_active).map(source => ({
+    id: source.id || '',
+    user_id: source.user_id || '',
+    email_address: source.email_address || source.email || '',
+    description: source.description || '',
+    is_active: source.is_active,
+    created_at: source.created_at || new Date().toISOString(),
+    deleted_at: source.deleted_at,
+    total_sources: sources.filter(s => s.is_active).length,
+    max_trusted_sources: 3,
+    is_limited: true,
+    plan: 'free'
+  }));
+}
+
+// Remove a trusted source from both Supabase and local cache (sets is_active to false)
+export async function removeTrustedSource(email: string, userId: string): Promise<TrustedSource[]> {
+  try {
+    console.log('Removing trusted source:', email);
+    
+    // Use resolveUserIdentity to guarantee we have the correct Supabase ID
+    const identity = await resolveUserIdentity();
+    const effectiveUserId = identity.supabaseId || userId;
+    
+    console.log('Using effective user ID for database operation:', effectiveUserId);
+    
+    // Get current local sources
+    const localSources = await loadLocalTrustedSources();
+    
+    // Find the source to update
+    const emailAddressLower = email.toLowerCase();
+    const sourceIndex = localSources.findIndex(source => 
+      (source.email_address && source.email_address.toLowerCase() === emailAddressLower) ||
+      (source.email && source.email.toLowerCase() === emailAddressLower)
+    );
+    
+    if (sourceIndex === -1) {
+      console.log('Source not found in local cache:', email);
+      return localSources;
+    }
+    
+    // Update in Supabase if userId is provided
+    if (effectiveUserId) {
+      try {
+        const supabase = await getSupabaseClient();
         const { data, error } = await supabase
           .from('email_sources')
           .update({ is_active: false })
-          .eq('user_id', userId)
+          .eq('user_id', effectiveUserId)
           .eq('email_address', email)
-          .is('deleted_at', null)
-          .select()
-          .single();
-          
+          .select();
+        
         if (error) {
-          console.error('Error removing trusted source directly:', error);
-          // Continue with local storage operation
+          console.error('Error removing trusted source from database:', error);
+          // Continue with local update
         } else {
-          console.log('Successfully removed trusted source (set inactive):', data);
+          console.log('Successfully removed trusted source in database');
         }
       } catch (dbError) {
         console.error('Database error removing trusted source:', dbError);
-        // Continue with local storage operation
+        // Continue with local update
       }
-    } else {
-      console.log('No userId provided, skipping Supabase update');
     }
     
-    // Update local cache regardless of Supabase success
-    const localSources = await loadLocalTrustedSources();
-    console.log('Current local trusted sources:', localSources.length);
-    
-    const updatedSources = localSources.filter(source => 
-      (source.email_address && source.email_address.toLowerCase() !== email.toLowerCase()) && 
-      (source.email && source.email.toLowerCase() !== email.toLowerCase())
-    );
-    
-    console.log('Updated local sources count:', updatedSources.length);
+    // Update locally regardless of database success
+    const updatedSources = [...localSources];
+    updatedSources[sourceIndex] = {
+      ...updatedSources[sourceIndex],
+      is_active: false
+    };
     
     await saveLocalTrustedSources(updatedSources);
+    console.log('Updated local cache, removed trusted source');
     
     return updatedSources;
   } catch (error) {
     console.error('Error removing trusted source:', error);
-    // Return current sources rather than throwing
     return await loadLocalTrustedSources();
   }
 }
 
-// Permanently delete a trusted source (sets deleted_at timestamp)
-export async function deleteTrustedSource(email: string, userId?: string): Promise<TrustedSource[]> {
+// Delete a trusted source completely (sets deleted_at)
+export async function deleteTrustedSource(email: string, userId: string): Promise<TrustedSource[]> {
   try {
-    // Delete from Supabase if userId is provided
-    if (userId) {
-      console.log('Deleting trusted source from Supabase with regular client:', { email, userId });
-      
+    console.log('Deleting trusted source:', email);
+    
+    // Use resolveUserIdentity to guarantee we have the correct Supabase ID
+    const identity = await resolveUserIdentity();
+    const effectiveUserId = identity.supabaseId || userId;
+    
+    console.log('Using effective user ID for database operation:', effectiveUserId);
+    
+    // Get current local sources
+    const localSources = await loadLocalTrustedSources();
+    
+    // Find the source to update
+    const emailAddressLower = email.toLowerCase();
+    const sourceIndex = localSources.findIndex(source => 
+      (source.email_address && source.email_address.toLowerCase() === emailAddressLower) ||
+      (source.email && source.email.toLowerCase() === emailAddressLower)
+    );
+    
+    if (sourceIndex === -1) {
+      console.log('Source not found in local cache:', email);
+      return localSources;
+    }
+    
+    // Update in Supabase if userId is provided
+    if (effectiveUserId) {
       try {
-        // Get a client with the proper headers
         const supabase = await getSupabaseClient();
-        
-        // Update deleted_at timestamp
         const { data, error } = await supabase
           .from('email_sources')
-          .update({ deleted_at: new Date().toISOString() })
-          .eq('user_id', userId)
+          .update({ 
+            is_active: false,
+            deleted_at: new Date().toISOString()
+          })
+          .eq('user_id', effectiveUserId)
           .eq('email_address', email)
-          .select()
-          .single();
+          .select();
         
         if (error) {
-          console.error('Error deleting trusted source directly:', error);
-          // Continue with local storage operation
+          console.error('Error deleting trusted source from database:', error);
+          // Continue with local update
         } else {
-          console.log('Successfully deleted trusted source (set deleted_at):', data);
+          console.log('Successfully deleted trusted source in database');
         }
       } catch (dbError) {
         console.error('Database error deleting trusted source:', dbError);
-        // Continue with local storage operation
+        // Continue with local update
       }
-    } else {
-      console.log('No userId provided, skipping Supabase update');
     }
     
-    // Update local cache - same as remove for local storage
-    const localSources = await loadLocalTrustedSources();
-    console.log('Current local trusted sources:', localSources.length);
-    
-    const updatedSources = localSources.filter(source => 
-      (source.email_address && source.email_address.toLowerCase() !== email.toLowerCase()) && 
-      (source.email && source.email.toLowerCase() !== email.toLowerCase())
-    );
-    
-    console.log('Updated local sources count:', updatedSources.length);
+    // Update locally regardless of database success
+    const updatedSources = [...localSources];
+    updatedSources[sourceIndex] = {
+      ...updatedSources[sourceIndex],
+      is_active: false,
+      deleted_at: new Date().toISOString()
+    };
     
     await saveLocalTrustedSources(updatedSources);
+    console.log('Updated local cache, deleted trusted source');
     
     return updatedSources;
   } catch (error) {
     console.error('Error deleting trusted source:', error);
-    // Return current sources rather than throwing
     return await loadLocalTrustedSources();
   }
 }

@@ -100,17 +100,8 @@ You are an expert Chrome extension developer, proficient in JavaScript/TypeScrip
 - Ensure cross-browser compatibility
 - Write maintainable and scalable code
 
-## SUPABBASE-DB-SCHEMA-UPDATE-VIA-MCP
+## SUPABBASE-DB-SCHEMA-UPDATE-VIA-MCP (project ID#: eipfspwyqzejhmybpofk)
 
-Rule: at the start of every coding session:
-
-1. Run `npm run update-schema:mcp` to securely sync schema using Cursor's MCP tools
-2. Review the updated schema files and generated types in:
-      - tables/
-      - views/
-      - functions/
-      - database.types.ts
-3. Check SCHEMA_SUMMARY.md to understand any structural changes
-4. Update code references to match the current schema before continuing work
-
-Supabase project ID: eipfspwyqzejhmybpofk
+- Always verify database structure at @supabase-env.js file for tables and views definition, @database.types.ts for functions definition
+- Use Supabase MCP tools to get the latest database structure if needed
+  
