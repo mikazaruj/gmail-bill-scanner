@@ -31,6 +31,9 @@ const SCOPES = [
   "https://www.googleapis.com/auth/userinfo.profile"
 ];
 
+// At the very top of the file
+console.log('=== DEBUG: Background script with trusted sources handlers loaded ===');
+
 // Background service worker for Gmail Bill Scanner
 console.log('=== Gmail Bill Scanner background service worker starting up... ===');
 console.warn('Background worker started - this log should be visible');
@@ -1522,6 +1525,155 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true; // Keep the response channel open
       } catch (error) {
         console.error('Background: Error processing trusted source insert:', error);
+        sendResponse({ 
+          success: false, 
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+      break;
+      
+    case 'REMOVE_TRUSTED_SOURCE':
+      try {
+        const { userId, emailAddress, googleUserId } = message.payload || {};
+        
+        if (!userId || !emailAddress) {
+          sendResponse({ 
+            success: false, 
+            error: 'Missing required parameters: userId and emailAddress are required' 
+          });
+          return;
+        }
+        
+        console.log('Background: Removing trusted source with service role:', 
+          { userId, emailAddress, googleUserId });
+        
+        // Import the client module to access the Supabase client
+        import('../services/supabase/client').then(async (module) => {
+          try {
+            // Get the Supabase client with service role key (only available in background)
+            if (!module.supabase) {
+              throw new Error('Supabase client not available');
+            }
+            
+            // Get service role client if available (this should be a secure function that doesn't expose the key)
+            const supabaseAdmin = await module.getSupabaseClient() || module.supabase;
+            
+            // Update the record to set is_active=false directly with the service role key
+            const { data, error } = await supabaseAdmin
+              .from('email_sources')
+              .update({ is_active: false })
+              .eq('user_id', userId)
+              .eq('email_address', emailAddress)
+              .is('deleted_at', null)
+              .select()
+              .single();
+            
+            if (error) {
+              console.error('Background: Error removing trusted source:', error);
+              sendResponse({ 
+                success: false, 
+                error: error.message || 'Failed to remove trusted source'
+              });
+              return;
+            }
+            
+            console.log('Background: Successfully removed trusted source:', data);
+            sendResponse({ 
+              success: true, 
+              data,
+              message: 'Successfully removed trusted source'
+            });
+          } catch (error) {
+            console.error('Background: Error in service role operation for removing source:', error);
+            sendResponse({
+              success: false, 
+              error: error instanceof Error ? error.message : 'Unknown error in service operation'
+            });
+          }
+        }).catch(error => {
+          console.error('Background: Error importing client module for removing source:', error);
+          sendResponse({
+            success: false,
+            error: 'Failed to import service functions'
+          });
+        });
+        return true; // Keep the response channel open
+      } catch (error) {
+        console.error('Background: Error processing trusted source removal:', error);
+        sendResponse({ 
+          success: false, 
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+      break;
+
+    case 'DELETE_TRUSTED_SOURCE':
+      try {
+        const { userId, emailAddress } = message.payload || {};
+        
+        if (!userId || !emailAddress) {
+          sendResponse({ 
+            success: false, 
+            error: 'Missing required parameters: userId and emailAddress are required' 
+          });
+          return;
+        }
+        
+        console.log('Background: Permanently deleting trusted source with service role:', 
+          { userId, emailAddress });
+        
+        // Import the client module to access the Supabase client
+        import('../services/supabase/client').then(async (module) => {
+          try {
+            // Get the Supabase client with service role key (only available in background)
+            if (!module.supabase) {
+              throw new Error('Supabase client not available');
+            }
+            
+            // Get service role client if available (this should be a secure function that doesn't expose the key)
+            const supabaseAdmin = await module.getSupabaseClient() || module.supabase;
+            
+            // Update the record to set deleted_at timestamp directly with the service role key
+            const { data, error } = await supabaseAdmin
+              .from('email_sources')
+              .update({ deleted_at: new Date().toISOString() })
+              .eq('user_id', userId)
+              .eq('email_address', emailAddress)
+              .select()
+              .single();
+            
+            if (error) {
+              console.error('Background: Error deleting trusted source:', error);
+              sendResponse({ 
+                success: false, 
+                error: error.message || 'Failed to delete trusted source'
+              });
+              return;
+            }
+            
+            console.log('Background: Successfully deleted trusted source:', data);
+            sendResponse({ 
+              success: true, 
+              data,
+              message: 'Successfully deleted trusted source'
+            });
+          } catch (error) {
+            console.error('Background: Error in service role operation for deleting source:', error);
+            sendResponse({
+              success: false, 
+              error: error instanceof Error ? error.message : 'Unknown error in service operation'
+            });
+          }
+        }).catch(error => {
+          console.error('Background: Error importing client module for deleting source:', error);
+          sendResponse({
+            success: false,
+            error: 'Failed to import service functions'
+          });
+        });
+        return true; // Keep the response channel open
+      } catch (error) {
+        console.error('Background: Error processing trusted source deletion:', error);
         sendResponse({ 
           success: false, 
           error: error instanceof Error ? error.message : 'Unknown error'

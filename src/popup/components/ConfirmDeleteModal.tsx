@@ -57,7 +57,10 @@ const ConfirmDeleteModal = ({ isOpen, onClose, onConfirm, email, isDelete = fals
             </button>
             <button
               type="button"
-              onClick={onConfirm}
+              onClick={() => {
+                console.log('ConfirmDeleteModal: onConfirm button clicked', { email, isDelete });
+                onConfirm();
+              }}
               className={confirmClass}
             >
               {confirmText}

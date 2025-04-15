@@ -21,7 +21,7 @@ import {
   UserSheet 
 } from '../../services/connectedServices';
 import { resolveUserIdentity, ensureUserRecord } from '../../services/identity/userIdentityService';
-import { getTrustedSourcesView, addTrustedSource, removeTrustedSource, deleteTrustedSource, TrustedSourceView } from '../../services/trustedSources';
+import { getTrustedSourcesView, addTrustedSource, removeTrustedSource, deleteTrustedSource, TrustedSourceView, checkDatabaseTables } from '../../services/trustedSources';
 import { getFieldMappings, FieldMapping } from '../../services/fieldMapping';
 
 // Add types for gapi
@@ -140,6 +140,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   useEffect(() => {
     const fetchData = async () => {
       try {
+        // Check if the required database tables exist
+        console.log('Checking database tables...');
+        const dbTablesCheck = await checkDatabaseTables();
+        console.log('Database tables check result:', dbTablesCheck);
+        
         // Use our improved identity resolution
         const identity = await resolveUserIdentity();
         
@@ -376,13 +381,17 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       
       // Ensure Google ID is in headers/storage
       await ensureGoogleIdHeader(userId);
+
+      console.log('About to call addTrustedSource service function');
       
       // Call the addTrustedSource service function with the userId parameter
       const updatedSources = await addTrustedSource(email, userId, description);
-      console.log('Trusted sources updated:', updatedSources);
+      console.log('Trusted sources updated, response:', updatedSources);
       
+      console.log('About to refresh trusted sources from view');
       // Refresh trusted sources from the view to get updated counts
       const sources = await getTrustedSourcesView(userId);
+      console.log('Received sources from view:', sources);
       setTrustedSources(sources);
       
       // Show success message (you can implement this with a toast notification or similar)
@@ -409,6 +418,8 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   const handleDeleteSource = async () => {
     if (!emailToDelete) return;
     
+    console.log('Starting handleDeleteSource with email:', emailToDelete, 'isDelete:', isDeleteAction);
+    
     try {
       // Pass userId if available to enable Supabase sync
       const userId = userProfile?.id;
@@ -417,20 +428,31 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         return;
       }
       
+      console.log('User ID available:', userId);
+      
       // Ensure Google ID is in headers/storage
       await ensureGoogleIdHeader(userId);
       
+      console.log('About to call trusted source service function');
+      
       // Call the appropriate function based on the action type
+      let result;
       if (isDeleteAction) {
         console.log('Permanently deleting trusted source:', emailToDelete);
-        await deleteTrustedSource(emailToDelete, userId);
+        result = await deleteTrustedSource(emailToDelete, userId);
+        console.log('Delete response:', result);
       } else {
         console.log('Removing (deactivating) trusted source:', emailToDelete);
-        await removeTrustedSource(emailToDelete, userId);
+        result = await removeTrustedSource(emailToDelete, userId);
+        console.log('Remove response:', result);
       }
       
+      console.log('Successfully completed delete/remove operation, response:', result);
+      
+      console.log('About to refresh trusted sources from view');
       // Refresh trusted sources from the view to get updated counts
       const sources = await getTrustedSourcesView(userId);
+      console.log('Received sources from view:', sources);
       setTrustedSources(sources);
       
       // Close the modal
@@ -1074,10 +1096,17 @@ const Settings = ({ onNavigate }: SettingsProps) => {
               ))}
             </div>
             
+            {/* Debug information */}
+            {console.log('Debug trusted sources:', { 
+              trustedSourcesLength: trustedSources.length, 
+              maxTrustedSources, 
+              isLimited,
+              isButtonDisabled: trustedSources.length >= maxTrustedSources && isLimited
+            })}
+            
             <button 
               className="w-full p-2 border border-dashed border-gray-300 hover:border-gray-400 bg-white rounded-lg text-sm flex items-center justify-center text-gray-700 hover:text-gray-900 transition-colors"
               onClick={handleShowAddModal}
-              disabled={trustedSources.length >= maxTrustedSources && isLimited}
             >
               + Add trusted source
             </button>
