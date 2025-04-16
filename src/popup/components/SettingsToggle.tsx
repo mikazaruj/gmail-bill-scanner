@@ -15,6 +15,13 @@ const SettingsToggle = ({
   disabled = false,
   proFeature = false
 }: SettingsToggleProps) => {
+  // Handle direct click on the toggle container
+  const handleToggleClick = () => {
+    if (!disabled) {
+      onChange(!isEnabled);
+    }
+  };
+
   return (
     <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
       <div className="flex items-center">
@@ -23,7 +30,10 @@ const SettingsToggle = ({
           <span className="ml-1.5 px-1.5 py-0.5 bg-purple-100 text-purple-800 text-xs font-medium rounded">PRO</span>
         )}
       </div>
-      <div className={`relative inline-block w-8 align-middle select-none ${disabled ? 'opacity-50' : ''}`}>
+      <div 
+        className={`relative inline-block w-8 align-middle select-none ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+        onClick={handleToggleClick}
+      >
         <input 
           type="checkbox" 
           className="sr-only"
@@ -32,7 +42,9 @@ const SettingsToggle = ({
           onChange={(e) => onChange(e.target.checked)}
         />
         <div className="block bg-gray-300 w-8 h-5 rounded-full"></div>
-        <div className={`dot absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition transform ${isEnabled ? 'translate-x-3' : ''} shadow-sm`}></div>
+        <div 
+          className={`dot absolute left-0.5 top-0.5 bg-white w-4 h-4 rounded-full transition transform ${isEnabled ? 'translate-x-3' : ''} shadow-sm`}
+        ></div>
       </div>
     </div>
   );

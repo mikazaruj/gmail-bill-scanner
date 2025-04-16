@@ -1891,3 +1891,74 @@ export async function getSupabaseUserIdFromGoogleId(googleId: string): Promise<s
     return null;
   }
 }
+
+/**
+ * Verify the Supabase connection and reconnect if needed.
+ * This is useful when toggle buttons are pressed and the connection might be stale.
+ */
+export const verifySupabaseConnection = async (): Promise<boolean> => {
+  try {
+    console.log('Verifying Supabase connection...');
+    
+    // First check if we're connected
+    const { data, error } = await supabase.auth.getSession();
+    
+    if (error) {
+      console.error('Error checking Supabase session:', error);
+      return false;
+    }
+    
+    // If we have an active session, we're good
+    if (data.session) {
+      console.log('Active Supabase session verified');
+      return true;
+    }
+    
+    console.log('No active session found, attempting to recover from storage...');
+    
+    // Try to get the token from storage
+    const storage = await chrome.storage.local.get(['auth_token', 'gmail-bill-scanner-auth']);
+    const auth_token = storage.auth_token || (storage['gmail-bill-scanner-auth'] ? JSON.parse(storage['gmail-bill-scanner-auth']).access_token : null);
+    
+    if (!auth_token) {
+      console.warn('No auth token found in storage, cannot reconnect to Supabase');
+      return false;
+    }
+    
+    console.log('Found auth token in storage, attempting to reconnect...');
+    
+    // Try to initialize Supabase with the token
+    const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+      access_token: auth_token,
+      refresh_token: auth_token,
+    });
+    
+    if (sessionError) {
+      console.error('Error setting Supabase session:', sessionError);
+      
+      // Try one more approach - sometimes a simple query helps establish connection
+      try {
+        console.log('Attempting recovery with a simple query...');
+        const { error: pingError } = await supabase.from('user_preferences').select('count').limit(1);
+        if (!pingError) {
+          console.log('Connection recovered through ping query');
+          return true;
+        }
+      } catch (pingErr) {
+        console.error('Ping recovery failed:', pingErr);
+      }
+      
+      return false;
+    }
+    
+    if (sessionData.session) {
+      console.log('Successfully reconnected to Supabase with stored token');
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Error verifying Supabase connection:', error);
+    return false;
+  }
+};

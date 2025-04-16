@@ -556,16 +556,32 @@ export interface Database {
       user_settings_view: {
         Row: {
           id: string
+          email: string
           plan: string
+          quota_bills_monthly: number
+          quota_bills_used: number
           automatic_processing: boolean | null
-          weekly_schedule: boolean | null
           process_attachments: boolean | null
-          max_results: number | null
+          trusted_sources_only: boolean | null
+          capture_important_notices: boolean | null
+          schedule_enabled: boolean | null
+          schedule_frequency: string | null
+          schedule_day_of_week: string | null
+          schedule_day_of_month: string | null
+          schedule_time: string | null
+          run_initial_scan: boolean | null
           search_days: number | null
-          apply_labels: boolean | null
-          label_name: string | null
-          sheet_id: string | null
+          input_language: string | null
+          output_language: string | null
+          notify_processed: boolean | null
+          notify_high_amount: boolean | null
+          notify_errors: boolean | null
+          high_amount_threshold: number | null
+          gmail_connected: boolean | null
+          gmail_email: string | null
+          sheets_connected: boolean
           sheet_name: string | null
+          sheet_id: string | null
         }
       }
     }

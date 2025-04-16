@@ -258,7 +258,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
             scheduleTime: userSettings?.schedule_time ?? DEFAULT_USER_PREFERENCES.schedule_time,
             runInitialScan: userSettings?.run_initial_scan ?? DEFAULT_USER_PREFERENCES.run_initial_scan,
             // Search parameters
-            maxResults: userSettings?.max_results ?? DEFAULT_USER_PREFERENCES.max_results,
+            maxResults: 50, // Default value since it's not stored in DB
             searchDays: userSettings?.search_days ?? DEFAULT_USER_PREFERENCES.search_days,
             // Language options
             inputLanguage: userSettings?.input_language ?? DEFAULT_USER_PREFERENCES.input_language,
@@ -751,6 +751,10 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   };
   
   const handleToggleAutomaticProcessing = useCallback(async (checked: boolean) => {
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
     updateSettings({ automaticProcessing: checked });
     
     // Get user identity
@@ -758,23 +762,66 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'automatic_processing', checked);
+        const success = await updateUserPreference(identity.supabaseId, 'automatic_processing', checked);
+        if (!success) {
+          throw new Error('Failed to update automatic processing preference in database');
+        }
+        console.log('Successfully updated automatic_processing in Supabase:', checked);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating automatic processing setting:', error);
+      // Revert UI state on error
+      updateSettings({ automaticProcessing: !checked });
+      // Could show an error toast here
+    } finally {
+      setIsLoading(false);
     }
   }, [updateSettings]);
   
-  const handleToggleScheduleEnabled = useCallback(async (checked: boolean) => {
-    updateSettings({ scheduleEnabled: checked });
+  const handleToggleProcessAttachments = useCallback(async (checked: boolean) => {
+    try {
+      // Set loading state for this specific toggle, not the entire page
+      const toggleId = 'process_attachments';
+      const loadingElement = document.getElementById(`loading_${toggleId}`);
+      if (loadingElement) loadingElement.classList.remove('hidden');
+      
+      // Update UI state first for responsive feel
+      updateSettings({ processAttachments: checked });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'schedule_enabled', checked);
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
+        console.log(`Updating process_attachments to ${checked} in Supabase`);
+        const success = await updateUserPreference(identity.supabaseId, 'process_attachments', checked);
+        if (!success) {
+          throw new Error('Failed to update process attachments preference in database');
+        }
+        console.log('Successfully updated process_attachments in Supabase:', checked);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating process attachments setting:', error);
+      // Revert UI state on error
+      updateSettings({ processAttachments: !checked });
+      alert('Failed to update setting. Please try again.');
+    } finally {
+      const toggleId = 'process_attachments';
+      const loadingElement = document.getElementById(`loading_${toggleId}`);
+      if (loadingElement) loadingElement.classList.add('hidden');
+      setIsLoading(false);
     }
   }, [updateSettings]);
   
   const handleToggleTrustedSourcesOnly = useCallback(async (checked: boolean) => {
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
     updateSettings({ trustedSourcesOnly: checked });
     
     // Get user identity
@@ -782,11 +829,28 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'trusted_sources_only', checked);
+        const success = await updateUserPreference(identity.supabaseId, 'trusted_sources_only', checked);
+        if (!success) {
+          throw new Error('Failed to update trusted sources only preference in database');
+        }
+        console.log('Successfully updated trusted_sources_only in Supabase:', checked);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating trusted sources only setting:', error);
+      // Revert UI state on error
+      updateSettings({ trustedSourcesOnly: !checked });
+    } finally {
+      setIsLoading(false);
     }
   }, [updateSettings]);
   
   const handleToggleCaptureImportantNotices = useCallback(async (checked: boolean) => {
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
     updateSettings({ captureImportantNotices: checked });
     
     // Get user identity
@@ -794,132 +858,383 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'capture_important_notices', checked);
+        const success = await updateUserPreference(identity.supabaseId, 'capture_important_notices', checked);
+        if (!success) {
+          throw new Error('Failed to update capture important notices preference in database');
+        }
+        console.log('Successfully updated capture_important_notices in Supabase:', checked);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating capture important notices setting:', error);
+      // Revert UI state on error
+      updateSettings({ captureImportantNotices: !checked });
+    } finally {
+      setIsLoading(false);
     }
   }, [updateSettings]);
   
-  const handleChangeScheduleFrequency = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
-    updateSettings({ scheduleFrequency: e.target.value });
+  const handleToggleScheduleEnabled = useCallback(async (checked: boolean) => {
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ scheduleEnabled: checked });
     
     // Get user identity
     const identity = await resolveUserIdentity();
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'schedule_frequency', e.target.value);
-    }
-  }, [updateSettings]);
-  
-  const handleChangeScheduleDayOfWeek = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
-    updateSettings({ scheduleDayOfWeek: e.target.value });
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'schedule_day_of_week', e.target.value);
-    }
-  }, [updateSettings]);
-  
-  const handleChangeScheduleDayOfMonth = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    updateSettings({ scheduleDayOfMonth: e.target.value });
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'schedule_day_of_month', e.target.value);
-    }
-  }, [updateSettings]);
-  
-  const handleChangeScheduleTime = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    updateSettings({ scheduleTime: e.target.value });
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'schedule_time', e.target.value);
+        const success = await updateUserPreference(identity.supabaseId, 'schedule_enabled', checked);
+        if (!success) {
+          throw new Error('Failed to update schedule enabled preference in database');
+        }
+        console.log('Successfully updated schedule_enabled in Supabase:', checked);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating schedule enabled setting:', error);
+      // Revert UI state on error
+      updateSettings({ scheduleEnabled: !checked });
+    } finally {
+      setIsLoading(false);
     }
   }, [updateSettings]);
   
   const handleToggleRunInitialScan = useCallback(async (checked: boolean) => {
-    updateSettings({ runInitialScan: checked });
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ runInitialScan: checked });
     
     // Get user identity
     const identity = await resolveUserIdentity();
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'run_initial_scan', checked);
-    }
-  }, [updateSettings]);
-  
-  const handleChangeInputLanguage = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
-    updateSettings({ inputLanguage: e.target.value });
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'input_language', e.target.value);
-    }
-  }, [updateSettings]);
-  
-  const handleChangeOutputLanguage = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
-    updateSettings({ outputLanguage: e.target.value });
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'output_language', e.target.value);
+        const success = await updateUserPreference(identity.supabaseId, 'run_initial_scan', checked);
+        if (!success) {
+          throw new Error('Failed to update run initial scan preference in database');
+        }
+        console.log('Successfully updated run_initial_scan in Supabase:', checked);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating run initial scan setting:', error);
+      // Revert UI state on error
+      updateSettings({ runInitialScan: !checked });
+    } finally {
+      setIsLoading(false);
     }
   }, [updateSettings]);
   
   const handleToggleNotifyProcessed = useCallback(async (checked: boolean) => {
-    updateSettings({ notifyProcessed: checked });
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ notifyProcessed: checked });
     
     // Get user identity
     const identity = await resolveUserIdentity();
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'notify_processed', checked);
+        const success = await updateUserPreference(identity.supabaseId, 'notify_processed', checked);
+        if (!success) {
+          throw new Error('Failed to update notify processed preference in database');
+        }
+        console.log('Successfully updated notify_processed in Supabase:', checked);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating notify processed setting:', error);
+      // Revert UI state on error
+      updateSettings({ notifyProcessed: !checked });
+    } finally {
+      setIsLoading(false);
     }
   }, [updateSettings]);
   
   const handleToggleNotifyHighAmount = useCallback(async (checked: boolean) => {
-    updateSettings({ notifyHighAmount: checked });
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ notifyHighAmount: checked });
     
     // Get user identity
     const identity = await resolveUserIdentity();
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'notify_high_amount', checked);
+        const success = await updateUserPreference(identity.supabaseId, 'notify_high_amount', checked);
+        if (!success) {
+          throw new Error('Failed to update notify high amount preference in database');
+        }
+        console.log('Successfully updated notify_high_amount in Supabase:', checked);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating notify high amount setting:', error);
+      // Revert UI state on error
+      updateSettings({ notifyHighAmount: !checked });
+    } finally {
+      setIsLoading(false);
     }
   }, [updateSettings]);
   
   const handleToggleNotifyErrors = useCallback(async (checked: boolean) => {
-    updateSettings({ notifyErrors: checked });
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ notifyErrors: checked });
     
     // Get user identity
     const identity = await resolveUserIdentity();
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'notify_errors', checked);
+        const success = await updateUserPreference(identity.supabaseId, 'notify_errors', checked);
+        if (!success) {
+          throw new Error('Failed to update notify errors preference in database');
+        }
+        console.log('Successfully updated notify_errors in Supabase:', checked);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating notify errors setting:', error);
+      // Revert UI state on error
+      updateSettings({ notifyErrors: !checked });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [updateSettings]);
+  
+  // Add the change handlers needed
+  const handleChangeScheduleFrequency = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ scheduleFrequency: e.target.value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+        const success = await updateUserPreference(identity.supabaseId, 'schedule_frequency', e.target.value);
+        if (!success) {
+          throw new Error('Failed to update schedule frequency preference in database');
+        }
+        console.log('Successfully updated schedule_frequency in Supabase:', e.target.value);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating schedule frequency setting:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [updateSettings]);
+  
+  const handleChangeScheduleDayOfWeek = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ scheduleDayOfWeek: e.target.value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+        const success = await updateUserPreference(identity.supabaseId, 'schedule_day_of_week', e.target.value);
+        if (!success) {
+          throw new Error('Failed to update schedule day of week preference in database');
+        }
+        console.log('Successfully updated schedule_day_of_week in Supabase:', e.target.value);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating schedule day of week setting:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [updateSettings]);
+  
+  const handleChangeScheduleDayOfMonth = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ scheduleDayOfMonth: e.target.value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+        const success = await updateUserPreference(identity.supabaseId, 'schedule_day_of_month', e.target.value);
+        if (!success) {
+          throw new Error('Failed to update schedule day of month preference in database');
+        }
+        console.log('Successfully updated schedule_day_of_month in Supabase:', e.target.value);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating schedule day of month setting:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [updateSettings]);
+  
+  const handleChangeScheduleTime = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ scheduleTime: e.target.value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+        const success = await updateUserPreference(identity.supabaseId, 'schedule_time', e.target.value);
+        if (!success) {
+          throw new Error('Failed to update schedule time preference in database');
+        }
+        console.log('Successfully updated schedule_time in Supabase:', e.target.value);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating schedule time setting:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [updateSettings]);
+  
+  const handleChangeInputLanguage = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ inputLanguage: e.target.value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+        const success = await updateUserPreference(identity.supabaseId, 'input_language', e.target.value);
+        if (!success) {
+          throw new Error('Failed to update input language preference in database');
+        }
+        console.log('Successfully updated input_language in Supabase:', e.target.value);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating input language setting:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [updateSettings]);
+
+  const handleChangeOutputLanguage = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
+    try {
+      setIsLoading(true);
+      
+      // Update UI state first for responsive feel
+      updateSettings({ outputLanguage: e.target.value });
+      
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
+        const success = await updateUserPreference(identity.supabaseId, 'output_language', e.target.value);
+        if (!success) {
+          throw new Error('Failed to update output language preference in database');
+        }
+        console.log('Successfully updated output_language in Supabase:', e.target.value);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating output language setting:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [updateSettings]);
+
+  const handleChangeMaxResults = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    try {
+      setIsLoading(true);
+      const value = parseInt(e.target.value) || 50;
+      
+      // Update UI state only since this is not stored in the database
+      updateSettings({ maxResults: value });
+      
+      console.log('Updated maxResults in UI only:', value);
+    } catch (error) {
+      console.error('Error updating max results setting:', error);
+      // Could revert UI state on error if needed
+    } finally {
+      setIsLoading(false);
+    }
+  }, [updateSettings]);
+
+  const handleChangeSearchDays = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    try {
+      setIsLoading(true);
+      const value = parseInt(e.target.value) || 30;
+      
+      // Update UI state first for responsive feel
+      updateSettings({ searchDays: value });
+      
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
+        const success = await updateUserPreference(identity.supabaseId, 'search_days', value);
+        if (!success) {
+          throw new Error('Failed to update search days preference in database');
+        }
+        console.log('Successfully updated search_days in Supabase:', value);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating search days setting:', error);
+      // Could revert UI state on error if needed
+    } finally {
+      setIsLoading(false);
     }
   }, [updateSettings]);
   
   const handleChangeHighAmountThreshold = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    try {
+      setIsLoading(true);
     const value = parseFloat(e.target.value) || 100;
+      
+      // Update UI state first for responsive feel
     updateSettings({ highAmountThreshold: value });
     
     // Get user identity
@@ -927,55 +1242,82 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'high_amount_threshold', value);
+        const success = await updateUserPreference(identity.supabaseId, 'high_amount_threshold', value);
+        if (!success) {
+          throw new Error('Failed to update high amount threshold preference in database');
+        }
+        console.log('Successfully updated high_amount_threshold in Supabase:', value);
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
+      }
+    } catch (error) {
+      console.error('Error updating high amount threshold setting:', error);
+      // Could revert UI state on error if needed
+    } finally {
+      setIsLoading(false);
     }
   }, [updateSettings]);
   
+  // Fix the save all settings handler
   const handleSaveSettings = useCallback(async () => {
-    // Save to Chrome storage via context
-    await saveSettings();
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Also save all preferences to Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      try {
-        await updateMultipleUserPreferences(identity.supabaseId, {
-          // Basic processing options
-          automatic_processing: settingsRef.current.automaticProcessing,
-          process_attachments: settingsRef.current.processAttachments,
-          trusted_sources_only: settingsRef.current.trustedSourcesOnly,
-          capture_important_notices: settingsRef.current.captureImportantNotices,
-          // Schedule options
-          schedule_enabled: settingsRef.current.scheduleEnabled,
-          schedule_frequency: settingsRef.current.scheduleFrequency,
-          schedule_day_of_week: settingsRef.current.scheduleDayOfWeek,
-          schedule_day_of_month: settingsRef.current.scheduleDayOfMonth,
-          schedule_time: settingsRef.current.scheduleTime,
-          run_initial_scan: settingsRef.current.runInitialScan,
-          // Search parameters
-          max_results: settingsRef.current.maxResults,
-          search_days: settingsRef.current.searchDays,
-          // Language options
-          input_language: settingsRef.current.inputLanguage,
-          output_language: settingsRef.current.outputLanguage,
-          // Notification preferences
-          notify_processed: settingsRef.current.notifyProcessed,
-          notify_high_amount: settingsRef.current.notifyHighAmount,
-          notify_errors: settingsRef.current.notifyErrors,
-          high_amount_threshold: settingsRef.current.highAmountThreshold
-        });
-      } catch (error) {
-        console.error('Error saving user settings to Supabase:', error);
+    try {
+      setIsLoading(true);
+      
+      // Save to Chrome storage via context
+      await saveSettings();
+      
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Also save all preferences to Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
+        try {
+          const success = await updateMultipleUserPreferences(identity.supabaseId, {
+            // Basic processing options
+            automatic_processing: settings.automaticProcessing,
+            process_attachments: settings.processAttachments,
+            trusted_sources_only: settings.trustedSourcesOnly,
+            capture_important_notices: settings.captureImportantNotices,
+            // Schedule options
+            schedule_enabled: settings.scheduleEnabled,
+            schedule_frequency: settings.scheduleFrequency,
+            schedule_day_of_week: settings.scheduleDayOfWeek,
+            schedule_day_of_month: settings.scheduleDayOfMonth,
+            schedule_time: settings.scheduleTime,
+            run_initial_scan: settings.runInitialScan,
+            // Search parameters - maxResults excluded as it's not in the DB
+            search_days: settings.searchDays,
+            // Language options
+            input_language: settings.inputLanguage,
+            output_language: settings.outputLanguage,
+            // Notification preferences
+            notify_processed: settings.notifyProcessed,
+            notify_high_amount: settings.notifyHighAmount,
+            notify_errors: settings.notifyErrors,
+            high_amount_threshold: settings.highAmountThreshold
+          });
+          
+          if (!success) {
+            throw new Error('Failed to update multiple preferences in database');
+          }
+          
+          console.log('Successfully updated all preferences in Supabase');
+        } catch (error) {
+          console.error('Error saving user settings to Supabase:', error);
+          throw error;
+        }
+      } else {
+        console.warn('No Supabase ID available, settings only updated locally');
       }
+    } catch (error) {
+      console.error('Error saving all settings:', error);
+      // Could show an error message to the user
+    } finally {
+      setIsLoading(false);
     }
-  }, [saveSettings]);
-  
-  // Get default sheet
-  const defaultSheet = userSheets.find(sheet => sheet.is_default);
-  
-  // Handler for reconnecting Gmail
+  }, [saveSettings, settings]);
+
+  // Define the handleReconnectGmail function that's used in the UI
   const handleReconnectGmail = async () => {
     try {
       setIsConnectionLoading(true);
@@ -1082,44 +1424,8 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     }
   };
 
-  // Add back the missing handlers
-  const handleToggleProcessAttachments = useCallback(async (checked: boolean) => {
-    updateSettings({ processAttachments: checked });
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'process_attachments', checked);
-    }
-  }, [updateSettings]);
-
-  const handleChangeMaxResults = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value) || 50;
-    updateSettings({ maxResults: value });
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'max_results', value);
-    }
-  }, [updateSettings]);
-
-  const handleChangeSearchDays = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value) || 30;
-    updateSettings({ searchDays: value });
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'search_days', value);
-    }
-  }, [updateSettings]);
+  // Get default sheet - define this here to fix linter errors
+  const defaultSheet = userSheets.find(sheet => sheet.is_default);
 
   return (
     <div className="space-y-3">

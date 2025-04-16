@@ -264,7 +264,10 @@ export const VIEW_DEFINITIONS = {
   user_settings_view: `
     SELECT 
       u.id,
+      u.email,
       u.plan,
+      u.quota_bills_monthly,
+      u.quota_bills_used,
       up.automatic_processing,
       up.process_attachments,
       up.trusted_sources_only,
@@ -282,18 +285,22 @@ export const VIEW_DEFINITIONS = {
       up.notify_high_amount,
       up.notify_errors,
       up.high_amount_threshold,
-      us.sheet_id,
-      us.sheet_name
+      c.gmail_connected,
+      c.gmail_email,
+      CASE WHEN s.sheet_id IS NOT NULL THEN true ELSE false END as sheets_connected,
+      s.sheet_name,
+      s.sheet_id
     FROM users u
-      LEFT JOIN user_preferences up ON u.id = up.user_id
-      LEFT JOIN (
-        SELECT 
-          user_id,
-          sheet_id,
-          sheet_name
-        FROM user_sheets
-        WHERE is_default = true
-      ) us ON u.id = us.user_id
+    LEFT JOIN user_preferences up ON u.id = up.user_id
+    LEFT JOIN user_connections c ON u.id = c.user_id
+    LEFT JOIN (
+      SELECT 
+        user_id,
+        sheet_id,
+        sheet_name
+      FROM user_sheets
+      WHERE is_default = true
+    ) s ON u.id = s.user_id
   `
 };
 

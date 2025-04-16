@@ -34,10 +34,40 @@
  * - highAmountThreshold -> high_amount_threshold
  */
 
-import * as React from 'react';
-import { createContext, useState, useEffect, ReactNode } from 'react';
-import { Settings, BillFieldConfig } from '../../types/Message';
+import React, { createContext, useState, useEffect, ReactNode } from 'react';
+import { BillFieldConfig } from '../../types/Message';
 import { DEFAULT_USER_PREFERENCES } from '../../services/settings';
+
+// Create the interface for settings in the UI
+export interface Settings {
+  // Basic processing options
+  automaticProcessing: boolean;
+  processAttachments: boolean;
+  trustedSourcesOnly: boolean;
+  captureImportantNotices: boolean;
+  
+  // Schedule options
+  scheduleEnabled: boolean;
+  scheduleFrequency: string;
+  scheduleDayOfWeek: string;
+  scheduleDayOfMonth: string;
+  scheduleTime: string;
+  runInitialScan: boolean;
+  
+  // Search parameters
+  maxResults: number; // Not stored in DB but kept for UI/code compatibility
+  searchDays: number;
+  
+  // Language options
+  inputLanguage: string;
+  outputLanguage: string;
+  
+  // Notification preferences
+  notifyProcessed: boolean;
+  notifyHighAmount: boolean;
+  notifyErrors: boolean;
+  highAmountThreshold: number;
+}
 
 interface SettingsContextType {
   settings: Settings;
@@ -65,7 +95,7 @@ const defaultSettings: Settings = {
   scheduleTime: DEFAULT_USER_PREFERENCES.schedule_time,
   runInitialScan: DEFAULT_USER_PREFERENCES.run_initial_scan,
   // Search parameters
-  maxResults: DEFAULT_USER_PREFERENCES.max_results,
+  maxResults: 50, // Default value since it's not stored in DB
   searchDays: DEFAULT_USER_PREFERENCES.search_days,
   // Language options
   inputLanguage: DEFAULT_USER_PREFERENCES.input_language,
