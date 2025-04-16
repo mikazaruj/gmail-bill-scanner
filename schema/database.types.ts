@@ -322,46 +322,70 @@ export interface Database {
           id: string
           user_id: string | null
           automatic_processing: boolean | null
-          weekly_schedule: boolean | null
-          schedule_day: string | null
-          schedule_time: string | null
           process_attachments: boolean | null
-          max_results: number | null
+          trusted_sources_only: boolean | null
+          capture_important_notices: boolean | null
+          schedule_enabled: boolean | null
+          schedule_frequency: string | null
+          schedule_day_of_week: string | null
+          schedule_day_of_month: string | null
+          schedule_time: string | null
+          run_initial_scan: boolean | null
           search_days: number | null
+          input_language: string | null
+          output_language: string | null
+          notify_processed: boolean | null
+          notify_high_amount: boolean | null
+          notify_errors: boolean | null
+          high_amount_threshold: number | null
           created_at: string | null
           updated_at: string | null
-          apply_labels: boolean | null
-          label_name: string | null
         }
         Insert: {
           id?: string
           user_id?: string | null
           automatic_processing?: boolean | null
-          weekly_schedule?: boolean | null
-          schedule_day?: string | null
-          schedule_time?: string | null
           process_attachments?: boolean | null
-          max_results?: number | null
+          trusted_sources_only?: boolean | null
+          capture_important_notices?: boolean | null
+          schedule_enabled?: boolean | null
+          schedule_frequency?: string | null
+          schedule_day_of_week?: string | null
+          schedule_day_of_month?: string | null
+          schedule_time?: string | null
+          run_initial_scan?: boolean | null
           search_days?: number | null
+          input_language?: string | null
+          output_language?: string | null
+          notify_processed?: boolean | null
+          notify_high_amount?: boolean | null
+          notify_errors?: boolean | null
+          high_amount_threshold?: number | null
           created_at?: string | null
           updated_at?: string | null
-          apply_labels?: boolean | null
-          label_name?: string | null
         }
         Update: {
           id?: string
           user_id?: string | null
           automatic_processing?: boolean | null
-          weekly_schedule?: boolean | null
-          schedule_day?: string | null
-          schedule_time?: string | null
           process_attachments?: boolean | null
-          max_results?: number | null
+          trusted_sources_only?: boolean | null
+          capture_important_notices?: boolean | null
+          schedule_enabled?: boolean | null
+          schedule_frequency?: string | null
+          schedule_day_of_week?: string | null
+          schedule_day_of_month?: string | null
+          schedule_time?: string | null
+          run_initial_scan?: boolean | null
           search_days?: number | null
+          input_language?: string | null
+          output_language?: string | null
+          notify_processed?: boolean | null
+          notify_high_amount?: boolean | null
+          notify_errors?: boolean | null
+          high_amount_threshold?: number | null
           created_at?: string | null
           updated_at?: string | null
-          apply_labels?: boolean | null
-          label_name?: string | null
         }
       }
       user_sheets: {
@@ -631,6 +655,10 @@ export interface Database {
       increment_bills_used: {
         Args: Record<PropertyKey, never>
         Returns: unknown
+      }
+      ensure_user_preferences: {
+        Args: Record<PropertyKey, never>
+        Returns: void
       }
     }
   }

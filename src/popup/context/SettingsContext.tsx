@@ -1,6 +1,43 @@
+/**
+ * Settings Context Provider
+ * 
+ * This module provides a context for managing user settings throughout the application.
+ * 
+ * The settings structure has been updated to match the new database schema:
+ * 
+ * Basic processing options:
+ * - automaticProcessing -> automatic_processing
+ * - processAttachments -> process_attachments
+ * - trustedSourcesOnly -> trusted_sources_only
+ * - captureImportantNotices -> capture_important_notices
+ * 
+ * Schedule options:
+ * - scheduleEnabled -> schedule_enabled (replaces weeklySchedule)
+ * - scheduleFrequency -> schedule_frequency
+ * - scheduleDayOfWeek -> schedule_day_of_week
+ * - scheduleDayOfMonth -> schedule_day_of_month
+ * - scheduleTime -> schedule_time
+ * - runInitialScan -> run_initial_scan
+ * 
+ * Search parameters:
+ * - maxResults -> max_results
+ * - searchDays -> search_days
+ * 
+ * Language options:
+ * - inputLanguage -> input_language
+ * - outputLanguage -> output_language
+ * 
+ * Notification preferences:
+ * - notifyProcessed -> notify_processed
+ * - notifyHighAmount -> notify_high_amount
+ * - notifyErrors -> notify_errors
+ * - highAmountThreshold -> high_amount_threshold
+ */
+
 import * as React from 'react';
 import { createContext, useState, useEffect, ReactNode } from 'react';
 import { Settings, BillFieldConfig } from '../../types/Message';
+import { DEFAULT_USER_PREFERENCES } from '../../services/settings';
 
 interface SettingsContextType {
   settings: Settings;
@@ -13,12 +50,31 @@ interface SettingsContextType {
   clearError: () => void;
 }
 
+// Map database settings to UI settings
 const defaultSettings: Settings = {
-  automaticProcessing: true,
-  weeklySchedule: false,
-  processAttachments: true,
-  maxResults: 50,
-  searchDays: 30
+  // Basic processing options
+  automaticProcessing: DEFAULT_USER_PREFERENCES.automatic_processing,
+  processAttachments: DEFAULT_USER_PREFERENCES.process_attachments,
+  trustedSourcesOnly: DEFAULT_USER_PREFERENCES.trusted_sources_only,
+  captureImportantNotices: DEFAULT_USER_PREFERENCES.capture_important_notices,
+  // Schedule options
+  scheduleEnabled: DEFAULT_USER_PREFERENCES.schedule_enabled,
+  scheduleFrequency: DEFAULT_USER_PREFERENCES.schedule_frequency,
+  scheduleDayOfWeek: DEFAULT_USER_PREFERENCES.schedule_day_of_week,
+  scheduleDayOfMonth: DEFAULT_USER_PREFERENCES.schedule_day_of_month,
+  scheduleTime: DEFAULT_USER_PREFERENCES.schedule_time,
+  runInitialScan: DEFAULT_USER_PREFERENCES.run_initial_scan,
+  // Search parameters
+  maxResults: DEFAULT_USER_PREFERENCES.max_results,
+  searchDays: DEFAULT_USER_PREFERENCES.search_days,
+  // Language options
+  inputLanguage: DEFAULT_USER_PREFERENCES.input_language,
+  outputLanguage: DEFAULT_USER_PREFERENCES.output_language,
+  // Notification preferences
+  notifyProcessed: DEFAULT_USER_PREFERENCES.notify_processed,
+  notifyHighAmount: DEFAULT_USER_PREFERENCES.notify_high_amount,
+  notifyErrors: DEFAULT_USER_PREFERENCES.notify_errors,
+  highAmountThreshold: DEFAULT_USER_PREFERENCES.high_amount_threshold
 };
 
 export const SettingsContext = createContext<SettingsContextType>({

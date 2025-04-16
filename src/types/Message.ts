@@ -17,11 +17,29 @@ export interface BillFieldConfig {
 }
 
 export interface Settings {
+  // Basic processing options
   automaticProcessing: boolean;
-  weeklySchedule: boolean;
   processAttachments: boolean;
+  trustedSourcesOnly: boolean;
+  captureImportantNotices: boolean;
+  // Schedule options
+  scheduleEnabled: boolean;
+  scheduleFrequency: string;
+  scheduleDayOfWeek: string;
+  scheduleDayOfMonth: string;
+  scheduleTime: string;
+  runInitialScan: boolean;
+  // Search parameters
   maxResults: number;
   searchDays: number;
+  // Language options
+  inputLanguage: string;
+  outputLanguage: string;
+  // Notification preferences
+  notifyProcessed: boolean;
+  notifyHighAmount: boolean;
+  notifyErrors: boolean;
+  highAmountThreshold: number;
 }
 
 export interface UserProfile {

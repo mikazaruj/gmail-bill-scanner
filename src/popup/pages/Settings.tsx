@@ -10,7 +10,7 @@ import { TrustedSource } from '../../types/TrustedSource';
 import { SettingsContext } from '../context/SettingsContext';
 
 // Import our new services
-import { getUserSettingsWithDefaults, updateUserPreference, updateMultipleUserPreferences } from '../../services/settings';
+import { getUserSettingsWithDefaults, updateUserPreference, updateMultipleUserPreferences, DEFAULT_USER_PREFERENCES } from '../../services/settings';
 import { 
   getUserConnection, 
   getUserSheets, 
@@ -39,8 +39,6 @@ interface UserSettings {
   spreadsheet_id: string | null;
   spreadsheet_name: string | null;
   scan_frequency: 'manual' | 'daily' | 'weekly';
-  apply_labels: boolean;
-  label_name: string | null;
 }
 
 const Settings = ({ onNavigate }: SettingsProps) => {
@@ -93,9 +91,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
   const defaultSettings: UserSettings = {
     spreadsheet_id: null,
     spreadsheet_name: 'Bills Tracker',
-    scan_frequency: 'manual',
-    apply_labels: false,
-    label_name: null
+    scan_frequency: 'manual'
   };
   
   // Google Sheets dropdown states
@@ -240,40 +236,61 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         }
         
         try {
-          // Load user settings with defaults
+          // Load user settings with defaults - this will create a record if none exists
+          console.log('Loading user settings with defaults for ID:', identity.supabaseId);
           const userSettings = await getUserSettingsWithDefaults(identity.supabaseId);
           
-          // Create settings object for comparison
+          // Add debug logging
+          console.log('DEBUG - Loaded user settings:', userSettings);
+          
+          // Handle potentially null values by providing fallbacks
           const newSettings = {
-            automaticProcessing: userSettings.automatic_processing,
-            weeklySchedule: userSettings.weekly_schedule,
-            processAttachments: userSettings.process_attachments,
-            maxResults: userSettings.max_results,
-            searchDays: userSettings.search_days
+            // Basic processing options
+            automaticProcessing: userSettings?.automatic_processing ?? DEFAULT_USER_PREFERENCES.automatic_processing,
+            processAttachments: userSettings?.process_attachments ?? DEFAULT_USER_PREFERENCES.process_attachments,
+            trustedSourcesOnly: userSettings?.trusted_sources_only ?? DEFAULT_USER_PREFERENCES.trusted_sources_only,
+            captureImportantNotices: userSettings?.capture_important_notices ?? DEFAULT_USER_PREFERENCES.capture_important_notices,
+            // Schedule options
+            scheduleEnabled: userSettings?.schedule_enabled ?? DEFAULT_USER_PREFERENCES.schedule_enabled,
+            scheduleFrequency: userSettings?.schedule_frequency ?? DEFAULT_USER_PREFERENCES.schedule_frequency,
+            scheduleDayOfWeek: userSettings?.schedule_day_of_week ?? DEFAULT_USER_PREFERENCES.schedule_day_of_week,
+            scheduleDayOfMonth: userSettings?.schedule_day_of_month ?? DEFAULT_USER_PREFERENCES.schedule_day_of_month,
+            scheduleTime: userSettings?.schedule_time ?? DEFAULT_USER_PREFERENCES.schedule_time,
+            runInitialScan: userSettings?.run_initial_scan ?? DEFAULT_USER_PREFERENCES.run_initial_scan,
+            // Search parameters
+            maxResults: userSettings?.max_results ?? DEFAULT_USER_PREFERENCES.max_results,
+            searchDays: userSettings?.search_days ?? DEFAULT_USER_PREFERENCES.search_days,
+            // Language options
+            inputLanguage: userSettings?.input_language ?? DEFAULT_USER_PREFERENCES.input_language,
+            outputLanguage: userSettings?.output_language ?? DEFAULT_USER_PREFERENCES.output_language,
+            // Notification preferences
+            notifyProcessed: userSettings?.notify_processed ?? DEFAULT_USER_PREFERENCES.notify_processed,
+            notifyHighAmount: userSettings?.notify_high_amount ?? DEFAULT_USER_PREFERENCES.notify_high_amount,
+            notifyErrors: userSettings?.notify_errors ?? DEFAULT_USER_PREFERENCES.notify_errors,
+            highAmountThreshold: userSettings?.high_amount_threshold ?? DEFAULT_USER_PREFERENCES.high_amount_threshold
           };
           
-          // Only update settings if they've changed to prevent loop
-          if (!isInitializedRef.current || 
-              JSON.stringify(newSettings) !== JSON.stringify({
-                automaticProcessing: settingsRef.current.automaticProcessing,
-                weeklySchedule: settingsRef.current.weeklySchedule,
-                processAttachments: settingsRef.current.processAttachments,
-                maxResults: settingsRef.current.maxResults,
-                searchDays: settingsRef.current.searchDays
-              })) {
-            // Update context settings with values from Supabase
+          // Only update if there are changes
+          console.log('Comparing settings:', {
+            current: settingsRef.current,
+            new: newSettings
+          });
+          
+          if (
+            !settingsRef.current || 
+            JSON.stringify(newSettings) !== JSON.stringify(settingsRef.current)
+          ) {
+            console.log('Updating settings with new values:', newSettings);
             updateSettings(newSettings);
           }
           
-          // Set user settings data
+          // Set the user settings data object
           setUserSettingsData({
-            spreadsheet_id: userSettings.sheet_id,
-            spreadsheet_name: userSettings.sheet_name,
-            scan_frequency: userSettings.automatic_processing ? 
-              (userSettings.weekly_schedule ? 'weekly' : 'daily') : 
-              'manual',
-            apply_labels: userSettings.apply_labels,
-            label_name: userSettings.label_name
+            spreadsheet_id: userSettings?.sheet_id ?? null,
+            spreadsheet_name: userSettings?.sheet_name ?? 'Bills Tracker',
+            scan_frequency: userSettings?.schedule_enabled 
+              ? (userSettings.schedule_frequency === 'weekly' ? 'weekly' : 'daily') 
+              : 'manual'
           });
         } catch (settingsError) {
           console.error('Error loading user settings:', settingsError);
@@ -416,6 +433,12 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       
       // Show success message (you can implement this with a toast notification or similar)
       console.log('Successfully added trusted source:', email);
+
+      if (userSettingsData) {
+        setUserSettingsData({
+          ...userSettingsData
+        });
+      }
     } catch (error) {
       console.error('Error adding trusted source:', error);
       // Show error message to user
@@ -623,9 +646,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         ...prev,
         spreadsheet_id: sheet.sheet_id,
         spreadsheet_name: sheet.sheet_name,
-        scan_frequency: prev?.scan_frequency || 'manual',
-        apply_labels: prev?.apply_labels || false,
-        label_name: prev?.label_name || null
+        scan_frequency: prev?.scan_frequency || 'manual'
       }));
       
     } catch (error) {
@@ -718,9 +739,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
         ...prev,
         spreadsheet_id: spreadsheetId,
         spreadsheet_name: spreadsheetName,
-        scan_frequency: prev?.scan_frequency || 'manual',
-        apply_labels: prev?.apply_labels || false,
-        label_name: prev?.label_name || null
+        scan_frequency: prev?.scan_frequency || 'manual'
       }));
       
     } catch (error) {
@@ -743,89 +762,172 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     }
   }, [updateSettings]);
   
-  const handleToggleWeeklySchedule = useCallback(async (checked: boolean) => {
-    updateSettings({ weeklySchedule: checked });
+  const handleToggleScheduleEnabled = useCallback(async (checked: boolean) => {
+    updateSettings({ scheduleEnabled: checked });
     
     // Get user identity
     const identity = await resolveUserIdentity();
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'weekly_schedule', checked);
+      await updateUserPreference(identity.supabaseId, 'schedule_enabled', checked);
     }
   }, [updateSettings]);
   
-  const handleToggleProcessAttachments = useCallback(async (checked: boolean) => {
-    updateSettings({ processAttachments: checked });
+  const handleToggleTrustedSourcesOnly = useCallback(async (checked: boolean) => {
+    updateSettings({ trustedSourcesOnly: checked });
     
     // Get user identity
     const identity = await resolveUserIdentity();
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'process_attachments', checked);
+      await updateUserPreference(identity.supabaseId, 'trusted_sources_only', checked);
     }
   }, [updateSettings]);
   
-  const handleToggleApplyLabels = useCallback(async (checked: boolean) => {
-    if (userSettingsData) {
-      setUserSettingsData({
-        ...userSettingsData,
-        apply_labels: checked
-      });
-    }
+  const handleToggleCaptureImportantNotices = useCallback(async (checked: boolean) => {
+    updateSettings({ captureImportantNotices: checked });
     
     // Get user identity
     const identity = await resolveUserIdentity();
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'apply_labels', checked);
-    }
-  }, [userSettingsData]);
-  
-  const handleChangeLabelName = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value;
-    
-    if (userSettingsData) {
-      setUserSettingsData({
-        ...userSettingsData,
-        label_name: value
-      });
-    }
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'label_name', value);
-    }
-  }, [userSettingsData]);
-  
-  const handleChangeMaxResults = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value) || 50;
-    updateSettings({ maxResults: value });
-    
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'max_results', value);
+      await updateUserPreference(identity.supabaseId, 'capture_important_notices', checked);
     }
   }, [updateSettings]);
   
-  const handleChangeSearchDays = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value) || 30;
-    updateSettings({ searchDays: value });
+  const handleChangeScheduleFrequency = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
+    updateSettings({ scheduleFrequency: e.target.value });
     
     // Get user identity
     const identity = await resolveUserIdentity();
     
     // Update in Supabase if we have a Supabase ID
     if (identity.supabaseId) {
-      await updateUserPreference(identity.supabaseId, 'search_days', value);
+      await updateUserPreference(identity.supabaseId, 'schedule_frequency', e.target.value);
+    }
+  }, [updateSettings]);
+  
+  const handleChangeScheduleDayOfWeek = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
+    updateSettings({ scheduleDayOfWeek: e.target.value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'schedule_day_of_week', e.target.value);
+    }
+  }, [updateSettings]);
+  
+  const handleChangeScheduleDayOfMonth = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    updateSettings({ scheduleDayOfMonth: e.target.value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'schedule_day_of_month', e.target.value);
+    }
+  }, [updateSettings]);
+  
+  const handleChangeScheduleTime = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    updateSettings({ scheduleTime: e.target.value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'schedule_time', e.target.value);
+    }
+  }, [updateSettings]);
+  
+  const handleToggleRunInitialScan = useCallback(async (checked: boolean) => {
+    updateSettings({ runInitialScan: checked });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'run_initial_scan', checked);
+    }
+  }, [updateSettings]);
+  
+  const handleChangeInputLanguage = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
+    updateSettings({ inputLanguage: e.target.value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'input_language', e.target.value);
+    }
+  }, [updateSettings]);
+  
+  const handleChangeOutputLanguage = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
+    updateSettings({ outputLanguage: e.target.value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'output_language', e.target.value);
+    }
+  }, [updateSettings]);
+  
+  const handleToggleNotifyProcessed = useCallback(async (checked: boolean) => {
+    updateSettings({ notifyProcessed: checked });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'notify_processed', checked);
+    }
+  }, [updateSettings]);
+  
+  const handleToggleNotifyHighAmount = useCallback(async (checked: boolean) => {
+    updateSettings({ notifyHighAmount: checked });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'notify_high_amount', checked);
+    }
+  }, [updateSettings]);
+  
+  const handleToggleNotifyErrors = useCallback(async (checked: boolean) => {
+    updateSettings({ notifyErrors: checked });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'notify_errors', checked);
+    }
+  }, [updateSettings]);
+  
+  const handleChangeHighAmountThreshold = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    const value = parseFloat(e.target.value) || 100;
+    updateSettings({ highAmountThreshold: value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'high_amount_threshold', value);
     }
   }, [updateSettings]);
   
@@ -840,19 +942,35 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     if (identity.supabaseId) {
       try {
         await updateMultipleUserPreferences(identity.supabaseId, {
+          // Basic processing options
           automatic_processing: settingsRef.current.automaticProcessing,
-          weekly_schedule: settingsRef.current.weeklySchedule,
           process_attachments: settingsRef.current.processAttachments,
+          trusted_sources_only: settingsRef.current.trustedSourcesOnly,
+          capture_important_notices: settingsRef.current.captureImportantNotices,
+          // Schedule options
+          schedule_enabled: settingsRef.current.scheduleEnabled,
+          schedule_frequency: settingsRef.current.scheduleFrequency,
+          schedule_day_of_week: settingsRef.current.scheduleDayOfWeek,
+          schedule_day_of_month: settingsRef.current.scheduleDayOfMonth,
+          schedule_time: settingsRef.current.scheduleTime,
+          run_initial_scan: settingsRef.current.runInitialScan,
+          // Search parameters
           max_results: settingsRef.current.maxResults,
           search_days: settingsRef.current.searchDays,
-          apply_labels: userSettingsData?.apply_labels || false,
-          label_name: userSettingsData?.label_name
+          // Language options
+          input_language: settingsRef.current.inputLanguage,
+          output_language: settingsRef.current.outputLanguage,
+          // Notification preferences
+          notify_processed: settingsRef.current.notifyProcessed,
+          notify_high_amount: settingsRef.current.notifyHighAmount,
+          notify_errors: settingsRef.current.notifyErrors,
+          high_amount_threshold: settingsRef.current.highAmountThreshold
         });
       } catch (error) {
         console.error('Error saving user settings to Supabase:', error);
       }
     }
-  }, [saveSettings, userSettingsData]);
+  }, [saveSettings]);
   
   // Get default sheet
   const defaultSheet = userSheets.find(sheet => sheet.is_default);
@@ -963,6 +1081,45 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       setIsConnectionLoading(false);
     }
   };
+
+  // Add back the missing handlers
+  const handleToggleProcessAttachments = useCallback(async (checked: boolean) => {
+    updateSettings({ processAttachments: checked });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'process_attachments', checked);
+    }
+  }, [updateSettings]);
+
+  const handleChangeMaxResults = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value) || 50;
+    updateSettings({ maxResults: value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'max_results', value);
+    }
+  }, [updateSettings]);
+
+  const handleChangeSearchDays = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value) || 30;
+    updateSettings({ searchDays: value });
+    
+    // Get user identity
+    const identity = await resolveUserIdentity();
+    
+    // Update in Supabase if we have a Supabase ID
+    if (identity.supabaseId) {
+      await updateUserPreference(identity.supabaseId, 'search_days', value);
+    }
+  }, [updateSettings]);
 
   return (
     <div className="space-y-3">
@@ -1126,7 +1283,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
               trustedSourcesLength: trustedSources.length, 
               maxTrustedSources, 
               isLimited,
-              isButtonDisabled: trustedSources.length >= maxTrustedSources && isLimited
+              isButtonDisabled: trustedSources.length >= maxTrustedSources
             })}
             
             <button 
@@ -1154,18 +1311,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       
       <CollapsibleSection title="Processing Options" defaultOpen={true}>
         <div className="space-y-1.5">
+          <div className="text-xs font-medium text-gray-600 mb-1 mt-1">Basic Processing</div>
           <SettingsToggle
             label="Automatic processing"
             isEnabled={settings.automaticProcessing}
             onChange={handleToggleAutomaticProcessing}
-          />
-          
-          <SettingsToggle
-            label="Weekly schedule"
-            isEnabled={settings.weeklySchedule}
-            onChange={handleToggleWeeklySchedule}
-            disabled={!userProfile || userProfile.plan === 'free'}
-            proFeature={userProfile?.plan === 'free'}
           />
           
           <SettingsToggle
@@ -1175,49 +1325,179 @@ const Settings = ({ onNavigate }: SettingsProps) => {
           />
           
           <SettingsToggle
-            label="Apply Gmail labels"
-            isEnabled={userSettingsData?.apply_labels || false}
-            onChange={handleToggleApplyLabels}
+            label="Trusted sources only"
+            isEnabled={settings.trustedSourcesOnly}
+            onChange={handleToggleTrustedSourcesOnly}
           />
           
-          {userSettingsData?.apply_labels && (
+          <SettingsToggle
+            label="Capture important notices"
+            isEnabled={settings.captureImportantNotices}
+            onChange={handleToggleCaptureImportantNotices}
+          />
+          
+          <div className="text-xs font-medium text-gray-600 mb-1 mt-3">Schedule</div>
+          <SettingsToggle
+            label="Enable scheduled scanning"
+            isEnabled={settings.scheduleEnabled}
+            onChange={handleToggleScheduleEnabled}
+            disabled={!userProfile || userProfile.plan === 'free'}
+            proFeature={userProfile?.plan === 'free'}
+          />
+          
+          {settings.scheduleEnabled && (
+            <>
+              <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+                <span className="text-sm text-gray-900">Frequency:</span>
+                <select
+                  className="p-1 border border-gray-300 rounded text-sm"
+                  value={settings.scheduleFrequency}
+                  onChange={handleChangeScheduleFrequency}
+                >
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+              
+              {settings.scheduleFrequency === 'weekly' && (
+                <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+                  <span className="text-sm text-gray-900">Day of week:</span>
+                  <select
+                    className="p-1 border border-gray-300 rounded text-sm"
+                    value={settings.scheduleDayOfWeek}
+                    onChange={handleChangeScheduleDayOfWeek}
+                  >
+                    <option value="monday">Monday</option>
+                    <option value="tuesday">Tuesday</option>
+                    <option value="wednesday">Wednesday</option>
+                    <option value="thursday">Thursday</option>
+                    <option value="friday">Friday</option>
+                    <option value="saturday">Saturday</option>
+                    <option value="sunday">Sunday</option>
+                  </select>
+                </div>
+              )}
+              
+              {settings.scheduleFrequency === 'monthly' && (
+                <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+                  <span className="text-sm text-gray-900">Day of month:</span>
+                  <input
+                    type="number"
+                    className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
+                    value={settings.scheduleDayOfMonth}
+                    onChange={handleChangeScheduleDayOfMonth}
+                    min="1"
+                    max="28"
+                  />
+                </div>
+              )}
+              
+              <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+                <span className="text-sm text-gray-900">Time:</span>
+                <input
+                  type="time"
+                  className="p-1 border border-gray-300 rounded text-sm"
+                  value={settings.scheduleTime}
+                  onChange={handleChangeScheduleTime}
+                />
+              </div>
+              
+              <SettingsToggle
+                label="Run initial scan now"
+                isEnabled={settings.runInitialScan}
+                onChange={handleToggleRunInitialScan}
+              />
+            </>
+          )}
+          
+          <div className="text-xs font-medium text-gray-600 mb-1 mt-3">Search Parameters</div>
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+            <span className="text-sm text-gray-900">Max results:</span>
+            <input
+              type="number"
+              className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
+              value={settings.maxResults}
+              onChange={handleChangeMaxResults}
+              min="1"
+              max="100"
+            />
+          </div>
+          
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+            <span className="text-sm text-gray-900">Search days:</span>
+            <input
+              type="number"
+              className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
+              value={settings.searchDays}
+              onChange={handleChangeSearchDays}
+              min="1"
+              max="365"
+            />
+          </div>
+          
+          <div className="text-xs font-medium text-gray-600 mb-1 mt-3">Language</div>
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+            <span className="text-sm text-gray-900">Input language:</span>
+            <select
+              className="p-1 border border-gray-300 rounded text-sm"
+              value={settings.inputLanguage}
+              onChange={handleChangeInputLanguage}
+            >
+              <option value="auto">Auto-detect</option>
+              <option value="english">English</option>
+              <option value="spanish">Spanish</option>
+              <option value="french">French</option>
+              <option value="german">German</option>
+            </select>
+          </div>
+          
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+            <span className="text-sm text-gray-900">Output language:</span>
+            <select
+              className="p-1 border border-gray-300 rounded text-sm"
+              value={settings.outputLanguage}
+              onChange={handleChangeOutputLanguage}
+            >
+              <option value="english">English</option>
+              <option value="spanish">Spanish</option>
+              <option value="french">French</option>
+              <option value="german">German</option>
+            </select>
+          </div>
+          
+          <div className="text-xs font-medium text-gray-600 mb-1 mt-3">Notifications</div>
+          <SettingsToggle
+            label="Notify after processing"
+            isEnabled={settings.notifyProcessed}
+            onChange={handleToggleNotifyProcessed}
+          />
+          
+          <SettingsToggle
+            label="Notify for high amounts"
+            isEnabled={settings.notifyHighAmount}
+            onChange={handleToggleNotifyHighAmount}
+          />
+          
+          {settings.notifyHighAmount && (
             <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-              <span className="text-sm text-gray-900">Label name:</span>
+              <span className="text-sm text-gray-900">Amount threshold:</span>
               <input
-                type="text"
-                className="w-32 p-1 border border-gray-300 rounded text-sm"
-                value={userSettingsData?.label_name || 'BillScanned'}
-                onChange={handleChangeLabelName}
-                placeholder="BillScanned"
+                type="number"
+                className="w-20 p-1 border border-gray-300 rounded text-right text-sm"
+                value={settings.highAmountThreshold}
+                onChange={handleChangeHighAmountThreshold}
+                min="1"
+                step="0.01"
               />
             </div>
           )}
           
-          <div className="space-y-1.5 mt-3">
-            <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-              <span className="text-sm text-gray-900">Max results:</span>
-              <input
-                type="number"
-                className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
-                value={settings.maxResults}
-                onChange={handleChangeMaxResults}
-                min="1"
-                max="100"
-              />
-            </div>
-            
-            <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-              <span className="text-sm text-gray-900">Search days:</span>
-              <input
-                type="number"
-                className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
-                value={settings.searchDays}
-                onChange={handleChangeSearchDays}
-                min="1"
-                max="365"
-              />
-            </div>
-          </div>
+          <SettingsToggle
+            label="Notify for errors"
+            isEnabled={settings.notifyErrors}
+            onChange={handleToggleNotifyErrors}
+          />
         </div>
       </CollapsibleSection>
       

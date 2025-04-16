@@ -54,7 +54,8 @@ export const DB_SCHEMA = {
     'handle_new_auth_user',
     'add_trusted_email_source',
     'get_trusted_email_sources',
-    'increment_bills_used'
+    'increment_bills_used',
+    'ensure_user_preferences'
   ]
 };
 
@@ -178,16 +179,24 @@ export const TABLE_SCHEMAS = {
     id: 'uuid (primary key)',
     user_id: 'uuid (foreign key to users.id)',
     automatic_processing: 'boolean',
-    weekly_schedule: 'boolean',
-    schedule_day: 'text',
-    schedule_time: 'text',
     process_attachments: 'boolean',
-    max_results: 'integer',
+    trusted_sources_only: 'boolean',
+    capture_important_notices: 'boolean',
+    schedule_enabled: 'boolean',
+    schedule_frequency: 'text',
+    schedule_day_of_week: 'text',
+    schedule_day_of_month: 'text',
+    schedule_time: 'text',
+    run_initial_scan: 'boolean',
     search_days: 'integer',
+    input_language: 'text',
+    output_language: 'text',
+    notify_processed: 'boolean',
+    notify_high_amount: 'boolean',
+    notify_errors: 'boolean',
+    high_amount_threshold: 'numeric',
     created_at: 'timestamp with time zone',
-    updated_at: 'timestamp with time zone',
-    apply_labels: 'boolean',
-    label_name: 'text'
+    updated_at: 'timestamp with time zone'
   },
   
   // User sheets schema
@@ -257,12 +266,22 @@ export const VIEW_DEFINITIONS = {
       u.id,
       u.plan,
       up.automatic_processing,
-      up.weekly_schedule,
       up.process_attachments,
-      up.max_results,
+      up.trusted_sources_only,
+      up.capture_important_notices,
+      up.schedule_enabled,
+      up.schedule_frequency,
+      up.schedule_day_of_week,
+      up.schedule_day_of_month,
+      up.schedule_time,
+      up.run_initial_scan,
       up.search_days,
-      up.apply_labels,
-      up.label_name,
+      up.input_language,
+      up.output_language,
+      up.notify_processed,
+      up.notify_high_amount,
+      up.notify_errors,
+      up.high_amount_threshold,
       us.sheet_id,
       us.sheet_name
     FROM users u
