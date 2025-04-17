@@ -247,27 +247,27 @@ const Settings = ({ onNavigate }: SettingsProps) => {
           const newSettings = {
             // Basic processing options
             automaticProcessing: userSettings?.automatic_processing ?? DEFAULT_USER_PREFERENCES.automatic_processing,
-            processAttachments: userSettings?.process_attachments ?? DEFAULT_USER_PREFERENCES.process_attachments,
-            trustedSourcesOnly: userSettings?.trusted_sources_only ?? DEFAULT_USER_PREFERENCES.trusted_sources_only,
-            captureImportantNotices: userSettings?.capture_important_notices ?? DEFAULT_USER_PREFERENCES.capture_important_notices,
+            process_attachments: userSettings?.process_attachments ?? DEFAULT_USER_PREFERENCES.process_attachments,
+            trusted_sources_only: userSettings?.trusted_sources_only ?? DEFAULT_USER_PREFERENCES.trusted_sources_only,
+            capture_important_notices: userSettings?.capture_important_notices ?? DEFAULT_USER_PREFERENCES.capture_important_notices,
             // Schedule options
-            scheduleEnabled: userSettings?.schedule_enabled ?? DEFAULT_USER_PREFERENCES.schedule_enabled,
-            scheduleFrequency: userSettings?.schedule_frequency ?? DEFAULT_USER_PREFERENCES.schedule_frequency,
-            scheduleDayOfWeek: userSettings?.schedule_day_of_week ?? DEFAULT_USER_PREFERENCES.schedule_day_of_week,
-            scheduleDayOfMonth: userSettings?.schedule_day_of_month ?? DEFAULT_USER_PREFERENCES.schedule_day_of_month,
-            scheduleTime: userSettings?.schedule_time ?? DEFAULT_USER_PREFERENCES.schedule_time,
-            runInitialScan: userSettings?.run_initial_scan ?? DEFAULT_USER_PREFERENCES.run_initial_scan,
+            schedule_enabled: userSettings?.schedule_enabled ?? DEFAULT_USER_PREFERENCES.schedule_enabled,
+            schedule_frequency: userSettings?.schedule_frequency ?? DEFAULT_USER_PREFERENCES.schedule_frequency,
+            schedule_day_of_week: userSettings?.schedule_day_of_week ?? DEFAULT_USER_PREFERENCES.schedule_day_of_week,
+            schedule_day_of_month: userSettings?.schedule_day_of_month ?? DEFAULT_USER_PREFERENCES.schedule_day_of_month,
+            schedule_time: userSettings?.schedule_time ?? DEFAULT_USER_PREFERENCES.schedule_time,
+            run_initial_scan: userSettings?.run_initial_scan ?? DEFAULT_USER_PREFERENCES.run_initial_scan,
             // Search parameters
             maxResults: 50, // Default value since it's not stored in DB
-            searchDays: userSettings?.search_days ?? DEFAULT_USER_PREFERENCES.search_days,
+            search_days: userSettings?.search_days ?? DEFAULT_USER_PREFERENCES.search_days,
             // Language options
-            inputLanguage: userSettings?.input_language ?? DEFAULT_USER_PREFERENCES.input_language,
-            outputLanguage: userSettings?.output_language ?? DEFAULT_USER_PREFERENCES.output_language,
+            input_language: userSettings?.input_language ?? DEFAULT_USER_PREFERENCES.input_language,
+            output_language: userSettings?.output_language ?? DEFAULT_USER_PREFERENCES.output_language,
             // Notification preferences
-            notifyProcessed: userSettings?.notify_processed ?? DEFAULT_USER_PREFERENCES.notify_processed,
-            notifyHighAmount: userSettings?.notify_high_amount ?? DEFAULT_USER_PREFERENCES.notify_high_amount,
-            notifyErrors: userSettings?.notify_errors ?? DEFAULT_USER_PREFERENCES.notify_errors,
-            highAmountThreshold: userSettings?.high_amount_threshold ?? DEFAULT_USER_PREFERENCES.high_amount_threshold
+            notify_processed: userSettings?.notify_processed ?? DEFAULT_USER_PREFERENCES.notify_processed,
+            notify_high_amount: userSettings?.notify_high_amount ?? DEFAULT_USER_PREFERENCES.notify_high_amount,
+            notify_errors: userSettings?.notify_errors ?? DEFAULT_USER_PREFERENCES.notify_errors,
+            high_amount_threshold: userSettings?.high_amount_threshold ?? DEFAULT_USER_PREFERENCES.high_amount_threshold
           };
           
           // Only update if there are changes
@@ -755,13 +755,13 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       setIsLoading(true);
       
       // Update UI state first for responsive feel
-    updateSettings({ automaticProcessing: checked });
+      updateSettings({ automaticProcessing: checked });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'automatic_processing', checked);
         if (!success) {
           throw new Error('Failed to update automatic processing preference in database');
@@ -822,13 +822,13 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       setIsLoading(true);
       
       // Update UI state first for responsive feel
-    updateSettings({ trustedSourcesOnly: checked });
+      updateSettings({ trustedSourcesOnly: checked });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'trusted_sources_only', checked);
         if (!success) {
           throw new Error('Failed to update trusted sources only preference in database');
@@ -851,13 +851,13 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       setIsLoading(true);
       
       // Update UI state first for responsive feel
-    updateSettings({ captureImportantNotices: checked });
+      updateSettings({ captureImportantNotices: checked });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'capture_important_notices', checked);
         if (!success) {
           throw new Error('Failed to update capture important notices preference in database');
@@ -879,14 +879,25 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     try {
       setIsLoading(true);
       
+      // If user is trying to enable scheduled scanning but doesn't have a PRO plan
+      if (checked && userProfile?.plan !== 'pro') {
+        // Show a more user-friendly upgrade notification
+        if (confirm('Scheduled scanning is a PRO feature. Would you like to upgrade your plan to unlock this feature?')) {
+          // Navigate to upgrade page or open subscription modal
+          // This could be replaced with your actual upgrade flow
+          window.open('https://www.getgmailbillscanner.com/upgrade', '_blank');
+        }
+        return;
+      }
+      
       // Update UI state first for responsive feel
       updateSettings({ scheduleEnabled: checked });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'schedule_enabled', checked);
         if (!success) {
           throw new Error('Failed to update schedule enabled preference in database');
@@ -902,7 +913,7 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     } finally {
       setIsLoading(false);
     }
-  }, [updateSettings]);
+  }, [updateSettings, userProfile]);
   
   const handleToggleRunInitialScan = useCallback(async (checked: boolean) => {
     try {
@@ -911,11 +922,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Update UI state first for responsive feel
       updateSettings({ runInitialScan: checked });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'run_initial_scan', checked);
         if (!success) {
           throw new Error('Failed to update run initial scan preference in database');
@@ -940,11 +951,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Update UI state first for responsive feel
       updateSettings({ notifyProcessed: checked });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'notify_processed', checked);
         if (!success) {
           throw new Error('Failed to update notify processed preference in database');
@@ -969,11 +980,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Update UI state first for responsive feel
       updateSettings({ notifyHighAmount: checked });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'notify_high_amount', checked);
         if (!success) {
           throw new Error('Failed to update notify high amount preference in database');
@@ -998,11 +1009,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Update UI state first for responsive feel
       updateSettings({ notifyErrors: checked });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'notify_errors', checked);
         if (!success) {
           throw new Error('Failed to update notify errors preference in database');
@@ -1028,11 +1039,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Update UI state first for responsive feel
       updateSettings({ scheduleFrequency: e.target.value });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'schedule_frequency', e.target.value);
         if (!success) {
           throw new Error('Failed to update schedule frequency preference in database');
@@ -1055,11 +1066,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Update UI state first for responsive feel
       updateSettings({ scheduleDayOfWeek: e.target.value });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'schedule_day_of_week', e.target.value);
         if (!success) {
           throw new Error('Failed to update schedule day of week preference in database');
@@ -1082,11 +1093,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Update UI state first for responsive feel
       updateSettings({ scheduleDayOfMonth: e.target.value });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'schedule_day_of_month', e.target.value);
         if (!success) {
           throw new Error('Failed to update schedule day of month preference in database');
@@ -1109,11 +1120,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Update UI state first for responsive feel
       updateSettings({ scheduleTime: e.target.value });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'schedule_time', e.target.value);
         if (!success) {
           throw new Error('Failed to update schedule time preference in database');
@@ -1136,11 +1147,11 @@ const Settings = ({ onNavigate }: SettingsProps) => {
       // Update UI state first for responsive feel
       updateSettings({ inputLanguage: e.target.value });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
-    
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Get user identity
+      const identity = await resolveUserIdentity();
+      
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'input_language', e.target.value);
         if (!success) {
           throw new Error('Failed to update input language preference in database');
@@ -1183,65 +1194,19 @@ const Settings = ({ onNavigate }: SettingsProps) => {
     }
   }, [updateSettings]);
 
-  const handleChangeMaxResults = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    try {
-      setIsLoading(true);
-      const value = parseInt(e.target.value) || 50;
-      
-      // Update UI state only since this is not stored in the database
-      updateSettings({ maxResults: value });
-      
-      console.log('Updated maxResults in UI only:', value);
-    } catch (error) {
-      console.error('Error updating max results setting:', error);
-      // Could revert UI state on error if needed
-    } finally {
-      setIsLoading(false);
-    }
-  }, [updateSettings]);
-
-  const handleChangeSearchDays = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    try {
-      setIsLoading(true);
-      const value = parseInt(e.target.value) || 30;
-      
-      // Update UI state first for responsive feel
-      updateSettings({ searchDays: value });
-      
-      // Get user identity
-      const identity = await resolveUserIdentity();
-      
-      // Update in Supabase if we have a Supabase ID
-      if (identity.supabaseId) {
-        const success = await updateUserPreference(identity.supabaseId, 'search_days', value);
-        if (!success) {
-          throw new Error('Failed to update search days preference in database');
-        }
-        console.log('Successfully updated search_days in Supabase:', value);
-      } else {
-        console.warn('No Supabase ID available, settings only updated locally');
-      }
-    } catch (error) {
-      console.error('Error updating search days setting:', error);
-      // Could revert UI state on error if needed
-    } finally {
-      setIsLoading(false);
-    }
-  }, [updateSettings]);
-  
   const handleChangeHighAmountThreshold = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     try {
       setIsLoading(true);
-    const value = parseFloat(e.target.value) || 100;
+      const value = parseFloat(e.target.value) || 100;
       
       // Update UI state first for responsive feel
-    updateSettings({ highAmountThreshold: value });
+      updateSettings({ highAmountThreshold: value });
     
-    // Get user identity
-    const identity = await resolveUserIdentity();
+      // Get user identity
+      const identity = await resolveUserIdentity();
     
-    // Update in Supabase if we have a Supabase ID
-    if (identity.supabaseId) {
+      // Update in Supabase if we have a Supabase ID
+      if (identity.supabaseId) {
         const success = await updateUserPreference(identity.supabaseId, 'high_amount_threshold', value);
         if (!success) {
           throw new Error('Failed to update high amount threshold preference in database');
@@ -1426,6 +1391,56 @@ const Settings = ({ onNavigate }: SettingsProps) => {
 
   // Get default sheet - define this here to fix linter errors
   const defaultSheet = userSheets.find(sheet => sheet.is_default);
+
+  // Helper function to get default from date (30 days ago)
+  const getDefaultFromDate = (): string => {
+    const date = new Date();
+    date.setDate(date.getDate() - 30);
+    return date.toISOString().split('T')[0];
+  };
+
+  // Helper function to get current date
+  const getCurrentDate = (): string => {
+    return new Date().toISOString().split('T')[0];
+  };
+
+  // Handler for max results change
+  const handleChangeMaxResults = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value) || 50;
+    updateSettings({ maxResults: value });
+  }, [updateSettings]);
+
+  // Handler for running a manual scan
+  const handleRunInitialScan = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      
+      // Get date inputs with proper type assertions
+      const fromDateInput = document.querySelector('input[type="date"]:first-of-type') as HTMLInputElement | null;
+      const toDateInput = document.querySelector('input[type="date"]:last-of-type') as HTMLInputElement | null;
+      
+      // Send message to background script to run a scan
+      const response = await chrome.runtime.sendMessage({ 
+        type: 'RUN_MANUAL_SCAN',
+        payload: {
+          maxResults: settings.maxResults,
+          fromDate: fromDateInput?.value || getDefaultFromDate(),
+          toDate: toDateInput?.value || getCurrentDate()
+        }
+      });
+      
+      if (response && response.success) {
+        alert(`Scan complete. Processed ${response.processed || 0} emails.`);
+      } else {
+        throw new Error(response?.error || 'Unknown error occurred during scan');
+      }
+    } catch (error) {
+      console.error('Error running manual scan:', error);
+      alert(`Failed to run scan: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [settings.maxResults, setIsLoading]);
 
   return (
     <div className="space-y-3">
@@ -1642,106 +1657,6 @@ const Settings = ({ onNavigate }: SettingsProps) => {
             onChange={handleToggleCaptureImportantNotices}
           />
           
-          <div className="text-xs font-medium text-gray-600 mb-1 mt-3">Schedule</div>
-          <SettingsToggle
-            label="Enable scheduled scanning"
-            isEnabled={settings.scheduleEnabled}
-            onChange={handleToggleScheduleEnabled}
-            disabled={!userProfile || userProfile.plan === 'free'}
-            proFeature={userProfile?.plan === 'free'}
-          />
-          
-          {settings.scheduleEnabled && (
-            <>
-              <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-                <span className="text-sm text-gray-900">Frequency:</span>
-                <select
-                  className="p-1 border border-gray-300 rounded text-sm"
-                  value={settings.scheduleFrequency}
-                  onChange={handleChangeScheduleFrequency}
-                >
-                  <option value="daily">Daily</option>
-                  <option value="weekly">Weekly</option>
-                  <option value="monthly">Monthly</option>
-                </select>
-              </div>
-              
-              {settings.scheduleFrequency === 'weekly' && (
-                <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-                  <span className="text-sm text-gray-900">Day of week:</span>
-                  <select
-                    className="p-1 border border-gray-300 rounded text-sm"
-                    value={settings.scheduleDayOfWeek}
-                    onChange={handleChangeScheduleDayOfWeek}
-                  >
-                    <option value="monday">Monday</option>
-                    <option value="tuesday">Tuesday</option>
-                    <option value="wednesday">Wednesday</option>
-                    <option value="thursday">Thursday</option>
-                    <option value="friday">Friday</option>
-                    <option value="saturday">Saturday</option>
-                    <option value="sunday">Sunday</option>
-                  </select>
-                </div>
-              )}
-              
-              {settings.scheduleFrequency === 'monthly' && (
-                <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-                  <span className="text-sm text-gray-900">Day of month:</span>
-                  <input
-                    type="number"
-                    className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
-                    value={settings.scheduleDayOfMonth}
-                    onChange={handleChangeScheduleDayOfMonth}
-                    min="1"
-                    max="28"
-                  />
-                </div>
-              )}
-              
-              <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-                <span className="text-sm text-gray-900">Time:</span>
-                <input
-                  type="time"
-                  className="p-1 border border-gray-300 rounded text-sm"
-                  value={settings.scheduleTime}
-                  onChange={handleChangeScheduleTime}
-                />
-              </div>
-              
-              <SettingsToggle
-                label="Run initial scan now"
-                isEnabled={settings.runInitialScan}
-                onChange={handleToggleRunInitialScan}
-              />
-            </>
-          )}
-          
-          <div className="text-xs font-medium text-gray-600 mb-1 mt-3">Search Parameters</div>
-          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-            <span className="text-sm text-gray-900">Max results:</span>
-            <input
-              type="number"
-              className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
-              value={settings.maxResults}
-              onChange={handleChangeMaxResults}
-              min="1"
-              max="100"
-            />
-          </div>
-          
-          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-            <span className="text-sm text-gray-900">Search days:</span>
-            <input
-              type="number"
-              className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
-              value={settings.searchDays}
-              onChange={handleChangeSearchDays}
-              min="1"
-              max="365"
-            />
-          </div>
-          
           <div className="text-xs font-medium text-gray-600 mb-1 mt-3">Language</div>
           <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
             <span className="text-sm text-gray-900">Input language:</span>
@@ -1804,6 +1719,133 @@ const Settings = ({ onNavigate }: SettingsProps) => {
             isEnabled={settings.notifyErrors}
             onChange={handleToggleNotifyErrors}
           />
+        </div>
+      </CollapsibleSection>
+      
+      <CollapsibleSection title="Schedule" defaultOpen={true}>
+        <div className="space-y-1.5">
+          <SettingsToggle
+            label="Enable scheduled scanning"
+            isEnabled={settings.scheduleEnabled}
+            onChange={handleToggleScheduleEnabled}
+            disabled={!userProfile || userProfile.plan !== 'pro'}
+            proFeature={true}
+          />
+          
+          {settings.scheduleEnabled && (
+            <>
+              <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+                <span className="text-sm text-gray-900">Frequency:</span>
+                <select
+                  className="p-1 border border-gray-300 rounded text-sm"
+                  value={settings.scheduleFrequency}
+                  onChange={handleChangeScheduleFrequency}
+                >
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+              
+              {settings.scheduleFrequency === 'weekly' && (
+                <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+                  <span className="text-sm text-gray-900">Day of week:</span>
+                  <select
+                    className="p-1 border border-gray-300 rounded text-sm"
+                    value={settings.scheduleDayOfWeek}
+                    onChange={handleChangeScheduleDayOfWeek}
+                  >
+                    <option value="monday">Monday</option>
+                    <option value="tuesday">Tuesday</option>
+                    <option value="wednesday">Wednesday</option>
+                    <option value="thursday">Thursday</option>
+                    <option value="friday">Friday</option>
+                    <option value="saturday">Saturday</option>
+                    <option value="sunday">Sunday</option>
+                  </select>
+                </div>
+              )}
+              
+              {settings.scheduleFrequency === 'monthly' && (
+                <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+                  <span className="text-sm text-gray-900">Day of month:</span>
+                  <input
+                    type="number"
+                    className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
+                    value={settings.scheduleDayOfMonth}
+                    onChange={handleChangeScheduleDayOfMonth}
+                    min="1"
+                    max="28"
+                  />
+                </div>
+              )}
+              
+              <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+                <span className="text-sm text-gray-900">Time:</span>
+                <input
+                  type="time"
+                  className="p-1 border border-gray-300 rounded text-sm"
+                  value={settings.scheduleTime}
+                  onChange={handleChangeScheduleTime}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </CollapsibleSection>
+      
+      <CollapsibleSection title="Manual Scan" defaultOpen={true}>
+        <div className="space-y-1.5">
+          <div className="p-2 bg-white rounded-lg border border-gray-200">
+            <div className="text-xs font-medium text-gray-600 mb-2">Date Range</div>
+            <div className="flex items-center justify-between space-x-2">
+              <div className="flex-1">
+                <label className="text-xs text-gray-500 block mb-1">From</label>
+                <input
+                  type="date"
+                  className="w-full p-1.5 border border-gray-300 rounded text-sm"
+                  defaultValue={getDefaultFromDate()}
+                />
+              </div>
+              <div className="flex-1">
+                <label className="text-xs text-gray-500 block mb-1">To</label>
+                <input
+                  type="date"
+                  className="w-full p-1.5 border border-gray-300 rounded text-sm"
+                  defaultValue={getCurrentDate()}
+                />
+              </div>
+            </div>
+          </div>
+          
+          <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
+            <div>
+              <div className="text-sm font-medium text-gray-900">Max results:</div>
+              <div className="text-xs text-gray-500">Limit emails scanned</div>
+            </div>
+            <input
+              type="number"
+              className="w-16 p-1.5 border border-gray-300 rounded text-right text-sm"
+              value={settings.maxResults}
+              onChange={handleChangeMaxResults}
+              min="1"
+              max="100"
+            />
+          </div>
+          
+          <SettingsToggle
+            label="Run initial scan now"
+            isEnabled={settings.runInitialScan}
+            onChange={handleToggleRunInitialScan}
+          />
+          
+          <button 
+            className="w-full mt-2 bg-blue-100 hover:bg-blue-200 text-blue-800 py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
+            onClick={handleRunInitialScan}
+          >
+            <RefreshCw size={14} className="mr-1.5" />
+            Run Scan Now
+          </button>
         </div>
       </CollapsibleSection>
       
