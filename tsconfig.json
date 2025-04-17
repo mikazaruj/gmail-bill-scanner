@@ -22,7 +22,9 @@
       "~*": ["./*"]
     },
     "typeRoots": ["./node_modules/@types", "./src/types"],
-    "noImplicitAny": false
+    "noImplicitAny": false,
+    "ignoreDeprecations": "5.0",
+    "noImplicitThis": false
   },
   "include": [
     "src"

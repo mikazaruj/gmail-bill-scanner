@@ -1,13 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import * as React from 'react';
+import { useState, useEffect } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 
 interface CollapsibleSectionProps {
   title: string;
-  children: JSX.Element | JSX.Element[];
+  children: React.ReactNode;
   defaultOpen?: boolean;
 }
 
-const CollapsibleSection = ({ title, children, defaultOpen = false }: CollapsibleSectionProps) => {
+const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({ 
+  title, 
+  children, 
+  defaultOpen = false 
+}) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   
   useEffect(() => {

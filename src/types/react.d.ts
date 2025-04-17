@@ -5,7 +5,25 @@
  * In a real-world project, you would typically install the @types/react package.
  */
 
+import * as React from 'react';
+
+// This declaration file fixes compatibility issues between JSX.Element and React.ReactNode
+// These types are essentially compatible but TypeScript has issues with their direct usage
+
+declare global {
+  namespace JSX {
+    // Make JSX.Element extend React.ReactElement for better type compatibility
+    interface Element extends React.ReactElement<any, any> {}
+  }
+}
+
+// Augment React modules
 declare module 'react' {
+  // Make ReactNode accept Element (the built-in React 18 types have issues with this)
+  interface ReactNode {
+    _reactNodeBrand?: any;
+  }
+
   // Define the core React namespace
   export = React;
   export as namespace React;
@@ -112,8 +130,6 @@ declare module 'react' {
 
 // JSX namespace for TypeScript to understand JSX syntax
 declare namespace JSX {
-  interface Element extends React.ReactElement {}
-  
   interface ElementAttributesProperty {
     props: {};
   }
