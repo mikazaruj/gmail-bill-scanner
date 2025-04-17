@@ -26,6 +26,9 @@ export function useConnectionManager() {
   const [isCreateSheetModalOpen, setIsCreateSheetModalOpen] = useState<boolean>(false);
   const [newSheetName, setNewSheetName] = useState<string>('Bills Tracker');
 
+  // Add initialization flag
+  const [isInitialized, setIsInitialized] = useState<boolean>(false);
+
   // Helper function to ensure Google ID is available in headers
   const ensureGoogleIdHeader = async (userId: string) => {
     try {
@@ -161,6 +164,45 @@ export function useConnectionManager() {
       return null;
     }
   }, [userSheets.length]);
+
+  // Add effect to initialize data automatically
+  useEffect(() => {
+    // Skip if already initialized
+    if (isInitialized) return;
+
+    const initializeData = async () => {
+      try {
+        console.log('initializing connection data...');
+        setIsConnectionLoading(true);
+        
+        // Try to get user identity
+        const identity = await resolveUserIdentity();
+        console.log('got identity:', identity);
+        
+        if (identity && identity.supabaseId) {
+          // Load from storage first for quick UI response
+          await loadConnectionsFromStorage(identity.supabaseId);
+          
+          // Then load from database
+          await loadConnectionsFromDatabase(identity.supabaseId);
+        } else {
+          // Fall back to storage only
+          await loadConnectionsFromStorage(null);
+        }
+        
+        setIsInitialized(true);
+        console.log('connection data initialized');
+      } catch (error) {
+        console.error('Error initializing connection data:', error);
+      } finally {
+        // Ensure loading state is reset
+        setIsConnectionLoading(false);
+        console.log('reset loading state');
+      }
+    };
+    
+    initializeData();
+  }, [loadConnectionsFromStorage, loadConnectionsFromDatabase, isInitialized]);
 
   // Load available sheets from Google Drive API
   const loadAvailableSheets = useCallback(async () => {
