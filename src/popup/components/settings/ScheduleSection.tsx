@@ -1,8 +1,9 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { ChangeEvent } from 'react';
 import CollapsibleSection from '../CollapsibleSection';
 import SettingsToggle from '../SettingsToggle';
 import { useSettingsApi } from '../../hooks/settings/useSettingsApi';
+import { Info } from 'lucide-react';
 
 interface ScheduleSectionProps {
   userId: string | null;
@@ -18,18 +19,14 @@ const ScheduleSection = ({
   userProfile
 }: ScheduleSectionProps) => {
   const { updateSetting } = useSettingsApi();
+  
+  // Determine if the section should be open by default
+  // Always open if schedule is enabled
+  const shouldBeOpen = useMemo(() => {
+    return settings.scheduleEnabled || false;
+  }, [settings.scheduleEnabled]);
 
   const handleToggleScheduleEnabled = useCallback(async (checked: boolean) => {
-    // If user is trying to enable scheduled scanning but doesn't have a PRO plan
-    if (checked && userProfile?.plan !== 'pro') {
-      // Show a more user-friendly upgrade notification
-      if (confirm('Scheduled scanning is a PRO feature. Would you like to upgrade your plan to unlock this feature?')) {
-        // Navigate to upgrade page or open subscription modal
-        window.open('https://www.getgmailbillscanner.com/upgrade', '_blank');
-      }
-      return;
-    }
-    
     // Update UI state first for responsive feel
     updateSettings({ scheduleEnabled: checked });
     
@@ -40,21 +37,6 @@ const ScheduleSection = ({
       // Revert UI state on error if needed
       if (!success) {
         updateSettings({ scheduleEnabled: !checked });
-      }
-    }
-  }, [userId, updateSettings, updateSetting, userProfile]);
-  
-  const handleToggleRunInitialScan = useCallback(async (checked: boolean) => {
-    // Update UI state first for responsive feel
-    updateSettings({ runInitialScan: checked });
-    
-    // Update in Supabase if we have a user ID
-    if (userId) {
-      const success = await updateSetting('run_initial_scan', checked);
-      
-      // Revert UI state on error if needed
-      if (!success) {
-        updateSettings({ runInitialScan: !checked });
       }
     }
   }, [userId, updateSettings, updateSetting]);
@@ -69,26 +51,6 @@ const ScheduleSection = ({
     }
   }, [userId, updateSettings, updateSetting]);
   
-  const handleChangeScheduleDayOfWeek = useCallback(async (e: ChangeEvent<HTMLSelectElement>) => {
-    // Update UI state first for responsive feel
-    updateSettings({ scheduleDayOfWeek: e.target.value });
-    
-    // Update in Supabase if we have a user ID
-    if (userId) {
-      await updateSetting('schedule_day_of_week', e.target.value);
-    }
-  }, [userId, updateSettings, updateSetting]);
-  
-  const handleChangeScheduleDayOfMonth = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    // Update UI state first for responsive feel
-    updateSettings({ scheduleDayOfMonth: e.target.value });
-    
-    // Update in Supabase if we have a user ID
-    if (userId) {
-      await updateSetting('schedule_day_of_month', e.target.value);
-    }
-  }, [userId, updateSettings, updateSetting]);
-  
   const handleChangeScheduleTime = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     // Update UI state first for responsive feel
     updateSettings({ scheduleTime: e.target.value });
@@ -98,16 +60,39 @@ const ScheduleSection = ({
       await updateSetting('schedule_time', e.target.value);
     }
   }, [userId, updateSettings, updateSetting]);
+  
+  const handleChangeInitialScanDate = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    // Update UI state first for responsive feel
+    updateSettings({ initialScanDate: e.target.value });
+    
+    // Update in Supabase if we have a user ID
+    if (userId) {
+      await updateSetting('initial_scan_date', e.target.value);
+    }
+  }, [userId, updateSettings, updateSetting]);
+
+  // Format date to YYYY-MM-DD for date input
+  const formatDateForInput = (dateString: string) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return ''; // Invalid date
+    return date.toISOString().split('T')[0];
+  };
+
+  // Get tomorrow's date as default
+  const getTomorrowDate = () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().split('T')[0];
+  };
 
   return (
-    <CollapsibleSection title="Schedule" defaultOpen={true}>
+    <CollapsibleSection title="Schedule" defaultOpen={shouldBeOpen}>
       <div className="space-y-1.5">
         <SettingsToggle
           label="Enable scheduled scanning"
           isEnabled={settings.scheduleEnabled}
           onChange={handleToggleScheduleEnabled}
-          disabled={!userProfile || userProfile.plan !== 'pro'}
-          proFeature={true}
         />
         
         {settings.scheduleEnabled && (
@@ -125,39 +110,6 @@ const ScheduleSection = ({
               </select>
             </div>
             
-            {settings.scheduleFrequency === 'weekly' && (
-              <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-                <span className="text-sm text-gray-900">Day of week:</span>
-                <select
-                  className="p-1 border border-gray-300 rounded text-sm"
-                  value={settings.scheduleDayOfWeek}
-                  onChange={handleChangeScheduleDayOfWeek}
-                >
-                  <option value="monday">Monday</option>
-                  <option value="tuesday">Tuesday</option>
-                  <option value="wednesday">Wednesday</option>
-                  <option value="thursday">Thursday</option>
-                  <option value="friday">Friday</option>
-                  <option value="saturday">Saturday</option>
-                  <option value="sunday">Sunday</option>
-                </select>
-              </div>
-            )}
-            
-            {settings.scheduleFrequency === 'monthly' && (
-              <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
-                <span className="text-sm text-gray-900">Day of month:</span>
-                <input
-                  type="number"
-                  className="w-14 p-1 border border-gray-300 rounded text-right text-sm"
-                  value={settings.scheduleDayOfMonth}
-                  onChange={handleChangeScheduleDayOfMonth}
-                  min="1"
-                  max="28"
-                />
-              </div>
-            )}
-            
             <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
               <span className="text-sm text-gray-900">Time:</span>
               <input
@@ -167,14 +119,27 @@ const ScheduleSection = ({
                 onChange={handleChangeScheduleTime}
               />
             </div>
+            
+            <div className="p-2 bg-white rounded-lg border border-gray-200">
+              <div className="flex items-center gap-1 mb-2">
+                <span className="text-sm text-gray-900">Initial Scan Date</span>
+                <Info size={14} className="text-gray-500" />
+              </div>
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="date"
+                  className="p-1 border border-gray-300 rounded text-sm w-full"
+                  value={formatDateForInput(settings.initialScanDate) || getTomorrowDate()}
+                  onChange={handleChangeInitialScanDate}
+                  min={getTomorrowDate()} // Cannot be earlier than tomorrow
+                />
+                <p className="text-xs text-gray-500">
+                  When scheduled scanning begins, emails from the last {settings.searchDays || 30} days will be processed.
+                </p>
+              </div>
+            </div>
           </>
         )}
-        
-        <SettingsToggle
-          label="Run initial scan now"
-          isEnabled={settings.runInitialScan}
-          onChange={handleToggleRunInitialScan}
-        />
       </div>
     </CollapsibleSection>
   );

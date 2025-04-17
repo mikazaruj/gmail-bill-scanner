@@ -7,17 +7,15 @@ export interface UserSettingsView {
   quota_bills_monthly: number;
   quota_bills_used: number;
   // Basic processing options
-  automatic_processing: boolean;
+  immediate_processing: boolean;
   process_attachments: boolean;
   trusted_sources_only: boolean;
   capture_important_notices: boolean;
   // Schedule options
   schedule_enabled: boolean;
   schedule_frequency: string;
-  schedule_day_of_week: string;
-  schedule_day_of_month: string;
   schedule_time: string;
-  run_initial_scan: boolean;
+  initial_scan_date: string;
   // Search parameters
   search_days: number;
   // Language options
@@ -39,17 +37,15 @@ export interface UserSettingsView {
 // Default settings that will be used
 export const DEFAULT_USER_PREFERENCES = {
   // Basic processing options
-  automatic_processing: false,
+  immediate_processing: false,
   process_attachments: true,
   trusted_sources_only: true,
   capture_important_notices: false,
   // Schedule options
   schedule_enabled: false,
   schedule_frequency: 'weekly',
-  schedule_day_of_week: 'monday',
-  schedule_day_of_month: '1',
   schedule_time: '09:00',
-  run_initial_scan: true,
+  initial_scan_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // Tomorrow
   // Search parameters
   search_days: 30,
   // Language options
@@ -92,16 +88,14 @@ export const ensureUserSettingsView = async (): Promise<boolean> => {
         u.plan,
         u.quota_bills_monthly,
         u.quota_bills_used,
-        p.automatic_processing,
+        p.immediate_processing,
         p.process_attachments,
         p.trusted_sources_only,
         p.capture_important_notices,
         p.schedule_enabled,
         p.schedule_frequency,
-        p.schedule_day_of_week,
-        p.schedule_day_of_month,
         p.schedule_time,
-        p.run_initial_scan,
+        p.initial_scan_date,
         p.search_days,
         p.input_language,
         p.output_language,
@@ -234,17 +228,15 @@ export const getFallbackUserSettings = async (userId: string): Promise<UserSetti
       quota_bills_monthly: userData.quota_bills_monthly,
       quota_bills_used: userData.quota_bills_used,
       // Basic processing options
-      automatic_processing: prefsData?.automatic_processing ?? DEFAULT_USER_PREFERENCES.automatic_processing,
+      immediate_processing: prefsData?.immediate_processing ?? DEFAULT_USER_PREFERENCES.immediate_processing,
       process_attachments: prefsData?.process_attachments ?? DEFAULT_USER_PREFERENCES.process_attachments,
       trusted_sources_only: prefsData?.trusted_sources_only ?? DEFAULT_USER_PREFERENCES.trusted_sources_only,
       capture_important_notices: prefsData?.capture_important_notices ?? DEFAULT_USER_PREFERENCES.capture_important_notices,
       // Schedule options
       schedule_enabled: prefsData?.schedule_enabled ?? DEFAULT_USER_PREFERENCES.schedule_enabled,
       schedule_frequency: prefsData?.schedule_frequency ?? DEFAULT_USER_PREFERENCES.schedule_frequency,
-      schedule_day_of_week: prefsData?.schedule_day_of_week ?? DEFAULT_USER_PREFERENCES.schedule_day_of_week,
-      schedule_day_of_month: prefsData?.schedule_day_of_month ?? DEFAULT_USER_PREFERENCES.schedule_day_of_month,
       schedule_time: prefsData?.schedule_time ?? DEFAULT_USER_PREFERENCES.schedule_time,
-      run_initial_scan: prefsData?.run_initial_scan ?? DEFAULT_USER_PREFERENCES.run_initial_scan,
+      initial_scan_date: prefsData?.initial_scan_date ?? DEFAULT_USER_PREFERENCES.initial_scan_date,
       // Search parameters
       search_days: prefsData?.search_days ?? DEFAULT_USER_PREFERENCES.search_days,
       // Language options
@@ -470,17 +462,15 @@ export const getUserSettingsWithDefaults = async (userId: string): Promise<UserS
       quota_bills_monthly: 50,
       quota_bills_used: 0,
       // Basic processing options
-      automatic_processing: DEFAULT_USER_PREFERENCES.automatic_processing,
+      immediate_processing: DEFAULT_USER_PREFERENCES.immediate_processing,
       process_attachments: DEFAULT_USER_PREFERENCES.process_attachments,
       trusted_sources_only: DEFAULT_USER_PREFERENCES.trusted_sources_only,
       capture_important_notices: DEFAULT_USER_PREFERENCES.capture_important_notices,
       // Schedule options
       schedule_enabled: DEFAULT_USER_PREFERENCES.schedule_enabled,
       schedule_frequency: DEFAULT_USER_PREFERENCES.schedule_frequency,
-      schedule_day_of_week: DEFAULT_USER_PREFERENCES.schedule_day_of_week,
-      schedule_day_of_month: DEFAULT_USER_PREFERENCES.schedule_day_of_month,
       schedule_time: DEFAULT_USER_PREFERENCES.schedule_time,
-      run_initial_scan: DEFAULT_USER_PREFERENCES.run_initial_scan,
+      initial_scan_date: DEFAULT_USER_PREFERENCES.initial_scan_date,
       // Search parameters
       search_days: DEFAULT_USER_PREFERENCES.search_days,
       // Language options
@@ -529,17 +519,15 @@ export const createDefaultSettings = (userId: string): UserSettingsView => {
     quota_bills_monthly: 10,
     quota_bills_used: 0,
     // Basic processing options
-    automatic_processing: DEFAULT_USER_PREFERENCES.automatic_processing,
+    immediate_processing: DEFAULT_USER_PREFERENCES.immediate_processing,
     process_attachments: DEFAULT_USER_PREFERENCES.process_attachments,
     trusted_sources_only: DEFAULT_USER_PREFERENCES.trusted_sources_only,
     capture_important_notices: DEFAULT_USER_PREFERENCES.capture_important_notices,
     // Schedule options
     schedule_enabled: DEFAULT_USER_PREFERENCES.schedule_enabled,
     schedule_frequency: DEFAULT_USER_PREFERENCES.schedule_frequency,
-    schedule_day_of_week: DEFAULT_USER_PREFERENCES.schedule_day_of_week,
-    schedule_day_of_month: DEFAULT_USER_PREFERENCES.schedule_day_of_month,
     schedule_time: DEFAULT_USER_PREFERENCES.schedule_time,
-    run_initial_scan: DEFAULT_USER_PREFERENCES.run_initial_scan,
+    initial_scan_date: DEFAULT_USER_PREFERENCES.initial_scan_date,
     // Search parameters
     search_days: DEFAULT_USER_PREFERENCES.search_days,
     // Language options

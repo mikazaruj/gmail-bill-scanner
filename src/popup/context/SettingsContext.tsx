@@ -6,7 +6,7 @@
  * The settings structure has been updated to match the new database schema:
  * 
  * Basic processing options:
- * - automaticProcessing -> automatic_processing
+ * - immediateProcessing -> immediate_processing
  * - processAttachments -> process_attachments
  * - trustedSourcesOnly -> trusted_sources_only
  * - captureImportantNotices -> capture_important_notices
@@ -14,10 +14,8 @@
  * Schedule options:
  * - scheduleEnabled -> schedule_enabled (replaces weeklySchedule)
  * - scheduleFrequency -> schedule_frequency
- * - scheduleDayOfWeek -> schedule_day_of_week
- * - scheduleDayOfMonth -> schedule_day_of_month
  * - scheduleTime -> schedule_time
- * - runInitialScan -> run_initial_scan
+ * - initialScanDate -> initial_scan_date
  * 
  * Search parameters:
  * - maxResults -> max_results
@@ -41,7 +39,7 @@ import { DEFAULT_USER_PREFERENCES } from '../../services/settings';
 // Create the interface for settings in the UI
 export interface Settings {
   // Basic processing options
-  automaticProcessing: boolean;
+  immediateProcessing: boolean;
   processAttachments: boolean;
   trustedSourcesOnly: boolean;
   captureImportantNotices: boolean;
@@ -49,10 +47,8 @@ export interface Settings {
   // Schedule options
   scheduleEnabled: boolean;
   scheduleFrequency: string;
-  scheduleDayOfWeek: string;
-  scheduleDayOfMonth: string;
   scheduleTime: string;
-  runInitialScan: boolean;
+  initialScanDate: string;
   
   // Search parameters
   maxResults: number; // Not stored in DB but kept for UI/code compatibility
@@ -83,17 +79,15 @@ interface SettingsContextType {
 // Map database settings to UI settings
 const defaultSettings: Settings = {
   // Basic processing options
-  automaticProcessing: DEFAULT_USER_PREFERENCES.automatic_processing,
+  immediateProcessing: DEFAULT_USER_PREFERENCES.immediate_processing,
   processAttachments: DEFAULT_USER_PREFERENCES.process_attachments,
   trustedSourcesOnly: DEFAULT_USER_PREFERENCES.trusted_sources_only,
   captureImportantNotices: DEFAULT_USER_PREFERENCES.capture_important_notices,
   // Schedule options
   scheduleEnabled: DEFAULT_USER_PREFERENCES.schedule_enabled,
   scheduleFrequency: DEFAULT_USER_PREFERENCES.schedule_frequency,
-  scheduleDayOfWeek: DEFAULT_USER_PREFERENCES.schedule_day_of_week,
-  scheduleDayOfMonth: DEFAULT_USER_PREFERENCES.schedule_day_of_month,
   scheduleTime: DEFAULT_USER_PREFERENCES.schedule_time,
-  runInitialScan: DEFAULT_USER_PREFERENCES.run_initial_scan,
+  initialScanDate: DEFAULT_USER_PREFERENCES.initial_scan_date,
   // Search parameters
   maxResults: 50, // Default value since it's not stored in DB
   searchDays: DEFAULT_USER_PREFERENCES.search_days,

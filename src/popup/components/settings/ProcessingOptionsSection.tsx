@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { ChangeEvent } from 'react';
 import CollapsibleSection from '../CollapsibleSection';
 import SettingsToggle from '../SettingsToggle';
@@ -16,18 +16,29 @@ const ProcessingOptionsSection = ({
   updateSettings 
 }: ProcessingOptionsSectionProps) => {
   const { updateSetting } = useSettingsApi();
+  
+  // Determine if section should be open by default
+  // Open if any processing option is enabled
+  const shouldBeOpen = useMemo(() => {
+    return (
+      settings.immediateProcessing || 
+      settings.notifyHighAmount || 
+      settings.captureImportantNotices || 
+      false
+    );
+  }, [settings.immediateProcessing, settings.notifyHighAmount, settings.captureImportantNotices]);
 
-  const handleToggleAutomaticProcessing = useCallback(async (checked: boolean) => {
+  const handleToggleImmediateProcessing = useCallback(async (checked: boolean) => {
     // Update UI state first for responsive feel
-    updateSettings({ automaticProcessing: checked });
+    updateSettings({ immediateProcessing: checked });
     
     // Update in Supabase if we have a user ID
     if (userId) {
-      const success = await updateSetting('automatic_processing', checked);
+      const success = await updateSetting('immediate_processing', checked);
       
       // Revert UI state on error if needed
       if (!success) {
-        updateSettings({ automaticProcessing: !checked });
+        updateSettings({ immediateProcessing: !checked });
       }
     }
   }, [userId, updateSettings, updateSetting]);
@@ -156,13 +167,13 @@ const ProcessingOptionsSection = ({
   }, [userId, updateSettings, updateSetting]);
 
   return (
-    <CollapsibleSection title="Processing Options" defaultOpen={true}>
+    <CollapsibleSection title="Processing Options" defaultOpen={shouldBeOpen}>
       <div className="space-y-1.5">
         <div className="text-xs font-medium text-gray-600 mb-1 mt-1">Basic Processing</div>
         <SettingsToggle
-          label="Automatic processing"
-          isEnabled={settings.automaticProcessing}
-          onChange={handleToggleAutomaticProcessing}
+          label="Immediate processing"
+          isEnabled={settings.immediateProcessing}
+          onChange={handleToggleImmediateProcessing}
         />
         
         <SettingsToggle
