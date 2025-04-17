@@ -30,6 +30,7 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const settingsRef = useRef(settings);
+  const [showTooltip, setShowTooltip] = useState(false);
   
   // Keep the ref updated with the latest settings
   useEffect(() => {
@@ -185,6 +186,34 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
         
         {settings.scheduleEnabled && (
           <>
+            <div className="p-2 bg-white rounded-lg border border-gray-200">
+              <div className="flex items-center gap-1 mb-2">
+                <span className="text-sm text-gray-900">Initial Scan Date</span>
+                <div className="relative">
+                  <Info 
+                    size={14} 
+                    className="text-gray-500 cursor-help"
+                    onMouseEnter={() => setShowTooltip(true)}
+                    onMouseLeave={() => setShowTooltip(false)}
+                  />
+                  {showTooltip && (
+                    <div className="absolute z-10 w-52 p-2 bg-gray-800 text-white text-xs rounded shadow-lg -left-24 -top-16">
+                      When scheduled scanning begins, emails from the last {settings.searchDays} days will be processed.
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="date"
+                  className="p-1 border border-gray-300 rounded text-sm w-full"
+                  value={formatDateForInput(settings.initialScanDate) || getTomorrowDate()}
+                  onChange={handleChangeInitialScanDate}
+                  min={getTomorrowDate()} // Cannot be earlier than tomorrow
+                />
+              </div>
+            </div>
+            
             <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
               <span className="text-sm text-gray-900">Frequency:</span>
               <select
@@ -206,25 +235,6 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
                 value={settings.scheduleTime}
                 onChange={handleChangeScheduleTime}
               />
-            </div>
-            
-            <div className="p-2 bg-white rounded-lg border border-gray-200">
-              <div className="flex items-center gap-1 mb-2">
-                <span className="text-sm text-gray-900">Initial Scan Date</span>
-                <Info size={14} className="text-gray-500" />
-              </div>
-              <div className="flex flex-col space-y-2">
-                <input
-                  type="date"
-                  className="p-1 border border-gray-300 rounded text-sm w-full"
-                  value={formatDateForInput(settings.initialScanDate) || getTomorrowDate()}
-                  onChange={handleChangeInitialScanDate}
-                  min={getTomorrowDate()} // Cannot be earlier than tomorrow
-                />
-                <p className="text-xs text-gray-500">
-                  When scheduled scanning begins, emails from the last {settings.searchDays || 30} days will be processed.
-                </p>
-              </div>
             </div>
           </>
         )}

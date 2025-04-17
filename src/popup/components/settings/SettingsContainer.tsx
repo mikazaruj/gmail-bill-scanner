@@ -10,7 +10,6 @@ import ConnectedServicesSection from './ConnectedServicesSection';
 import TrustedSourcesSection from './TrustedSourcesSection';
 import ProcessingOptionsSection from './ProcessingOptionsSection';
 import ScheduleSection from './ScheduleSection';
-import ManualScanSection from './ManualScanSection';
 import FieldMappingSection from './FieldMappingSection';
 
 interface SettingsContainerProps {
@@ -128,12 +127,6 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
         settings={settings}
         updateSettings={updateSettings}
         userProfile={userProfile}
-      />
-      
-      <ManualScanSection 
-        userId={effectiveUserId} 
-        settings={settings}
-        updateSettings={updateSettings}
       />
       
       <FieldMappingSection 
