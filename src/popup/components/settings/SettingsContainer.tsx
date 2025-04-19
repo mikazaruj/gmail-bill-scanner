@@ -116,6 +116,12 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
       
       <TrustedSourcesSection userId={effectiveUserId} />
       
+      <FieldMappingSection 
+        userId={effectiveUserId} 
+        fieldMappings={fieldMappings}
+        isLoading={isFieldMappingLoading}
+      />
+      
       <ProcessingOptionsSection 
         userId={effectiveUserId} 
         settings={settings}
@@ -127,12 +133,6 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
         settings={settings}
         updateSettings={updateSettings}
         userProfile={userProfile}
-      />
-      
-      <FieldMappingSection 
-        userId={effectiveUserId} 
-        fieldMappings={fieldMappings}
-        isLoading={isFieldMappingLoading}
       />
       
       <button 
