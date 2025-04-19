@@ -907,8 +907,8 @@ export async function signInWithGoogle(
     const result = await createGoogleUser(
       email,
       googleId,
-      displayName,
-      avatarUrl || null
+      profile.name || null,
+      profile.avatar_url || profile.picture || null
     );
     
     if (!result.success) {
@@ -1237,7 +1237,7 @@ export async function linkGoogleUserInSupabase({
 }
 
 /**
- * Get user stats from the user_stats view
+ * Get user stats from the user_profile_view view
  * @param userId Supabase user ID
  * @returns User stats
  */
@@ -1245,13 +1245,13 @@ export async function getUserStats(userId: string) {
   const supabase = await getSupabaseClient();
   
   const { data, error } = await supabase
-    .from('user_stats')
+    .from('user_profile_view')
     .select('*')
     .eq('id', userId)
     .single();
     
   if (error) {
-    console.error('Error fetching user stats:', error);
+    console.error('Error fetching user profile:', error);
     return null;
   }
     
@@ -1336,7 +1336,7 @@ export async function createLocalSession(
         user_metadata: {
           name: profile.name || profile.email.split('@')[0],
           picture: profile.picture,
-          avatar_url: profile.picture,
+          avatar_url: profile.avatar_url || profile.picture,
           google_user_id: profile.id
         }
       },
@@ -1506,7 +1506,7 @@ export async function manageGoogleUserId(email: string, profile: any) {
       email,
       googleId,
       profile.name || null,
-      profile.picture || null
+      profile.avatar_url || profile.picture || null
     );
     
     console.log('createGoogleUser result from AUTH-FIRST implementation:', result);

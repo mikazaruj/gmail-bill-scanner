@@ -35,7 +35,7 @@ BEGIN
   IF p_avatar_url IS NOT NULL THEN
     v_user_metadata := v_user_metadata || jsonb_build_object(
       'avatar_url', p_avatar_url,
-      'picture', p_avatar_url
+      'picture', p_avatar_url  -- Keep picture for backward compatibility
     );
   END IF;
   

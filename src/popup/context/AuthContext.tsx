@@ -13,9 +13,8 @@ interface AuthContextType {
 }
 
 const defaultUserProfile: UserProfile = {
-  name: '',
   email: '',
-  avatar: ''
+  avatar_url: ''
 };
 
 // Create the context with a default value
@@ -58,19 +57,19 @@ const AuthProvider = ({ children }: AuthProviderProps) => {
         });
       });
       
+      console.log('Auth status response:', response);
+      
       if (response?.success) {
         setIsAuthenticated(response.isAuthenticated);
         
         if (response.isAuthenticated && response.profile) {
-          setUserProfile({
-            name: response.profile.name || '',
-            email: response.profile.email || '',
-            avatar: response.profile.picture || ''
-          });
+          // Use the profile data as-is since it now matches our UserProfile interface
+          setUserProfile(response.profile);
+          console.log('Setting user profile with:', response.profile);
           
           // Set user ID if available
-          if (response.userId) {
-            setUserId(response.userId);
+          if (response.userId || response.profile.id) {
+            setUserId(response.userId || response.profile.id);
           }
         }
         

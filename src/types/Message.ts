@@ -43,11 +43,18 @@ export interface Settings {
 }
 
 export interface UserProfile {
-  id?: string;  // User ID from Supabase
-  name: string;
+  id?: string;
   email: string;
-  avatar: string;
+  avatar?: string;
+  avatar_url?: string; // Added for compatibility with updated schema
+  picture?: string; // Alternative field for avatar from Google profile
   plan?: string;  // User's subscription plan
+  display_name?: string;
+  created_at?: string;
+  updated_at?: string;
+  auth_id?: string;
+  joined_date?: string;
+  last_sign_in_at?: string;
 }
 
 export interface DashboardStats {

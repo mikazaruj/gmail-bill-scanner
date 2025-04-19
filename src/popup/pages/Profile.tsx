@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 // Fix the Lucide imports - use a dynamic import approach
 import CollapsibleSection from '../components/CollapsibleSection';
 import { useAuth } from '../hooks/useAuth';
+// Import the UserProfile type to make sure we're using the correct definition
+import { UserProfile } from '../../types/Message';
 
 // Import icons (handle missing types)
 let User: any;
@@ -28,26 +30,31 @@ interface UserData {
   joinedDate: string;
   displayName: string;
   avatarUrl: string | null;
+  trialEndsAt?: string | null;
+  subscriptionStatus?: string;
+  totalProcessedItems?: number;
+  successfulItems?: number;
 }
 
 const Profile = ({ onNavigate }: ProfileProps) => {
   // Get user profile from auth context with null protection
   const authResult = useAuth();
-  const userProfile = authResult?.userProfile || null;
+  const userProfile = authResult?.userProfile as UserProfile | null;
   const logout = authResult?.logout || (async () => {
     console.error('Logout function not available');
   });
   
   // Debug log to check auth context values
   console.log('Auth context userProfile:', userProfile);
+  console.log('Auth context userProfile keys:', userProfile ? Object.keys(userProfile) : 'null');
   
   const [userData, setUserData] = useState<UserData>({
     plan: 'Free', 
     quotaUsed: 0,
     quotaTotal: 50,
     joinedDate: '',
-    displayName: userProfile?.name || 'User Name',
-    avatarUrl: userProfile?.avatar || null
+    displayName: userProfile?.email?.split('@')[0] ?? 'User Name',
+    avatarUrl: userProfile?.avatar_url ?? null
   });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -95,12 +102,12 @@ const Profile = ({ onNavigate }: ProfileProps) => {
           setError(statsResponse?.error || 'Failed to load user statistics');
           
           // Fall back to userProfile from auth context
-          if (userProfile && userProfile.name) {
+          if (userProfile) {
             console.log('Falling back to auth context profile');
             setUserData(prevData => ({
               ...prevData,
-              displayName: userProfile.name || 'User Name',
-              avatarUrl: userProfile.avatar || null
+              displayName: userProfile?.email?.split('@')[0] ?? 'User Name',
+              avatarUrl: userProfile?.avatar_url ?? null
             }));
           }
           
@@ -115,11 +122,15 @@ const Profile = ({ onNavigate }: ProfileProps) => {
         const statsData = statsResponse.userData;
         const updatedUserData = {
           plan: statsData.plan || 'Free',
-          quotaUsed: statsData.actual_bills_used || 0,
+          quotaUsed: statsData.quota_bills_used || 0,
           quotaTotal: statsData.quota_bills_monthly || 50,
-          joinedDate: formatDate(statsData.created_at) || 'Not available',
-          displayName: statsData.full_name || (userProfile?.name || 'User Name'),
-          avatarUrl: statsData.avatar_url || (userProfile?.avatar || null)
+          joinedDate: formatDate(statsData.joined_date || statsData.created_at) || 'Not available',
+          displayName: statsData.display_name || (userProfile?.email?.split('@')[0] ?? 'User Name'),
+          avatarUrl: statsData.avatar_url || (userProfile?.avatar_url ?? null),
+          trialEndsAt: statsData.trial_end ? formatDate(statsData.trial_end) : null,
+          subscriptionStatus: statsData.subscription_status || 'free',
+          totalProcessedItems: statsData.total_items ?? 0,
+          successfulItems: statsData.successful_items ?? 0
         };
         
         console.log('Setting user data:', updatedUserData);
@@ -130,11 +141,11 @@ const Profile = ({ onNavigate }: ProfileProps) => {
         setError('Failed to load profile data. Please try again.');
         
         // Fall back to userProfile from auth context if available
-        if (userProfile && userProfile.name) {
+        if (userProfile) {
           setUserData(prevData => ({
             ...prevData,
-            displayName: userProfile.name || 'User Name',
-            avatarUrl: userProfile.avatar || null
+            displayName: userProfile?.email?.split('@')[0] ?? 'User Name',
+            avatarUrl: userProfile?.avatar_url ?? null
           }));
         }
         
@@ -143,7 +154,7 @@ const Profile = ({ onNavigate }: ProfileProps) => {
     };
     
     // Only fetch if user is authenticated
-    if (userProfile && userProfile.name) {
+    if (userProfile && userProfile.email) {
       fetchUserData();
     } else {
       setIsLoading(false);
@@ -193,11 +204,15 @@ const Profile = ({ onNavigate }: ProfileProps) => {
       const statsData = statsResponse.userData;
       const updatedUserData = {
         plan: statsData.plan || 'Free',
-        quotaUsed: statsData.actual_bills_used || 0,
+        quotaUsed: statsData.quota_bills_used || 0,
         quotaTotal: statsData.quota_bills_monthly || 50,
-        joinedDate: formatDate(statsData.created_at) || 'Not available',
-        displayName: statsData.full_name || (userProfile?.name || 'User Name'),
-        avatarUrl: statsData.avatar_url || (userProfile?.avatar || null)
+        joinedDate: formatDate(statsData.joined_date || statsData.created_at) || 'Not available',
+        displayName: statsData.display_name || (userProfile?.email?.split('@')[0] ?? 'User Name'),
+        avatarUrl: statsData.avatar_url || (userProfile?.avatar_url ?? null),
+        trialEndsAt: statsData.trial_end ? formatDate(statsData.trial_end) : null,
+        subscriptionStatus: statsData.subscription_status || 'free',
+        totalProcessedItems: statsData.total_items ?? 0,
+        successfulItems: statsData.successful_items ?? 0
       };
       
       setUserData(updatedUserData);
@@ -205,6 +220,20 @@ const Profile = ({ onNavigate }: ProfileProps) => {
       setError('Refresh failed: ' + (err instanceof Error ? err.message : 'Unknown error'));
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Add debug function to inspect avatar URLs
+  const debugAvatarUrl = (userData: any, userProfile: any) => {
+    console.log('Avatar URL Debug:');
+    console.log('- userData.avatarUrl:', userData?.avatarUrl);
+    console.log('- userProfile.avatar_url:', userProfile?.avatar_url);
+    console.log('- userProfile object:', userProfile);
+    
+    if (userData.avatarUrl) {
+      console.log('Avatar URL is set to:', userData.avatarUrl);
+    } else {
+      console.log('Avatar URL is null or undefined');
     }
   };
 
@@ -258,6 +287,9 @@ const Profile = ({ onNavigate }: ProfileProps) => {
 
   return (
     <div className="space-y-3">
+      {/* Call debug function to inspect avatar URLs */}
+      {debugAvatarUrl(userData, userProfile)}
+      
       <div className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm">
         <div className="flex items-center gap-3">
           {userData.avatarUrl ? (
@@ -267,6 +299,7 @@ const Profile = ({ onNavigate }: ProfileProps) => {
               className="w-12 h-12 rounded-full object-cover border-2 border-gray-200" 
               onError={(e) => {
                 console.error('Failed to load avatar image');
+                console.error('Attempted to load URL:', userData.avatarUrl);
                 e.currentTarget.onerror = null;
                 e.currentTarget.style.display = 'none';
                 // Show fallback icon
@@ -301,10 +334,27 @@ const Profile = ({ onNavigate }: ProfileProps) => {
             <span className="text-sm text-gray-600">Usage</span>
             <span className="text-sm font-medium">{userData.quotaUsed}/{userData.quotaTotal} scans</span>
           </div>
+          {userData.trialEndsAt && (
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-600">Trial Ends</span>
+              <span className="text-sm font-medium">{userData.trialEndsAt}</span>
+            </div>
+          )}
           <div className="flex justify-between items-center">
             <span className="text-sm text-gray-600">Joined</span>
             <span className="text-sm font-medium">{userData.joinedDate}</span>
           </div>
+          {userData.totalProcessedItems !== undefined && userData.totalProcessedItems > 0 && (
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-600">Success Rate</span>
+              <span className="text-sm font-medium">
+                {((userData.successfulItems ?? 0) / (userData.totalProcessedItems ?? 1) * 100).toFixed(1)}%
+                <span className="text-xs text-gray-500 ml-1">
+                  ({userData.successfulItems ?? 0}/{userData.totalProcessedItems ?? 0})
+                </span>
+              </span>
+            </div>
+          )}
         </div>
       </CollapsibleSection>
       

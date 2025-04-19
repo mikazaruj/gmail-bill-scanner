@@ -1128,15 +1128,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               userData: {
                 id: supabase_user_id || 'unknown',
                 email: user_email || 'unknown',
-                created_at: new Date().toISOString(),
+                joined_date: new Date().toISOString(),  // Changed from created_at to joined_date
                 plan: 'free',
                 quota_bills_monthly: 50,
                 quota_bills_used: 0,
-                total_processed_items: 0,
-                successful_processed_items: 0,
-                last_processed_at: null,
+                total_items: 0,  // Changed from total_processed_items
+                successful_items: 0,  // Changed from successful_processed_items
+                last_sign_in_at: new Date().toISOString(),  // Added this field
+                subscription_status: 'free',  // Added this field
+                trial_end: null,  // Added this field
                 display_name: user_profile?.name || 'User',
-                avatar_url: user_profile?.picture || null
+                avatar_url: user_profile?.avatar_url || user_profile?.picture || null
               },
               isDefaultData: true
             });
