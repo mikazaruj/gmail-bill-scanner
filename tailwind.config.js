@@ -40,6 +40,15 @@ module.exports = {
       boxShadow: {
         'card': '0 2px 8px rgba(0, 0, 0, 0.05)',
       },
+      animation: {
+        'fade-in': 'fadeIn 0.3s ease-in-out',
+      },
+      keyframes: {
+        fadeIn: {
+          '0%': { opacity: 0, transform: 'translateY(-10px) translateX(-50%)' },
+          '100%': { opacity: 1, transform: 'translateY(0) translateX(-50%)' },
+        },
+      },
     },
   },
   plugins: [],

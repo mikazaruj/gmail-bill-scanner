@@ -11,6 +11,7 @@ import TrustedSourcesSection from './TrustedSourcesSection';
 import ProcessingOptionsSection from './ProcessingOptionsSection';
 import ScheduleSection from './ScheduleSection';
 import FieldMappingSection from './FieldMappingSection';
+import SettingsFeedback from '../SettingsFeedback';
 
 interface SettingsContainerProps {
   onNavigate: (tab: string) => void;
@@ -44,6 +45,9 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
   
   // Add supabaseUserId state
   const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
+  
+  // Add feedback state
+  const [showFeedback, setShowFeedback] = useState(false);
   
   // Load data on component mount
   useEffect(() => {
@@ -99,19 +103,25 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
     initializeComponent();
   }, [userProfile?.id]);
   
-  // Handler for saving all settings
-  const handleSaveSettings = async () => {
-    try {
-      await saveSettings();
-      alert('Settings saved successfully!');
-    } catch (error) {
-      console.error('Error saving settings:', error);
-      alert('Failed to save settings');
-    }
+  // Callback function for when any setting is changed
+  const handleSettingChange = () => {
+    setShowFeedback(true);
+  };
+  
+  // Modified updateSettings function to show feedback
+  const wrappedUpdateSettings = (newSettings: any) => {
+    updateSettings(newSettings);
+    handleSettingChange();
   };
 
   return (
     <div className="space-y-3">
+      <SettingsFeedback 
+        show={showFeedback} 
+        onHide={() => setShowFeedback(false)} 
+        message="Settings saved" 
+      />
+      
       <ConnectedServicesSection userId={effectiveUserId} />
       
       <TrustedSourcesSection userId={effectiveUserId} />
@@ -125,23 +135,15 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
       <ProcessingOptionsSection 
         userId={effectiveUserId} 
         settings={settings}
-        updateSettings={updateSettings}
+        updateSettings={wrappedUpdateSettings}
       />
       
       <ScheduleSection 
         userId={effectiveUserId} 
         settings={settings}
-        updateSettings={updateSettings}
+        updateSettings={wrappedUpdateSettings}
         userProfile={userProfile}
       />
-      
-      <button 
-        onClick={handleSaveSettings}
-        disabled={settingsLoading}
-        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
-      >
-        Save Settings
-      </button>
       
       <button 
         onClick={() => onNavigate('dashboard')}

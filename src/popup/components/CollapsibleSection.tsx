@@ -25,15 +25,15 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   };
   
   return (
-    <div className="collapsible-section">
+    <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden mb-3">
       <div 
         onClick={handleToggle}
-        className="collapsible-header"
+        className="flex justify-between items-center p-3 cursor-pointer hover:bg-gray-50 transition-colors"
         role="button"
         tabIndex={0}
         aria-expanded={isOpen}
       >
-        <span className="collapsible-title">{title}</span>
+        <span className="font-medium text-sm text-gray-900">{title}</span>
         {isOpen ? (
           <ChevronUp size={18} className="text-gray-500" />
         ) : (
@@ -41,7 +41,7 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
         )}
       </div>
       {isOpen && (
-        <div className="collapsible-content">
+        <div className="p-3 border-t border-gray-200 bg-gray-50">
           {children}
         </div>
       )}

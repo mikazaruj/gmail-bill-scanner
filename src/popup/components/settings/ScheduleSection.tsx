@@ -31,6 +31,7 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
   const [syncError, setSyncError] = useState<string | null>(null);
   const settingsRef = useRef(settings);
   const [showTooltip, setShowTooltip] = useState(false);
+  const hasSyncedRef = useRef(false);
   
   // Keep the ref updated with the latest settings
   useEffect(() => {
@@ -39,12 +40,15 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
   
   // Fetch the up-to-date settings from Supabase when the component mounts
   useEffect(() => {
-    const syncWithSupabase = async () => {
+    // Skip if we've already synced or if no userId
+    if (hasSyncedRef.current || !userId) {
       if (!userId) {
         console.log('ScheduleSection: No userId available, skipping Supabase sync');
-        return;
       }
-      
+      return;
+    }
+    
+    const syncWithSupabase = async () => {
       try {
         setIsLoading(true);
         setSyncError(null);
@@ -60,21 +64,35 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
             initial_scan_date: userSettings.initial_scan_date
           });
           
-          // Force the enabled state from the database
-          // This is the critical fix that solves the issue
-          const settingsUpdate = {
-            scheduleEnabled: Boolean(userSettings.schedule_enabled), // Ensure boolean type
-            scheduleFrequency: userSettings.schedule_frequency || 'weekly',
-            scheduleTime: userSettings.schedule_time || '09:00',
-            initialScanDate: userSettings.initial_scan_date || new Date(Date.now() + 86400000).toISOString()
-          };
-          
-          console.log('ScheduleSection: Updating settings with:', settingsUpdate);
-          updateSettings(settingsUpdate);
+          // Only update if different from current settings to avoid re-render loops
+          const currentSettings = settingsRef.current;
+          const needsUpdate = 
+            currentSettings.scheduleEnabled !== Boolean(userSettings.schedule_enabled) ||
+            currentSettings.scheduleFrequency !== userSettings.schedule_frequency ||
+            currentSettings.scheduleTime !== userSettings.schedule_time ||
+            currentSettings.initialScanDate !== userSettings.initial_scan_date;
+            
+          if (needsUpdate) {
+            // Force the enabled state from the database
+            const settingsUpdate = {
+              scheduleEnabled: Boolean(userSettings.schedule_enabled), // Ensure boolean type
+              scheduleFrequency: userSettings.schedule_frequency || 'weekly',
+              scheduleTime: userSettings.schedule_time || '09:00',
+              initialScanDate: userSettings.initial_scan_date || new Date(Date.now() + 86400000).toISOString()
+            };
+            
+            console.log('ScheduleSection: Updating settings with:', settingsUpdate);
+            updateSettings(settingsUpdate);
+          } else {
+            console.log('ScheduleSection: Settings unchanged, skipping update');
+          }
         } else {
           console.warn('ScheduleSection: No settings returned from getUserSettings');
           setSyncError('Could not retrieve settings from database');
         }
+        
+        // Mark as synced to prevent future syncs
+        hasSyncedRef.current = true;
       } catch (error) {
         console.error('ScheduleSection: Error syncing with Supabase:', error);
         setSyncError('Failed to sync with database');
@@ -85,7 +103,7 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
     
     // Immediately sync with Supabase when component mounts
     syncWithSupabase();
-  }, [userId, updateSettings]);
+  }, [userId]); // Only depend on userId, not on updateSettings
   
   // Determine if the section should be open by default
   // Always open if schedule is enabled

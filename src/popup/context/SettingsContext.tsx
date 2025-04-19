@@ -180,15 +180,36 @@ export const SettingsProvider = ({ children }: SettingsProviderProps) => {
       if (JSON.stringify({...prevSettings, ...newSettings}) === JSON.stringify(prevSettings)) {
         return prevSettings; // Return previous state if nothing has changed
       }
-      return {
+      
+      const updatedSettings = {
         ...prevSettings,
         ...newSettings
       };
+      
+      // Automatically save to Chrome storage
+      chrome.storage.sync.set({ settings: updatedSettings }, () => {
+        if (chrome.runtime.lastError) {
+          console.error('Error saving settings to Chrome storage:', chrome.runtime.lastError);
+        } else {
+          console.log('Settings automatically saved to Chrome storage');
+        }
+      });
+      
+      return updatedSettings;
     });
   };
 
   const updateBillFields = (newBillFields: BillFieldConfig[]) => {
     setBillFields(newBillFields);
+    
+    // Automatically save to Chrome storage
+    chrome.storage.sync.set({ billFields: newBillFields }, () => {
+      if (chrome.runtime.lastError) {
+        console.error('Error saving bill fields to Chrome storage:', chrome.runtime.lastError);
+      } else {
+        console.log('Bill fields automatically saved to Chrome storage');
+      }
+    });
   };
 
   const saveSettings = async () => {
