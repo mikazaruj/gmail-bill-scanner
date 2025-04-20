@@ -3,8 +3,9 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from '
 import CollapsibleSection from '../CollapsibleSection';
 import SettingsToggle from '../SettingsToggle';
 import { useSettingsApi } from '../../hooks/settings/useSettingsApi';
-import { Info } from 'lucide-react';
+import { Info, CalendarClock } from 'lucide-react';
 import { getUserSettings } from '../../../services/settings';
+import { ScanContext } from '../../context/ScanContext';
 
 interface ScheduleSectionProps {
   userId: string | null;
@@ -32,10 +33,16 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
   const settingsRef = useRef(settings);
   const [showTooltip, setShowTooltip] = useState(false);
   const hasSyncedRef = useRef(false);
+  const { dashboardStats } = React.useContext(ScanContext);
+  const [runningInitialScan, setRunningInitialScan] = useState(false);
+  const [hasActivity, setHasActivity] = useState<boolean | null>(null);
+  const [searchDaysFromDb, setSearchDaysFromDb] = useState<number | null>(null);
   
   // Keep the ref updated with the latest settings
   useEffect(() => {
     settingsRef.current = settings;
+    console.log('ScheduleSection: Settings updated:', settings);
+    console.log('ScheduleSection: searchDays value from settings:', settings.searchDays);
   }, [settings]);
   
   // Fetch the up-to-date settings from Supabase when the component mounts
@@ -61,8 +68,12 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
             schedule_enabled: userSettings.schedule_enabled,
             schedule_frequency: userSettings.schedule_frequency,
             schedule_time: userSettings.schedule_time,
-            initial_scan_date: userSettings.initial_scan_date
+            initial_scan_date: userSettings.initial_scan_date,
+            search_days: userSettings.search_days
           });
+          
+          // Store search_days directly from DB for reliable access
+          setSearchDaysFromDb(userSettings.search_days || 30);
           
           // Only update if different from current settings to avoid re-render loops
           const currentSettings = settingsRef.current;
@@ -70,7 +81,7 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
             currentSettings.scheduleEnabled !== Boolean(userSettings.schedule_enabled) ||
             currentSettings.scheduleFrequency !== userSettings.schedule_frequency ||
             currentSettings.scheduleTime !== userSettings.schedule_time ||
-            currentSettings.initialScanDate !== userSettings.initial_scan_date;
+            currentSettings.searchDays !== userSettings.search_days;
             
           if (needsUpdate) {
             // Force the enabled state from the database
@@ -78,7 +89,7 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
               scheduleEnabled: Boolean(userSettings.schedule_enabled), // Ensure boolean type
               scheduleFrequency: userSettings.schedule_frequency || 'weekly',
               scheduleTime: userSettings.schedule_time || '09:00',
-              initialScanDate: userSettings.initial_scan_date || new Date(Date.now() + 86400000).toISOString()
+              searchDays: userSettings.search_days || 30  // Add this to ensure searchDays is updated
             };
             
             console.log('ScheduleSection: Updating settings with:', settingsUpdate);
@@ -103,7 +114,37 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
     
     // Immediately sync with Supabase when component mounts
     syncWithSupabase();
-  }, [userId]); // Only depend on userId, not on updateSettings
+  }, [userId, updateSettings]); // Include updateSettings to ensure proper callback usage
+  
+  // Check if the user has any activity in the processed_items table
+  useEffect(() => {
+    if (!userId) return;
+    
+    const checkUserActivity = async () => {
+      try {
+        // Get activity count from background service
+        const response = await chrome.runtime.sendMessage({
+          type: 'GET_PROCESSED_ITEMS_COUNT'
+        });
+        
+        console.log('ScheduleSection: User activity check response:', response);
+        
+        if (response?.success) {
+          // User has activity if count > 0
+          setHasActivity(response.count > 0);
+        } else {
+          // Fallback to using dashboardStats if backend check fails
+          setHasActivity(dashboardStats.processed > 0);
+        }
+      } catch (error) {
+        console.error('ScheduleSection: Error checking user activity:', error);
+        // Fallback to using dashboardStats if backend check fails
+        setHasActivity(dashboardStats.processed > 0);
+      }
+    };
+    
+    checkUserActivity();
+  }, [userId, dashboardStats.processed]);
   
   // Determine if the section should be open by default
   // Always open if schedule is enabled
@@ -151,31 +192,34 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
       await updateSetting('schedule_time', e.target.value);
     }
   }, [userId, updateSettings, updateSetting]);
-  
-  const handleChangeInitialScanDate = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    // Update UI state first for responsive feel
-    updateSettings({ initialScanDate: e.target.value });
+
+  const handleRunInitialScan = useCallback(async () => {
+    setRunningInitialScan(true);
+    // Set current date as initial_scan_date in the backend
+    const initialScanDate = new Date().toISOString();
     
-    // Update in Supabase if we have a user ID
     if (userId) {
-      await updateSetting('initial_scan_date', e.target.value);
+      try {
+        await updateSetting('initial_scan_date', initialScanDate);
+        console.log('ScheduleSection: Set initial_scan_date to', initialScanDate);
+      } catch (error) {
+        console.error('ScheduleSection: Failed to set initial_scan_date', error);
+      } finally {
+        setRunningInitialScan(false);
+      }
     }
-  }, [userId, updateSettings, updateSetting]);
+  }, [userId, updateSetting]);
 
-  // Format date to YYYY-MM-DD for date input
-  const formatDateForInput = (dateString: string) => {
-    if (!dateString) return '';
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) return ''; // Invalid date
-    return date.toISOString().split('T')[0];
-  };
+  // Check if this is a first-time user (no activity)
+  const isFirstTimeUser = hasActivity === false;
 
-  // Get tomorrow's date as default
-  const getTomorrowDate = () => {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    return tomorrow.toISOString().split('T')[0];
-  };
+  // Get search days from settings, prioritizing the DB value we fetched directly
+  // This prevents local cache from overriding the DB value
+  const searchDays = searchDaysFromDb || settings.searchDays || 30;
+  
+  console.log('ScheduleSection: Using searchDays value:', searchDays, 
+              'searchDaysFromDb:', searchDaysFromDb, 
+              'settings.searchDays:', settings.searchDays);
 
   if (isLoading) {
     return (
@@ -204,34 +248,6 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
         
         {settings.scheduleEnabled && (
           <>
-            <div className="p-2 bg-white rounded-lg border border-gray-200">
-              <div className="flex items-center gap-1 mb-2">
-                <span className="text-sm text-gray-900">Initial Scan Date</span>
-                <div className="relative">
-                  <Info 
-                    size={14} 
-                    className="text-gray-500 cursor-help"
-                    onMouseEnter={() => setShowTooltip(true)}
-                    onMouseLeave={() => setShowTooltip(false)}
-                  />
-                  {showTooltip && (
-                    <div className="absolute z-10 w-52 p-2 bg-gray-800 text-white text-xs rounded shadow-lg -left-24 -top-16">
-                      When scheduled scanning begins, emails from the last {settings.searchDays} days will be processed.
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="flex flex-col space-y-2">
-                <input
-                  type="date"
-                  className="p-1 border border-gray-300 rounded text-sm w-full"
-                  value={formatDateForInput(settings.initialScanDate) || getTomorrowDate()}
-                  onChange={handleChangeInitialScanDate}
-                  min={getTomorrowDate()} // Cannot be earlier than tomorrow
-                />
-              </div>
-            </div>
-            
             <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200">
               <span className="text-sm text-gray-900">Frequency:</span>
               <select
@@ -255,6 +271,23 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
               />
             </div>
           </>
+        )}
+        
+        {/* Run Initial Scan button for first-time users */}
+        {isFirstTimeUser && (
+          <div className="mt-3 p-2 bg-blue-50 rounded-lg border border-blue-200">
+            <button 
+              onClick={handleRunInitialScan}
+              disabled={runningInitialScan}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
+            >
+              <CalendarClock size={14} className="mr-2" />
+              {runningInitialScan ? 'Setting up...' : 'Run Initial Scan'}
+            </button>
+            <p className="mt-2 text-xs text-blue-700">
+              Initial scan will look back {searchDays} days from today, based on your search preferences.
+            </p>
+          </div>
         )}
       </div>
     </CollapsibleSection>
