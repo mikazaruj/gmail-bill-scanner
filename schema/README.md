@@ -1,6 +1,49 @@
 # Database Schema Management
 
-This directory contains tools and database schema definitions for the Gmail Bill Scanner project. It helps ensure that your codebase is always aligned with the actual database structure in Supabase.
+This directory contains the database schema for the Gmail Bill Scanner application, including tables, views, functions, and migrations.
+
+## Supabase Project
+
+The application uses Supabase for database and authentication. The project ID is: `eipfspwyqzejhmybpofk`
+
+## Migrations
+
+To apply a migration:
+
+1. Connect to the Supabase SQL Editor
+2. Open the migration file from the `migrations` directory
+3. Execute the SQL script in the Supabase SQL Editor
+4. Verify that changes were applied correctly
+
+### Migration: Field Mappings
+
+The `20240505_update_field_mappings.sql` migration ensures the `user_field_mappings` table is correctly set up and creates/updates the required view and policies.
+
+This migration supports user-configurable field mappings allowing users to:
+- Specify which column in their Google Sheet each field should be mapped to
+- Enable or disable specific fields
+- Control the display order of fields
+
+## Tables
+
+This schema includes the following main tables:
+
+- `users` - User accounts and information
+- `field_definitions` - Available fields for extraction
+- `user_field_mappings` - User-defined mappings between fields and Google Sheet columns
+- `email_sources` - Trusted email sources for processing
+- `processed_items` - Record of processed emails and their data
+
+## Views
+
+- `field_mapping_view` - Combines field definitions with user mappings for the UI
+
+## Recommended Database Management Process
+
+1. Create or update schema files in the appropriate directory
+2. Create a migration script under `migrations/`
+3. Apply the migration to the Supabase project
+4. Update TypeScript type definitions to reflect the changes
 
 ## Directory Structure
 

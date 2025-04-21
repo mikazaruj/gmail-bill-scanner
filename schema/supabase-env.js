@@ -90,11 +90,14 @@ export const TABLE_SCHEMAS = {
     id: 'uuid (primary key)',
     name: 'text (not null)',
     display_name: 'text (not null)',
-    field_type: 'text',
-    default_enabled: 'boolean',
-    default_order: 'integer',
+    field_type: 'text (not null)',
+    is_system: 'boolean',
+    default_column: 'text',
+    extraction_priority: 'integer',
     created_at: 'timestamp with time zone',
-    updated_at: 'timestamp with time zone'
+    updated_at: 'timestamp with time zone',
+    default_order: 'integer',
+    default_enabled: 'boolean'
   },
   
   // User field mappings schema
@@ -102,8 +105,8 @@ export const TABLE_SCHEMAS = {
     id: 'uuid (primary key)',
     user_id: 'uuid (foreign key to users.id)',
     field_id: 'uuid (foreign key to field_definitions.id)',
-    column_mapping: 'text',
-    display_order: 'integer',
+    column_mapping: 'text (not null)',
+    display_order: 'integer (not null)',
     is_enabled: 'boolean',
     created_at: 'timestamp with time zone',
     updated_at: 'timestamp with time zone'
@@ -258,6 +261,23 @@ export const VIEW_DEFINITIONS = {
         FROM processed_items
         GROUP BY user_id
       ) pi_stats ON u.id = pi_stats.user_id
+  `,
+  
+  // Field mapping view
+  field_mapping_view: `
+    SELECT 
+      ufm.user_id,
+      ufm.id AS mapping_id,
+      fd.id AS field_id,
+      fd.name,
+      fd.display_name,
+      fd.field_type,
+      ufm.column_mapping,
+      ufm.display_order,
+      ufm.is_enabled
+    FROM public.user_field_mappings ufm
+      JOIN public.field_definitions fd ON ufm.field_id = fd.id
+    ORDER BY ufm.display_order
   `,
   
   // User settings view

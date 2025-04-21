@@ -1,4 +1,6 @@
-CREATE OR REPLACE VIEW public.field_mapping_view AS
+-- Recreate the field_mapping_view
+DROP VIEW IF EXISTS public.field_mapping_view;
+CREATE VIEW public.field_mapping_view AS
 SELECT 
   ufm.user_id,
   ufm.id AS mapping_id,

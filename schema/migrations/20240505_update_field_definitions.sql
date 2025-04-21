@@ -1,30 +1,18 @@
-CREATE TABLE IF NOT EXISTS public.field_definitions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name TEXT NOT NULL,
-  display_name TEXT NOT NULL,
-  field_type TEXT NOT NULL,
-  is_system BOOLEAN DEFAULT false,
-  default_column TEXT,
-  extraction_priority INTEGER DEFAULT 100,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now(),
-  default_order INTEGER,
-  default_enabled BOOLEAN DEFAULT true
-);
+-- Update field_definitions table to match the existing schema
+ALTER TABLE public.field_definitions 
+  ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT false,
+  ADD COLUMN IF NOT EXISTS default_column TEXT,
+  ADD COLUMN IF NOT EXISTS extraction_priority INTEGER DEFAULT 100,
+  ADD COLUMN IF NOT EXISTS default_enabled BOOLEAN DEFAULT true;
 
--- Add indexes
+-- Ensure all required columns exist in the field_definitions table
+ALTER TABLE public.field_definitions 
+  ALTER COLUMN name SET NOT NULL,
+  ALTER COLUMN display_name SET NOT NULL;
+
+-- Add indexes if they don't exist
 CREATE INDEX IF NOT EXISTS field_definitions_name_idx ON public.field_definitions (name);
 CREATE INDEX IF NOT EXISTS field_definitions_extraction_priority_idx ON public.field_definitions (extraction_priority);
-
--- Enable RLS
-ALTER TABLE public.field_definitions ENABLE ROW LEVEL SECURITY;
-
--- Create policies
-CREATE POLICY "Anyone can read field definitions" ON public.field_definitions
-  FOR SELECT USING (true);
-
-CREATE POLICY "Only service role can modify field definitions" ON public.field_definitions
-  FOR ALL USING (auth.jwt()->>'role' = 'service_role');
 
 -- Insert default fields if they don't exist
 INSERT INTO public.field_definitions (name, display_name, field_type, default_enabled, default_order, is_system, default_column, extraction_priority)

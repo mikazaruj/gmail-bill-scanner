@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useContext } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { SettingsContext } from '../../context/SettingsContext';
 import { resolveUserIdentity, ensureUserRecord } from '../../../services/identity/userIdentityService';
-import { getFieldMappings, FieldMapping } from '../../../services/fieldMapping';
+import { getFieldMappings, FieldMapping, ensureUserHasFieldMappings } from '../../../services/fieldMapping';
 import { checkDatabaseTables } from '../../../services/trustedSources';
 
 // Import section components
@@ -48,6 +48,7 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
   
   // Add feedback state
   const [showFeedback, setShowFeedback] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState("Settings saved");
   
   // Load data on component mount
   useEffect(() => {
@@ -82,6 +83,9 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
         try {
           setIsFieldMappingLoading(true);
           
+          // Ensure the user has field mappings
+          await ensureUserHasFieldMappings(identity.supabaseId);
+          
           // Load field mappings
           const mappings = await getFieldMappings(identity.supabaseId);
           setFieldMappings(mappings);
@@ -104,7 +108,8 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
   }, [userProfile?.id]);
   
   // Callback function for when any setting is changed
-  const handleSettingChange = () => {
+  const handleSettingChange = (message = "Settings saved") => {
+    setFeedbackMessage(message);
     setShowFeedback(true);
   };
   
@@ -114,12 +119,29 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
     handleSettingChange();
   };
 
+  // Function to refresh field mappings
+  const refreshFieldMappings = async () => {
+    if (!effectiveUserId) return;
+    
+    try {
+      setIsFieldMappingLoading(true);
+      const mappings = await getFieldMappings(effectiveUserId);
+      setFieldMappings(mappings);
+      handleSettingChange("Field mappings updated");
+    } catch (error) {
+      console.error('Error refreshing field mappings:', error);
+      handleSettingChange("Error updating field mappings");
+    } finally {
+      setIsFieldMappingLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-3">
       <SettingsFeedback 
         show={showFeedback} 
         onHide={() => setShowFeedback(false)} 
-        message="Settings saved" 
+        message={feedbackMessage} 
       />
       
       <ConnectedServicesSection userId={effectiveUserId} />
@@ -130,6 +152,7 @@ const SettingsContainer = ({ onNavigate }: SettingsContainerProps) => {
         userId={effectiveUserId} 
         fieldMappings={fieldMappings}
         isLoading={isFieldMappingLoading}
+        onRefresh={refreshFieldMappings}
       />
       
       <ProcessingOptionsSection 
