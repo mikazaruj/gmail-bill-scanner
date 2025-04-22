@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import CollapsibleSection from '../CollapsibleSection';
 import { FieldMapping, updateFieldMapping, getFieldDefinitions, FieldDefinition, createFieldMapping } from '../../../services/fieldMapping';
 
@@ -25,6 +25,10 @@ const FieldMappingSection = ({
   const [isLoadingFields, setIsLoadingFields] = useState(false);
   const [pendingCreation, setPendingCreation] = useState<{ fieldId: string, column: string } | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isDraggingOver, setIsDraggingOver] = useState<string | null>(null);
+  
+  // Ref for the active fields container
+  const activeFieldsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setMappings(fieldMappings);
@@ -33,11 +37,6 @@ const FieldMappingSection = ({
     const disabled = fieldMappings.filter(m => !m.is_enabled);
     setAvailableFields(disabled);
     
-    // If there are disabled fields, automatically show them
-    if (disabled.length > 0) {
-      setShowAvailableFields(true);
-    }
-
     // Load all field definitions to find unmapped fields
     if (userId) {
       loadFieldDefinitions();
@@ -64,6 +63,7 @@ const FieldMappingSection = ({
   };
 
   const handleDragStart = (mapping: FieldMapping | { field_id: string, display_name: string, is_unmapped?: boolean }) => {
+    console.log('Drag started:', mapping);
     if ('is_unmapped' in mapping) {
       // Create a temporary mapping for the unmapped field to use during drag
       const tempMapping: any = {
@@ -77,6 +77,100 @@ const FieldMappingSection = ({
       setDraggedItem(tempMapping);
     } else {
       setDraggedItem(mapping as FieldMapping);
+    }
+  };
+
+  // Handle dragging over the active fields container
+  const handleDragOverActiveFields = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (!draggedItem || !userId || isUpdating) return;
+    
+    // Only highlight if we're dragging from available fields
+    if (!draggedItem.is_enabled || 'is_unmapped' in draggedItem) {
+      setIsDraggingOver('active');
+    }
+  };
+
+  const handleDragLeaveActiveFields = () => {
+    setIsDraggingOver(null);
+  };
+
+  // Handle dropping on the active fields container
+  const handleDropOnActiveFields = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    console.log('Drop on active fields:', draggedItem);
+    setIsDraggingOver(null);
+    
+    if (!draggedItem || !userId || isUpdating) return;
+    
+    // Only process if we're dragging from available fields
+    if (draggedItem.is_enabled && !('is_unmapped' in draggedItem)) {
+      return;
+    }
+    
+    setIsUpdating(true);
+    
+    try {
+      // Find next available column letter
+      const usedColumns = new Set(mappings.filter(m => m.is_enabled).map(m => m.column_mapping));
+      let columnLetter = '';
+      for (let i = 65; i <= 90; i++) { // A-Z
+        const letter = String.fromCharCode(i);
+        if (!usedColumns.has(letter)) {
+          columnLetter = letter;
+          break;
+        }
+      }
+      
+      if (!columnLetter) {
+        console.error('No available column letters');
+        setIsUpdating(false);
+        return;
+      }
+      
+      // Find next display order
+      const nextOrder = mappings.filter(m => m.is_enabled).length > 0 
+        ? Math.max(...mappings.filter(m => m.is_enabled).map(m => m.display_order)) + 1 
+        : 1;
+
+      if ('is_unmapped' in draggedItem) {
+        // Create new field mapping
+        const success = await createFieldMapping(
+          userId,
+          draggedItem.field_id,
+          columnLetter,
+          nextOrder,
+          true
+        );
+        
+        if (success) {
+          console.log('Created new field mapping');
+          // Remove from unmapped fields
+          setUnmappedFields(prev => prev.filter(f => f.id !== draggedItem.field_id));
+          // Refresh all mappings
+          onRefresh();
+        }
+      } else {
+        // Enable existing field mapping
+        const success = await updateFieldMapping(userId, draggedItem.field_id, {
+          is_enabled: true,
+          column_mapping: columnLetter,
+          display_order: nextOrder
+        });
+        
+        if (success) {
+          console.log('Enabled existing field mapping');
+          // Remove from available fields
+          setAvailableFields(prev => prev.filter(f => f.mapping_id !== draggedItem.mapping_id));
+          // Refresh all mappings
+          onRefresh();
+        }
+      }
+    } catch (error) {
+      console.error('Error adding field to active section:', error);
+    } finally {
+      setIsUpdating(false);
+      setDraggedItem(null);
     }
   };
 
@@ -269,8 +363,71 @@ const FieldMappingSection = ({
     }
   };
 
+  // Add reordering functionality directly in the current view
+  const handleDragOverForReordering = (e: React.DragEvent<HTMLDivElement>, overMapping: FieldMapping) => {
+    e.preventDefault();
+    if (!draggedItem || draggedItem.mapping_id === overMapping.mapping_id || !userId || isUpdating) return;
+
+    // Only allow reordering if both items are enabled
+    if (!draggedItem.is_enabled || !overMapping.is_enabled) return;
+
+    // Reorder the mappings
+    setMappings(prev => {
+      const newMappings = [...prev];
+      const draggedIndex = newMappings.findIndex(m => m.mapping_id === draggedItem.mapping_id);
+      const overIndex = newMappings.findIndex(m => m.mapping_id === overMapping.mapping_id);
+      
+      if (draggedIndex === -1 || overIndex === -1) return prev;
+      
+      // Remove the dragged item
+      const [removed] = newMappings.splice(draggedIndex, 1);
+      // Insert at the new position
+      newMappings.splice(overIndex, 0, removed);
+      
+      // Update display_order for all enabled items
+      const enabledMappings = newMappings.filter(m => m.is_enabled);
+      enabledMappings.forEach((mapping, index) => {
+        mapping.display_order = index + 1;
+      });
+      
+      return newMappings;
+    });
+    
+    setHasChanges(true);
+  };
+
   const handleDragEnd = () => {
+    console.log('Drag ended');
     setDraggedItem(null);
+    setIsDraggingOver(null);
+    
+    // If there are changes, save them
+    if (hasChanges && userId) {
+      saveChanges();
+    }
+  };
+
+  const saveChanges = async () => {
+    if (!userId || isUpdating) return;
+    
+    setIsUpdating(true);
+    try {
+      // Save all display orders
+      const enabledMappings = mappings.filter(m => m.is_enabled);
+      
+      for (const mapping of enabledMappings) {
+        await updateFieldMapping(userId, mapping.field_id, {
+          display_order: mapping.display_order
+        });
+      }
+      
+      onRefresh();
+      setHasChanges(false);
+    } catch (error) {
+      console.error('Error saving field mapping changes:', error);
+    } finally {
+      setIsUpdating(false);
+    }
   };
 
   const handleDisableField = async (mapping: FieldMapping) => {
@@ -346,172 +503,152 @@ const FieldMappingSection = ({
     }
   };
 
-  // Generate a fixed array of column letters (A-I)
-  const columnLetters = Array.from({ length: 9 }, (_, i) => String.fromCharCode(65 + i));
+  // Generate a fixed array of column letters (A-Z)
+  const columnLetters = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
 
   // Only show used columns and the first empty column
   const usedColumns = new Set(
     mappings.filter(m => m.is_enabled).map(m => m.column_mapping)
   );
   
-  const columnsToShow = columnLetters.filter(col => 
-    usedColumns.has(col)
-  );
+  // Get enabled mappings sorted by display order
+  const enabledMappings = [...mappings.filter(m => m.is_enabled)]
+    .sort((a, b) => a.display_order - b.display_order);
+
+  // Toggle showing available fields
+  const toggleAvailableFields = () => {
+    setShowAvailableFields(!showAvailableFields);
+  };
+
+  // Render a field card to match the mockup
+  const renderFieldCard = (fieldMapping: FieldMapping) => {
+    return (
+      <div 
+        key={fieldMapping.mapping_id}
+        className="bg-white border border-gray-200 rounded-lg shadow-sm mb-2"
+        draggable={!isUpdating && Boolean(userId)}
+        onDragStart={() => handleDragStart(fieldMapping)}
+        onDragEnd={handleDragEnd}
+        onDragOver={(e) => handleDragOverForReordering(e, fieldMapping)}
+      >
+        <div className="flex items-center justify-between p-3">
+          <div className="flex items-center">
+            <div className="w-7 h-7 flex-shrink-0 rounded-md bg-gray-50 flex items-center justify-center mr-3 text-gray-700 font-medium border border-gray-200">
+              {fieldMapping.column_mapping}
+            </div>
+            <div className="mr-2 text-gray-400">⠿⠿</div>
+            <span className="text-gray-900 font-medium">{fieldMapping.display_name}</span>
+          </div>
+          <button 
+            className="text-gray-400 hover:text-gray-600 p-0.5 rounded-full text-xl"
+            onClick={() => handleDisableField(fieldMapping)}
+            title="Remove field"
+            disabled={isUpdating}
+          >
+            ×
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // Render an available field item
+  const renderAvailableField = (field: any) => {
+    const isUnmapped = 'id' in field; // Check if this is a field definition vs mapped field
+    const fieldId = isUnmapped ? field.id : field.field_id;
+    const displayName = isUnmapped ? field.display_name : field.display_name;
+    
+    return (
+      <div 
+        key={isUnmapped ? field.id : field.mapping_id}
+        className="bg-white border border-gray-200 rounded-lg p-3 mb-2 flex items-center cursor-move"
+        draggable={!isUpdating && Boolean(userId)}
+        onDragStart={() => handleDragStart(
+          isUnmapped ? { 
+            field_id: field.id, 
+            display_name: field.display_name,
+            is_unmapped: true 
+          } : field
+        )}
+        onDragEnd={handleDragEnd}
+        onClick={() => isUnmapped ? handleAddNewField(field) : null}
+      >
+        <div className="text-blue-500 mr-2">⊕</div>
+        <span className="text-gray-700">{displayName}</span>
+      </div>
+    );
+  };
 
   return (
-    <CollapsibleSection title="Field Mapping" defaultOpen={false}>
+    <CollapsibleSection title="Field Mapping" defaultOpen={true}>
       {isLoading ? (
         <div className="py-2 text-sm text-gray-500">Loading field mappings...</div>
       ) : (
         <>
           <div className="mb-1">
-            <div className="text-xs text-gray-500 mb-1.5">
-              Current mapping: {mappings.filter(m => m.is_enabled).length > 0 && 
-                <span className="text-xs text-blue-500 ml-1">(drag fields to columns)</span>}
+            <div className="text-sm text-gray-600 mb-3">
+              Drag fields to reorder or remove from your sheet
             </div>
             
-            <div className="space-y-1.5 relative">
+            <div className="relative">
               {isUpdating && (
                 <div className="absolute inset-0 bg-white bg-opacity-70 flex items-center justify-center z-10 rounded-lg">
                   <div className="text-sm text-gray-600">Updating...</div>
                 </div>
               )}
               
-              {columnLetters.map(colLetter => {
-                const fieldInColumn = mappings.find(
-                  m => m.is_enabled && m.column_mapping === colLetter
-                );
-                
-                // Only show column if it has a field or is the first empty column after used columns
-                if (!fieldInColumn) {
-                  // Hide empty columns that aren't adjacent to used ones to avoid gaps
-                  if (!columnsToShow.some(letter => 
-                    letter.charCodeAt(0) === colLetter.charCodeAt(0) - 1)) {
-                    return null;
-                  }
-                }
-
-                // Check if this column is pending creation for a new field
-                const isPending = pendingCreation?.column === colLetter;
-                
-                return fieldInColumn ? (
-                  <div 
-                    key={colLetter}
-                    className={`bg-white p-1.5 rounded-lg border cursor-move ${
-                      draggedItem?.mapping_id === fieldInColumn.mapping_id 
-                        ? 'border-blue-400 bg-blue-50' 
-                        : 'border-gray-200 hover:border-gray-300'
-                    } text-xs flex items-center`}
-                    draggable={!isUpdating && Boolean(userId)}
-                    onDragStart={() => handleDragStart(fieldInColumn)}
-                    onDragOver={(e) => handleDragOver(e, colLetter)}
-                    onDragEnd={handleDragEnd}
-                    onDrop={(e) => handleDrop(e, colLetter)}
-                  >
-                    <div className="flex items-center flex-1">
-                      <div className="w-6 h-6 flex-shrink-0 rounded-full bg-gray-100 flex items-center justify-center mr-2 text-gray-800 font-medium text-sm">
-                        {colLetter}
-                      </div>
-                      <span className="text-gray-900 font-medium">{fieldInColumn.display_name}</span>
-                    </div>
-                    <div className="flex items-center">
-                      <button 
-                        className="text-gray-400 hover:text-gray-600 p-1 rounded-full"
-                        onClick={() => handleDisableField(fieldInColumn)}
-                        title="Remove field"
-                        disabled={isUpdating}
-                      >
-                        ×
-                      </button>
-                      <span className="text-gray-400 text-xs ml-1">≡</span>
-                    </div>
+              {/* Enabled fields section - always visible and draggable */}
+              <div 
+                ref={activeFieldsRef}
+                className={`mb-4 p-1 rounded-lg ${isDraggingOver === 'active' ? 'bg-blue-50 border-2 border-dashed border-blue-300' : ''}`}
+                onDragOver={handleDragOverActiveFields}
+                onDragLeave={handleDragLeaveActiveFields}
+                onDrop={handleDropOnActiveFields}
+              >
+                {enabledMappings.length > 0 ? (
+                  <div>
+                    {enabledMappings.map(mapping => renderFieldCard(mapping))}
                   </div>
                 ) : (
-                  <div 
-                    key={colLetter}
-                    className={`bg-white p-1.5 rounded-lg border border-dashed ${
-                      isPending ? 'border-blue-400 bg-blue-50' : 'border-gray-300'
-                    } text-xs flex items-center`}
-                    onDragOver={(e) => handleDragOver(e, colLetter)}
-                    onDrop={(e) => handleDrop(e, colLetter)}
-                  >
-                    <div className="flex items-center flex-1">
-                      <div className="w-6 h-6 flex-shrink-0 rounded-full bg-gray-100 flex items-center justify-center mr-2 text-gray-800 font-medium text-sm">
-                        {colLetter}
-                      </div>
-                      <span className="text-gray-400 italic">
-                        {isPending ? 'Adding...' : 'Drop field here'}
-                      </span>
-                    </div>
+                  <div className="text-sm text-gray-500 py-4 text-center italic">
+                    No fields configured yet. Drag fields here from below.
                   </div>
-                );
-              })}
-            </div>
+                )}
+              </div>
 
-            {/* Combined Available Fields Section */}
-            <div className="mt-3">
+              {/* Add More Fields button */}
               <button 
-                onClick={() => setShowAvailableFields(!showAvailableFields)}
-                className="text-xs text-blue-500 flex items-center"
-                disabled={isUpdating}
+                onClick={toggleAvailableFields}
+                className="w-full py-3 rounded-lg bg-blue-50 text-blue-600 mb-4 flex items-center justify-center"
               >
-                <span className="mr-1">{showAvailableFields ? '▼' : '►'}</span>
-                Available fields ({availableFields.length + unmappedFields.length})
+                <span className="mr-1">{showAvailableFields ? "▲" : "▼"}</span>
+                {showAvailableFields ? "Hide Available Fields" : "Add More Fields"}
               </button>
               
+              {/* Available Fields section */}
               {showAvailableFields && (
-                <div className="mt-1.5 max-h-48 overflow-y-auto space-y-1.5 bg-gray-50 p-1.5 rounded-lg">
-                  {/* Show disabled fields first */}
-                  {availableFields.map(field => (
-                    <div 
-                      key={field.mapping_id}
-                      className={`bg-white p-1.5 rounded-lg border border-gray-200 hover:border-gray-300 text-xs flex items-center cursor-move ${
-                        draggedItem?.mapping_id === field.mapping_id ? 'border-blue-400 bg-blue-50' : ''
-                      }`}
-                      draggable={!isUpdating && Boolean(userId)}
-                      onDragStart={() => handleDragStart(field)}
-                      onDragEnd={handleDragEnd}
-                    >
-                      <div className="w-6 h-6 flex-shrink-0 rounded-full bg-gray-50 flex items-center justify-center mr-2 text-gray-400 font-medium text-sm border border-gray-200">
-                        +
+                <div>
+                  <div className="text-sm font-medium text-gray-700 mb-2">Available Fields</div>
+                  <div className="max-h-60 overflow-y-auto">
+                    {/* Combine both types of available fields */}
+                    {availableFields.length === 0 && unmappedFields.length === 0 && !isLoadingFields && (
+                      <div className="text-center py-3 text-sm text-gray-500">
+                        No available fields
                       </div>
-                      <span className="text-gray-600">{field.display_name}</span>
-                      <span className="text-gray-400 text-xs ml-auto">≡</span>
-                    </div>
-                  ))}
-
-                  {/* Show fields that aren't mapped at all */}
-                  {unmappedFields.map(field => (
-                    <div 
-                      key={field.id}
-                      className="bg-white p-1.5 rounded-lg border border-gray-200 hover:border-gray-300 text-xs flex items-center cursor-move"
-                      draggable={!isUpdating && Boolean(userId)}
-                      onDragStart={() => handleDragStart({ 
-                        field_id: field.id, 
-                        display_name: field.display_name,
-                        is_unmapped: true 
-                      })}
-                      onDragEnd={handleDragEnd}
-                    >
-                      <div className="w-6 h-6 flex-shrink-0 rounded-full bg-gray-50 flex items-center justify-center mr-2 text-gray-400 font-medium text-sm border border-gray-200">
-                        +
+                    )}
+                    
+                    {isLoadingFields && (
+                      <div className="text-center py-3 text-sm text-gray-500">
+                        Loading...
                       </div>
-                      <span className="text-gray-600">{field.display_name}</span>
-                      <span className="text-gray-400 text-xs ml-auto">≡</span>
-                    </div>
-                  ))}
+                    )}
+                    
+                    {/* Show disabled fields */}
+                    {availableFields.map(field => renderAvailableField(field))}
 
-                  {isLoadingFields && (
-                    <div className="text-center py-1 text-xs text-gray-500">
-                      Loading...
-                    </div>
-                  )}
-
-                  {availableFields.length === 0 && unmappedFields.length === 0 && !isLoadingFields && (
-                    <div className="text-center py-1 text-xs text-gray-500">
-                      No available fields
-                    </div>
-                  )}
+                    {/* Show unmapped fields */}
+                    {unmappedFields.map(field => renderAvailableField(field))}
+                  </div>
                 </div>
               )}
             </div>
