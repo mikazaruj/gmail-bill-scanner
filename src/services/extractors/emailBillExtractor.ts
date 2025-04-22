@@ -99,46 +99,261 @@ function extractEmailContent(message: GmailMessage): { subject: string; sender: 
 }
 
 /**
- * Process Gmail messages to extract bill information
- * @param message Gmail message
- * @returns Array of extracted bill data
+ * Extract bills from email content
+ * 
+ * @param emailContent The full email content object from Gmail API
+ * @param options Extraction options including language settings
+ * @returns Array of extracted bills
  */
-export async function extractBillsFromEmails(message: GmailMessage): Promise<BillData[]> {
+export async function extractBillsFromEmails(
+  emailContent: any,
+  options: {
+    inputLanguage?: string;
+    outputLanguage?: string;
+  } = {}
+): Promise<any[]> {
   try {
-    const { subject, sender, body } = extractEmailContent(message);
-    
-    // Check if this email likely contains bill information
-    if (!isBillEmail(subject, body)) {
+    // Extract text content from email
+    const textContent = extractTextFromEmail(emailContent);
+    if (!textContent) {
+      console.warn('No text content found in email');
       return [];
     }
     
-    // Extract bill data
-    const vendor = extractVendor(sender, subject);
-    const amount = extractAmount(subject, body);
-    const date = extractDate(body, message.internalDate);
-    const category = categorize(vendor, subject, body);
-    const accountNumber = extractAccountNumber(body);
+    // Configure extraction based on language settings
+    const inputLang = options.inputLanguage || 'en';
+    const outputLang = options.outputLanguage || 'en';
     
-    // Validate extracted data
-    if (!vendor || amount <= 0) {
-      return [];
+    console.log(`Extracting bills with input language: ${inputLang}, output language: ${outputLang}`);
+    
+    // Get email metadata
+    const headers = emailContent.payload?.headers || [];
+    const from = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || '';
+    const subject = headers.find((h: any) => h.name.toLowerCase() === 'subject')?.value || '';
+    const date = headers.find((h: any) => h.name.toLowerCase() === 'date')?.value || '';
+    
+    // Extract bill data using regular expressions based on language
+    const bills = [];
+    
+    // Detect potential bill data
+    const amountRegex = getAmountRegexForLanguage(inputLang);
+    const dateRegex = getDateRegexForLanguage(inputLang);
+    const vendorRegex = getVendorRegexForLanguage(inputLang);
+    const accountRegex = getAccountRegexForLanguage(inputLang);
+    
+    // Extract potential amount
+    const amountMatch = textContent.match(amountRegex);
+    let amount = null;
+    let currency = 'USD'; // Default currency
+    
+    if (amountMatch) {
+      // Clean up and parse amount
+      amount = parseFloat(
+        amountMatch[0]
+          .replace(/[^\d.,]/g, '')
+          .replace(',', '.')
+      );
+      
+      // Try to detect currency
+      const currencyMatch = textContent.match(/(\$|€|£|USD|EUR|GBP)/i);
+      if (currencyMatch) {
+        // Map currency symbol to code
+        const currencyMap: Record<string, string> = {
+          '$': 'USD',
+          '€': 'EUR',
+          '£': 'GBP',
+          'usd': 'USD',
+          'eur': 'EUR',
+          'gbp': 'GBP'
+        };
+        currency = currencyMap[currencyMatch[0].toLowerCase()] || 'USD';
+      }
     }
     
-    // Create bill object
-    const bill: BillData = {
-      id: message.id,
-      vendor,
-      amount,
-      date,
-      category,
-      accountNumber,
-      emailId: message.id
-    };
+    // Extract potential date
+    const dateMatch = textContent.match(dateRegex);
+    let billDate = null;
     
-    return [bill];
+    if (dateMatch) {
+      try {
+        billDate = new Date(dateMatch[0]);
+      } catch (e) {
+        // If direct parsing fails, try different formats based on language
+        if (inputLang === 'en') {
+          // Try MM/DD/YYYY format
+          const parts = dateMatch[0].split(/[\/\-\.]/);
+          if (parts.length === 3) {
+            billDate = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
+          }
+        } else {
+          // Try DD/MM/YYYY format for non-English
+          const parts = dateMatch[0].split(/[\/\-\.]/);
+          if (parts.length === 3) {
+            billDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+          }
+        }
+      }
+    }
+    
+    // If no date found or parsing failed, fallback to email date
+    if (!billDate || isNaN(billDate.getTime())) {
+      billDate = new Date(date);
+    }
+    
+    // Extract vendor from email
+    let vendor = '';
+    
+    // Try to extract from content first
+    const vendorMatch = textContent.match(vendorRegex);
+    if (vendorMatch && vendorMatch[1]) {
+      vendor = vendorMatch[1].trim();
+    } else {
+      // Fallback to extracting from email sender
+      const fromParts = from.split('<');
+      if (fromParts.length > 1) {
+        // If format is "Name <email@example.com>"
+        vendor = fromParts[0].trim();
+      } else {
+        // If format is just "email@example.com"
+        const emailParts = from.split('@');
+        if (emailParts.length > 1) {
+          // Use domain name as vendor
+          vendor = emailParts[1].split('.')[0];
+          // Capitalize first letter
+          vendor = vendor.charAt(0).toUpperCase() + vendor.slice(1);
+        }
+      }
+    }
+    
+    // Extract account number if present
+    let accountNumber = '';
+    const accountMatch = textContent.match(accountRegex);
+    if (accountMatch && accountMatch[1]) {
+      accountNumber = accountMatch[1].trim();
+    }
+    
+    // Only create a bill object if we have at least an amount
+    if (amount !== null) {
+      const bill = {
+        vendor,
+        amount,
+        currency,
+        date: billDate?.toISOString() || new Date().toISOString(),
+        accountNumber,
+        emailId: emailContent.id,
+        subject,
+        extractedFrom: 'email',
+        createdAt: new Date().toISOString()
+      };
+      
+      bills.push(bill);
+    }
+    
+    return bills;
   } catch (error) {
-    console.error("Error extracting bill from email:", error);
+    console.error('Error extracting bills from email:', error);
     return [];
+  }
+}
+
+/**
+ * Extract text content from email object
+ */
+function extractTextFromEmail(emailContent: any): string {
+  try {
+    // Check if we have a plain text part
+    if (emailContent.payload?.body?.data) {
+      // Decode base64
+      return atob(emailContent.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+    }
+    
+    // Check for multipart
+    if (emailContent.payload?.parts) {
+      for (const part of emailContent.payload.parts) {
+        if (part.mimeType === 'text/plain' && part.body?.data) {
+          // Decode base64
+          return atob(part.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+        }
+      }
+    }
+    
+    return '';
+  } catch (error) {
+    console.error('Error extracting text from email:', error);
+    return '';
+  }
+}
+
+/**
+ * Get appropriate regex for amount based on language
+ */
+function getAmountRegexForLanguage(language: string): RegExp {
+  switch (language.toLowerCase()) {
+    case 'en':
+      return /\$\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:USD|dollars)/i;
+    case 'es':
+      return /\€\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:EUR|euros)/i;
+    case 'fr':
+      return /\€\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:EUR|euros)/i;
+    case 'de':
+      return /\€\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:EUR|euro)/i;
+    default:
+      return /\$\s*\d+(?:[,.]\d{1,2})?|\€\s*\d+(?:[,.]\d{1,2})?|\£\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:USD|EUR|GBP|dollars|euros|pounds)/i;
+  }
+}
+
+/**
+ * Get appropriate regex for date based on language
+ */
+function getDateRegexForLanguage(language: string): RegExp {
+  switch (language.toLowerCase()) {
+    case 'en':
+      // MM/DD/YYYY or MM-DD-YYYY
+      return /\b(0?[1-9]|1[0-2])[\/\-\.](0?[1-9]|[12][0-9]|3[01])[\/\-\.](20\d{2}|19\d{2})\b/;
+    case 'es':
+    case 'fr':
+    case 'de':
+      // DD/MM/YYYY or DD-MM-YYYY (European format)
+      return /\b(0?[1-9]|[12][0-9]|3[01])[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](20\d{2}|19\d{2})\b/;
+    default:
+      // Both formats
+      return /\b(0?[1-9]|[12][0-9]|3[01])[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](20\d{2}|19\d{2})\b|\b(0?[1-9]|1[0-2])[\/\-\.](0?[1-9]|[12][0-9]|3[01])[\/\-\.](20\d{2}|19\d{2})\b/;
+  }
+}
+
+/**
+ * Get appropriate regex for vendor based on language
+ */
+function getVendorRegexForLanguage(language: string): RegExp {
+  switch (language.toLowerCase()) {
+    case 'en':
+      return /(?:from|by|vendor|merchant|payee|biller):\s*([^\n\r.]+)/i;
+    case 'es':
+      return /(?:de|por|vendedor|comerciante|beneficiario|facturador):\s*([^\n\r.]+)/i;
+    case 'fr':
+      return /(?:de|par|vendeur|marchand|bénéficiaire|facturier):\s*([^\n\r.]+)/i;
+    case 'de':
+      return /(?:von|durch|verkäufer|händler|zahlungsempfänger|rechnungssteller):\s*([^\n\r.]+)/i;
+    default:
+      return /(?:from|by|vendor|merchant|payee|biller|de|por|vendedor|comerciante|beneficiario|facturador):\s*([^\n\r.]+)/i;
+  }
+}
+
+/**
+ * Get appropriate regex for account number based on language
+ */
+function getAccountRegexForLanguage(language: string): RegExp {
+  switch (language.toLowerCase()) {
+    case 'en':
+      return /(?:account|account number|reference number|customer number)[\s#:]*([a-zA-Z0-9\-]+)/i;
+    case 'es':
+      return /(?:cuenta|número de cuenta|número de referencia|número de cliente)[\s#:]*([a-zA-Z0-9\-]+)/i;
+    case 'fr':
+      return /(?:compte|numéro de compte|numéro de référence|numéro de client)[\s#:]*([a-zA-Z0-9\-]+)/i;
+    case 'de':
+      return /(?:konto|kontonummer|referenznummer|kundennummer)[\s#:]*([a-zA-Z0-9\-]+)/i;
+    default:
+      return /(?:account|account number|reference number|customer number|cuenta|número de cuenta|compte|numéro de compte|konto|kontonummer)[\s#:]*([a-zA-Z0-9\-]+)/i;
   }
 }
 

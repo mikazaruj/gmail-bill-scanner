@@ -35,274 +35,252 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
 /**
  * Process PDF attachments to extract bill data
  * @param attachments Email attachments
+ * @param options Extraction options including language settings
  * @returns Array of bill data extracted from PDFs
  */
-export async function extractBillsFromPdfs(attachments: GmailAttachment[]): Promise<BillData[]> {
-  const bills: BillData[] = [];
-  
+export async function extractBillsFromPdfs(
+  attachments: GmailAttachment[],
+  options: {
+    inputLanguage?: string;
+    outputLanguage?: string;
+  } = {}
+): Promise<BillData[]> {
   try {
-    // Filter for PDF attachments
-    const pdfAttachments = attachments.filter(attachment => 
-      attachment.filename.toLowerCase().endsWith('.pdf')
-    );
+    // Configure extraction based on language settings
+    const inputLang = options.inputLanguage || 'en';
+    const outputLang = options.outputLanguage || 'en';
     
-    if (pdfAttachments.length === 0) {
-      return [];
-    }
+    console.log(`Extracting bills from ${attachments.length} PDFs with input language: ${inputLang}, output language: ${outputLang}`);
     
-    for (const attachment of pdfAttachments) {
+    const bills: BillData[] = [];
+    
+    for (const attachment of attachments) {
       try {
-        // In a real implementation, we would use a PDF parsing library
-        // For now, we'll extract data from the attachment metadata and filename
-        
-        const pdfText = await mockPdfTextExtraction(attachment);
-        
-        // Skip if it doesn't look like a bill
-        if (!isPotentialBill(pdfText)) {
+        // Check if attachment is a PDF
+        if (!attachment.filename?.toLowerCase().endsWith('.pdf')) {
           continue;
         }
         
-        // Extract data from the PDF text
-        const vendor = extractVendor(attachment.filename, pdfText);
-        const amount = extractAmount(pdfText);
-        const date = extractDate(pdfText) || new Date();
-        const category = categorize(vendor, pdfText);
-        const accountNumber = extractAccountNumber(pdfText);
-        
-        // Skip if we couldn't extract the basic info
-        if (!vendor || amount <= 0) {
+        // Extract text content from PDF
+        const pdfText = await extractTextFromPdf(attachment);
+        if (!pdfText) {
+          console.warn('No text content extracted from PDF attachment');
           continue;
         }
         
-        bills.push({
-          id: `${attachment.messageId}-${attachment.attachmentId}`,
-          vendor,
-          amount,
-          date,
-          category,
-          accountNumber,
-          emailId: attachment.messageId,
-          attachmentId: attachment.attachmentId
-        });
-      } catch (error) {
-        console.error(`Error extracting from PDF ${attachment.filename}:`, error);
+        // Extract bill data using regular expressions based on language
+        const amountRegex = getAmountRegexForLanguage(inputLang);
+        const dateRegex = getDateRegexForLanguage(inputLang);
+        const vendorRegex = getVendorRegexForLanguage(inputLang);
+        const accountRegex = getAccountRegexForLanguage(inputLang);
+        
+        // Extract potential amount
+        const amountMatch = pdfText.match(amountRegex);
+        let amount: number | null = null;
+        let currency = 'USD'; // Default currency
+        
+        if (amountMatch) {
+          // Clean up and parse amount
+          const cleanedAmount = amountMatch[0]
+            .replace(/[^\d.,]/g, '')
+            .replace(',', '.');
+          amount = parseFloat(cleanedAmount);
+          
+          // Try to detect currency
+          const currencyMatch = pdfText.match(/(\$|€|£|USD|EUR|GBP)/i);
+          if (currencyMatch) {
+            // Map currency symbol to code
+            const currencyMap: {[key: string]: string} = {
+              '$': 'USD',
+              '€': 'EUR',
+              '£': 'GBP',
+              'usd': 'USD',
+              'eur': 'EUR',
+              'gbp': 'GBP'
+            };
+            currency = currencyMap[currencyMatch[0].toLowerCase()] || 'USD';
+          }
+        }
+        
+        // Extract potential date
+        const dateMatch = pdfText.match(dateRegex);
+        let billDate = new Date();
+        
+        if (dateMatch) {
+          try {
+            billDate = new Date(dateMatch[0]);
+            
+            // If direct parsing fails, try different formats based on language
+            if (isNaN(billDate.getTime())) {
+              if (inputLang === 'en') {
+                // Try MM/DD/YYYY format
+                const parts = dateMatch[0].split(/[\/\-\.]/);
+                if (parts.length === 3) {
+                  billDate = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
+                }
+              } else {
+                // Try DD/MM/YYYY format for non-English
+                const parts = dateMatch[0].split(/[\/\-\.]/);
+                if (parts.length === 3) {
+                  billDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('Failed to parse date from PDF, using current date');
+            billDate = new Date();
+          }
+        }
+        
+        // Extract vendor from PDF content
+        let vendor = '';
+        const vendorMatch = pdfText.match(vendorRegex);
+        if (vendorMatch && vendorMatch[1]) {
+          vendor = vendorMatch[1].trim();
+        } else {
+          // Try to extract from PDF filename
+          const filenameParts = attachment.filename.split('_');
+          if (filenameParts.length > 1) {
+            vendor = filenameParts[0].replace(/[_\-\.]/g, ' ');
+            // Capitalize first letter
+            vendor = vendor.charAt(0).toUpperCase() + vendor.slice(1);
+          }
+        }
+        
+        // Extract account number if present
+        let accountNumber = '';
+        const accountMatch = pdfText.match(accountRegex);
+        if (accountMatch && accountMatch[1]) {
+          accountNumber = accountMatch[1].trim();
+        }
+        
+        // Only create a bill object if we have at least an amount
+        if (amount !== null && amount > 0) {
+          const bill: BillData = {
+            id: `${attachment.messageId}-${attachment.attachmentId}`,
+            vendor,
+            amount,
+            currency,
+            date: billDate.toISOString(),
+            accountNumber,
+            emailId: attachment.messageId,
+            attachmentId: attachment.attachmentId,
+            category: categorize(vendor, pdfText),
+            extractedFrom: 'pdf',
+            createdAt: new Date().toISOString()
+          };
+          
+          bills.push(bill);
+        }
+      } catch (pdfError) {
+        console.error('Error processing PDF attachment:', pdfError);
         // Continue with next attachment
       }
     }
     
     return bills;
   } catch (error) {
-    console.error("Error processing PDF attachments:", error);
+    console.error('Error extracting bills from PDFs:', error);
     return [];
   }
 }
 
 /**
- * Mock PDF text extraction (in real app, would use a PDF parsing library)
+ * Extract text content from PDF attachment
+ * This is a placeholder implementation - in a real app, you would use a PDF parsing library
  */
-async function mockPdfTextExtraction(attachment: GmailAttachment): Promise<string> {
-  // In a real implementation, we would:
-  // 1. Decode the base64 data
-  // 2. Parse the PDF using a library like pdf.js or pdf-parse
-  // 3. Extract the text content
-  
-  // For the mock implementation, we'll generate some text based on filename
-  const filename = attachment.filename.toLowerCase();
-  
-  // Generate mock text based on filename keywords
-  let mockText = `PDF Document\n${attachment.filename}\n`;
-  
-  if (filename.includes('bill') || filename.includes('invoice')) {
-    mockText += "Invoice Number: INV-12345\n";
-    mockText += "Total Amount Due: $120.50\n";
-    mockText += "Due Date: 2023-10-15\n";
-    mockText += "Account Number: ACCT-67890\n";
-  }
-  
-  if (filename.includes('electric') || filename.includes('utility')) {
-    mockText += "Electric Company\n";
-    mockText += "Service Period: September 2023\n";
-    mockText += "Total Due: $85.75\n";
-    mockText += "Account: 123456789\n";
-  }
-  
-  if (filename.includes('phone') || filename.includes('mobile')) {
-    mockText += "Mobile Service Provider\n";
-    mockText += "Monthly Statement\n";
-    mockText += "Total Charges: $65.99\n";
-    mockText += "Customer ID: MOB-54321\n";
-  }
-  
-  return mockText;
-}
-
-/**
- * Check if PDF possibly contains bill information
- */
-function isPotentialBill(text: string): boolean {
-  // Check for bill keywords
-  const textLower = text.toLowerCase();
-  
-  return BILL_KEYWORDS.some(keyword => 
-    textLower.includes(keyword.toLowerCase())
-  );
-}
-
-/**
- * Extract vendor name from PDF
- */
-function extractVendor(filename: string, text: string): string {
-  // Try to find company name in the first few lines
-  const lines = text.split('\n').slice(0, 10);
-  
-  // Look for lines that might be company names (not too long, no common bill words)
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (
-      trimmed.length > 3 && 
-      trimmed.length < 30 && 
-      !BILL_KEYWORDS.some(word => trimmed.toLowerCase().includes(word))
-    ) {
-      return trimmed;
-    }
-  }
-  
-  // Fallback: Extract from filename
-  return filename
-    .replace(/\.pdf$/i, '')
-    .replace(/[_-]/g, ' ')
-    .replace(/(\d+)/g, '')
-    .trim();
-}
-
-/**
- * Extract amount from PDF text
- */
-function extractAmount(text: string): number {
-  // Look for currency patterns in the text
-  for (const pattern of CURRENCY_PATTERNS) {
-    const match = text.match(pattern);
+async function extractTextFromPdf(attachment: GmailAttachment): Promise<string> {
+  try {
+    // In a real implementation, you would:
+    // 1. Convert the base64 data to a buffer
+    // 2. Use a PDF parsing library (like pdf.js) to extract text content
+    // 3. Return the extracted text
     
-    if (match) {
-      // Extract just the numeric part
-      const amountStr = match[0].replace(/[^\d,.]/g, '');
-      return parseFloat(amountStr.replace(',', '.'));
-    }
+    // For this example, we'll simulate text extraction
+    return `Invoice #12345
+Date: 01/15/2023
+From: ${attachment.filename.split('.')[0]} Inc.
+To: Valued Customer
+Amount: $123.45
+Account: ACCT-12345
+Thank you for your business.`;
+  } catch (error) {
+    console.error('Error extracting text from PDF:', error);
+    return '';
   }
-  
-  // Look for amount-related phrases
-  const amountPhrases = [
-    /total\s*(?:due|amount|payment|balance)?\s*:?\s*\$?\s*(\d+[,.]\d{2})/i,
-    /amount\s*(?:due|total)?\s*:?\s*\$?\s*(\d+[,.]\d{2})/i,
-    /payment\s*(?:due|amount|total)?\s*:?\s*\$?\s*(\d+[,.]\d{2})/i,
-    /balance\s*(?:due|total)?\s*:?\s*\$?\s*(\d+[,.]\d{2})/i,
-    /due\s*(?:amount|total)?\s*:?\s*\$?\s*(\d+[,.]\d{2})/i,
-  ];
-  
-  for (const pattern of amountPhrases) {
-    const match = text.match(pattern);
-    
-    if (match && match[1]) {
-      return parseFloat(match[1].replace(',', '.'));
-    }
-  }
-  
-  return 0;
 }
 
 /**
- * Extract date from PDF text
+ * Get appropriate regex for amount based on language
  */
-function extractDate(text: string): Date | null {
-  // Common date patterns
-  const datePatterns = [
-    /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](20\d{2})\b/,                 // DD/MM/YYYY
-    /\b(20\d{2})[\/\-](\d{1,2})[\/\-](\d{1,2})\b/,                 // YYYY/MM/DD
-    /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* (\d{1,2}),? (20\d{2})\b/i,   // Month DD, YYYY
-    /\b(\d{1,2})(?:st|nd|rd|th)? (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* (20\d{2})\b/i   // DD Month YYYY
-  ];
-  
-  for (const pattern of datePatterns) {
-    const match = text.match(pattern);
-    
-    if (match) {
-      try {
-        if (pattern === datePatterns[0]) {
-          // DD/MM/YYYY
-          return new Date(parseInt(match[3]), parseInt(match[2]) - 1, parseInt(match[1]));
-        } else if (pattern === datePatterns[1]) {
-          // YYYY/MM/DD
-          return new Date(parseInt(match[1]), parseInt(match[2]) - 1, parseInt(match[3]));
-        } else if (pattern === datePatterns[2]) {
-          // Month DD, YYYY
-          const month = getMonthIndex(match[1]);
-          return new Date(parseInt(match[3]), month, parseInt(match[2]));
-        } else {
-          // DD Month YYYY
-          const month = getMonthIndex(match[2]);
-          return new Date(parseInt(match[3]), month, parseInt(match[1]));
-        }
-      } catch (e) {
-        // Continue to next pattern if date parsing fails
-        continue;
-      }
-    }
+function getAmountRegexForLanguage(language: string): RegExp {
+  switch (language.toLowerCase()) {
+    case 'en':
+      return /\$\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:USD|dollars)/i;
+    case 'es':
+      return /\€\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:EUR|euros)/i;
+    case 'fr':
+      return /\€\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:EUR|euros)/i;
+    case 'de':
+      return /\€\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:EUR|euro)/i;
+    default:
+      return /\$\s*\d+(?:[,.]\d{1,2})?|\€\s*\d+(?:[,.]\d{1,2})?|\£\s*\d+(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?\s*(?:USD|EUR|GBP|dollars|euros|pounds)/i;
   }
-  
-  // Look for date keywords
-  const dateKeywordPatterns = [
-    /due\s*date\s*:?\s*(\d{1,2})[\/\-](\d{1,2})[\/\-](20\d{2})/i,
-    /statement\s*date\s*:?\s*(\d{1,2})[\/\-](\d{1,2})[\/\-](20\d{2})/i,
-    /invoice\s*date\s*:?\s*(\d{1,2})[\/\-](\d{1,2})[\/\-](20\d{2})/i,
-  ];
-  
-  for (const pattern of dateKeywordPatterns) {
-    const match = text.match(pattern);
-    
-    if (match) {
-      try {
-        return new Date(parseInt(match[3]), parseInt(match[2]) - 1, parseInt(match[1]));
-      } catch (e) {
-        continue;
-      }
-    }
-  }
-  
-  return null;
 }
 
 /**
- * Get month index from month name
+ * Get appropriate regex for date based on language
  */
-function getMonthIndex(monthName: string): number {
-  const months: Record<string, number> = {
-    'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5,
-    'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
-  };
-  
-  return months[monthName.toLowerCase().substring(0, 3)] || 0;
+function getDateRegexForLanguage(language: string): RegExp {
+  switch (language.toLowerCase()) {
+    case 'en':
+      // MM/DD/YYYY or MM-DD-YYYY
+      return /\b(0?[1-9]|1[0-2])[\/\-\.](0?[1-9]|[12][0-9]|3[01])[\/\-\.](20\d{2}|19\d{2})\b/;
+    case 'es':
+    case 'fr':
+    case 'de':
+      // DD/MM/YYYY or DD-MM-YYYY (European format)
+      return /\b(0?[1-9]|[12][0-9]|3[01])[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](20\d{2}|19\d{2})\b/;
+    default:
+      // Both formats
+      return /\b(0?[1-9]|[12][0-9]|3[01])[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](20\d{2}|19\d{2})\b|\b(0?[1-9]|1[0-2])[\/\-\.](0?[1-9]|[12][0-9]|3[01])[\/\-\.](20\d{2}|19\d{2})\b/;
+  }
 }
 
 /**
- * Extract account number from PDF
+ * Get appropriate regex for vendor based on language
  */
-function extractAccountNumber(text: string): string | undefined {
-  const accountPatterns = [
-    /account\s*(?:#|number|no|num)?\s*:?\s*([A-Z0-9-]{4,})/i,
-    /customer\s*(?:id|number|#)?\s*:?\s*([A-Z0-9-]{4,})/i,
-    /policy\s*(?:#|number|no)?\s*:?\s*([A-Z0-9-]{4,})/i,
-    /reference\s*(?:#|number|no)?\s*:?\s*([A-Z0-9-]{4,})/i,
-  ];
-  
-  for (const pattern of accountPatterns) {
-    const match = text.match(pattern);
-    
-    if (match && match[1]) {
-      return match[1];
-    }
+function getVendorRegexForLanguage(language: string): RegExp {
+  switch (language.toLowerCase()) {
+    case 'en':
+      return /(?:from|by|vendor|merchant|payee|biller):\s*([^\n\r.]+)/i;
+    case 'es':
+      return /(?:de|por|vendedor|comerciante|beneficiario|facturador):\s*([^\n\r.]+)/i;
+    case 'fr':
+      return /(?:de|par|vendeur|marchand|bénéficiaire|facturier):\s*([^\n\r.]+)/i;
+    case 'de':
+      return /(?:von|durch|verkäufer|händler|zahlungsempfänger|rechnungssteller):\s*([^\n\r.]+)/i;
+    default:
+      return /(?:from|by|vendor|merchant|payee|biller|de|por|vendedor|comerciante|beneficiario|facturador):\s*([^\n\r.]+)/i;
   }
-  
-  return undefined;
+}
+
+/**
+ * Get appropriate regex for account number based on language
+ */
+function getAccountRegexForLanguage(language: string): RegExp {
+  switch (language.toLowerCase()) {
+    case 'en':
+      return /(?:account|account number|reference number|customer number)[\s#:]*([a-zA-Z0-9\-]+)/i;
+    case 'es':
+      return /(?:cuenta|número de cuenta|número de referencia|número de cliente)[\s#:]*([a-zA-Z0-9\-]+)/i;
+    case 'fr':
+      return /(?:compte|numéro de compte|numéro de référence|numéro de client)[\s#:]*([a-zA-Z0-9\-]+)/i;
+    case 'de':
+      return /(?:konto|kontonummer|referenznummer|kundennummer)[\s#:]*([a-zA-Z0-9\-]+)/i;
+    default:
+      return /(?:account|account number|reference number|customer number|cuenta|número de cuenta|compte|numéro de compte|konto|kontonummer)[\s#:]*([a-zA-Z0-9\-]+)/i;
+  }
 }
 
 /**

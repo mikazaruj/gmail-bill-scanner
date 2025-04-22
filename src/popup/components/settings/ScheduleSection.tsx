@@ -6,6 +6,7 @@ import { useSettingsApi } from '../../hooks/settings/useSettingsApi';
 import { Info, CalendarClock } from 'lucide-react';
 import { getUserSettings } from '../../../services/settings';
 import { ScanContext } from '../../context/ScanContext';
+import InitialScanButton from '../InitialScanButton';
 
 interface ScheduleSectionProps {
   userId: string | null;
@@ -193,23 +194,6 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
     }
   }, [userId, updateSettings, updateSetting]);
 
-  const handleRunInitialScan = useCallback(async () => {
-    setRunningInitialScan(true);
-    // Set current date as initial_scan_date in the backend
-    const initialScanDate = new Date().toISOString();
-    
-    if (userId) {
-      try {
-        await updateSetting('initial_scan_date', initialScanDate);
-        console.log('ScheduleSection: Set initial_scan_date to', initialScanDate);
-      } catch (error) {
-        console.error('ScheduleSection: Failed to set initial_scan_date', error);
-      } finally {
-        setRunningInitialScan(false);
-      }
-    }
-  }, [userId, updateSetting]);
-
   // Check if this is a first-time user (no activity)
   const isFirstTimeUser = hasActivity === false;
 
@@ -276,17 +260,12 @@ const ScheduleSection: React.FC<ScheduleSectionProps> = ({
         {/* Run Initial Scan button for first-time users */}
         {isFirstTimeUser && (
           <div className="mt-3 p-2 bg-blue-50 rounded-lg border border-blue-200">
-            <button 
-              onClick={handleRunInitialScan}
-              disabled={runningInitialScan}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
-            >
-              <CalendarClock size={14} className="mr-2" />
-              {runningInitialScan ? 'Setting up...' : 'Run Initial Scan'}
-            </button>
-            <p className="mt-2 text-xs text-blue-700">
-              Initial scan will look back {searchDays} days from today, based on your search preferences.
-            </p>
+            <InitialScanButton
+              userId={userId}
+              variant="schedule"
+              searchDays={searchDays}
+              onScanComplete={() => setHasActivity(true)}
+            />
           </div>
         )}
       </div>

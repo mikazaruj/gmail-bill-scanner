@@ -6,6 +6,8 @@ import ActivityItem from '../components/ActivityItem';
 import { ScanContext } from '../context/ScanContext';
 import { useSettings } from '../hooks/useSettings';
 import { Settings as MessageSettings } from '../../types/Message';
+import InitialScanButton from '../components/InitialScanButton';
+import { useAuth } from '../hooks/useAuth';
 
 interface DashboardProps {
   onNavigate: (tab: string) => void;
@@ -13,6 +15,8 @@ interface DashboardProps {
 
 const Dashboard = ({ onNavigate }: DashboardProps) => {
   const context = useContext(ScanContext);
+  const { userProfile } = useAuth();
+  const userId = userProfile?.id || null;
   
   const { 
     scanStatus, 
@@ -183,14 +187,22 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
         </div>
       </CollapsibleSection>
       
-      <button 
-        onClick={handleScan}
-        disabled={scanStatus === 'scanning' || exportInProgress}
-        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
-      >
-        <RefreshCcw size={14} className="mr-2" />
-        {scanStatus === 'scanning' ? 'Scanning...' : dashboardStats.processed === 0 ? 'Run First Scan' : 'Run Manual Processing'}
-      </button>
+      {dashboardStats.processed === 0 ? (
+        <InitialScanButton 
+          userId={userId} 
+          variant="dashboard" 
+          searchDays={settings.searchDays}
+        />
+      ) : (
+        <button 
+          onClick={handleScan}
+          disabled={scanStatus === 'scanning' || exportInProgress}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors"
+        >
+          <RefreshCcw size={14} className="mr-2" />
+          {scanStatus === 'scanning' ? 'Scanning...' : 'Run Manual Processing'}
+        </button>
+      )}
       
       {scanResults.length > 0 && (
         <button

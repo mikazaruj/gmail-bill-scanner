@@ -1962,3 +1962,101 @@ export const verifySupabaseConnection = async (): Promise<boolean> => {
     return false;
   }
 };
+
+/**
+ * Get trusted email sources for a user
+ * 
+ * @param userId The user ID
+ * @returns Array of trusted email sources
+ */
+export async function getTrustedEmailSources(userId: string): Promise<any[]> {
+  try {
+    const supabase = await getSupabaseClient();
+    
+    const { data, error } = await supabase
+      .from('email_sources')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .is('deleted_at', null);
+    
+    if (error) {
+      console.error('Error fetching trusted sources:', error);
+      return [];
+    }
+    
+    return data || [];
+  } catch (error) {
+    console.error('Error in getTrustedEmailSources:', error);
+    return [];
+  }
+}
+
+/**
+ * Update user processing statistics
+ * 
+ * @param userId The user ID
+ * @param stats The stats to update
+ * @returns Whether the update was successful
+ */
+export async function updateUserProcessingStats(
+  userId: string, 
+  stats: {
+    total_processed_items?: number;
+    successful_processed_items?: number;
+    last_processed_at?: string;
+  }
+): Promise<boolean> {
+  try {
+    const supabase = await getSupabaseClient();
+    
+    // First check if user stats record exists
+    const { data: existingStats, error: checkError } = await supabase
+      .from('user_stats')
+      .select('id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    
+    if (checkError) {
+      console.error('Error checking user stats:', checkError);
+      return false;
+    }
+    
+    // If record exists, update it
+    if (existingStats?.id) {
+      const { error: updateError } = await supabase
+        .from('user_stats')
+        .update({
+          total_processed_items: stats.total_processed_items,
+          successful_processed_items: stats.successful_processed_items,
+          last_processed_at: stats.last_processed_at
+        })
+        .eq('user_id', userId);
+      
+      if (updateError) {
+        console.error('Error updating user stats:', updateError);
+        return false;
+      }
+    } else {
+      // If record doesn't exist, create it
+      const { error: insertError } = await supabase
+        .from('user_stats')
+        .insert({
+          user_id: userId,
+          total_processed_items: stats.total_processed_items || 0,
+          successful_processed_items: stats.successful_processed_items || 0,
+          last_processed_at: stats.last_processed_at || new Date().toISOString()
+        });
+      
+      if (insertError) {
+        console.error('Error inserting user stats:', insertError);
+        return false;
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error in updateUserProcessingStats:', error);
+    return false;
+  }
+}

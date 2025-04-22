@@ -1708,63 +1708,312 @@ async function handleScanEmails(
   sendResponse: (response: ScanEmailsResponse) => void
 ) {
   try {
+    // Get authentication token
     const token = await getAccessToken();
     if (!token) {
       sendResponse({ success: false, error: 'Not authenticated' });
       return;
     }
 
-    // Get scan settings from storage or use defaults
-    const settings = await chrome.storage.sync.get({
-      scanDays: 30,
-      maxResults: payload.maxResults || 20
+    // Get Google profile to identify which email account is being scanned
+    const googleProfile = await chrome.storage.local.get(['google_profile']);
+    const userEmail = googleProfile?.google_profile?.email;
+    if (!userEmail) {
+      console.warn('No user email found in Google profile');
+    }
+    
+    // Get Supabase user ID for stats tracking
+    const userData = await chrome.storage.local.get(['supabase_user_id', 'google_user_id']);
+    const userId = userData?.supabase_user_id || userData?.google_user_id;
+    
+    if (!userId) {
+      console.warn('No user ID found for stats tracking');
+    }
+
+    // Import necessary client functions
+    let supabaseClient;
+    let getUserSettings;
+    let getTrustedSources;
+    let updateUserStats;
+    
+    try {
+      const { 
+        getSupabaseClient, 
+        getUserSettings: getSettings, 
+        getTrustedEmailSources,
+        updateUserProcessingStats
+      } = await import('../services/supabase/client');
+      
+      supabaseClient = await getSupabaseClient();
+      getUserSettings = getSettings;
+      getTrustedSources = getTrustedEmailSources;
+      updateUserStats = updateUserProcessingStats;
+    } catch (error) {
+      console.error('Failed to import Supabase client functions:', error);
+      // Continue with local storage only if import fails
+    }
+
+    // Get user settings from both Chrome storage and Supabase
+    const chromeSettings = await chrome.storage.sync.get({
+      scanDays: payload.searchDays || 30,
+      maxResults: payload.maxResults || 20,
+      processAttachments: true,
+      trustedSourcesOnly: false,
+      captureImportantNotices: true,
+      inputLanguage: 'en',
+      outputLanguage: 'en',
+      notifyProcessed: true,
+      notifyHighAmount: true,
+      notifyErrors: true,
+      highAmountThreshold: 100
     });
+    
+    // Attempt to get more detailed settings from Supabase if available
+    let dbSettings = null;
+    if (userId && getUserSettings) {
+      try {
+        dbSettings = await getUserSettings(userId);
+        console.log('Retrieved user settings from Supabase:', dbSettings);
+      } catch (settingsError) {
+        console.error('Error fetching settings from Supabase:', settingsError);
+      }
+    }
+    
+    // Merge settings with Supabase taking precedence
+    const settings = {
+      ...chromeSettings,
+      ...(dbSettings || {})
+    };
+    
+    console.log('Using scan settings:', settings);
+    
+    // Get trusted email sources if the setting is enabled
+    let trustedSources = [];
+    if (settings.trustedSourcesOnly && userId && getTrustedSources) {
+      try {
+        trustedSources = await getTrustedSources(userId);
+        console.log(`Retrieved ${trustedSources.length} trusted sources from database`);
+      } catch (sourcesError) {
+        console.error('Error fetching trusted sources:', sourcesError);
+      }
+    }
 
     // Calculate date range (last X days)
     const endDate = new Date();
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - settings.scanDays);
-
-    // Search for potential bill emails
-    const query = 'subject:(invoice OR bill OR receipt OR payment OR statement) after:' + 
-                 startDate.toISOString().split('T')[0];
     
+    // Prepare base query for Gmail search
+    let query = 'subject:(invoice OR bill OR receipt OR payment OR statement OR due)';
+    
+    // Add date range to query
+    query += ' after:' + startDate.toISOString().split('T')[0];
+    
+    // Add trusted sources filter if enabled
+    if (settings.trustedSourcesOnly && trustedSources.length > 0) {
+      const sourceFilter = trustedSources
+        .map(source => `from:(${source.email_address})`)
+        .join(' OR ');
+      
+      query += ` AND (${sourceFilter})`;
+      console.log('Using trusted sources filter with', trustedSources.length, 'sources');
+    } else if (settings.trustedSourcesOnly && trustedSources.length === 0) {
+      // If trusted sources is enabled but no sources defined, use a placeholder query
+      // that won't return any results (this is a policy decision - could be changed)
+      console.warn('Trusted sources only is enabled but no sources are defined');
+      query += ' AND from:(no-trusted-sources-defined@placeholder.com)';
+    }
+    
+    // Add non-bill related email search if enabled
+    if (settings.captureImportantNotices) {
+      query += ' OR subject:(price change OR service update OR important notice OR policy update)';
+    }
+    
+    console.log('Gmail search query:', query);
+    
+    // Search for emails using the constructed query
     const messageIds = await searchEmails(query, settings.maxResults);
+    console.log(`Found ${messageIds.length} emails matching search criteria`);
+    
+    // Track statistics for processing
+    const stats = {
+      totalProcessed: messageIds.length,
+      billsFound: 0,
+      attachmentsProcessed: 0,
+      errors: 0
+    };
 
     // Process emails to extract bills
     let bills: BillData[] = [];
+    let processedItems = [];
     
     for (const messageId of messageIds) {
       try {
         // Get full email content
         const emailContent = await getEmailContent(token, messageId);
         
-        // Extract bills from email content
-        const emailBills = await extractBillsFromEmails(emailContent);
-        bills = [...bills, ...emailBills];
+        const fromAddress = emailContent.payload?.headers?.find(
+          h => h.name.toLowerCase() === 'from'
+        )?.value || '';
         
-        // Check for PDF attachments
-        if (emailContent.payload?.parts?.some(part => 
-          part.mimeType === 'application/pdf' || 
-          part.filename?.toLowerCase().endsWith('.pdf')
-        )) {
-          // Get attachments
-          const attachments = await getAttachments(token, messageId);
+        const subject = emailContent.payload?.headers?.find(
+          h => h.name.toLowerCase() === 'subject'
+        )?.value || '';
+        
+        console.log(`Processing email: ${subject} from ${fromAddress}`);
+        
+        // Create a processed item record for tracking
+        const processedItem = {
+          message_id: messageId,
+          from_address: fromAddress,
+          subject,
+          user_id: userId,
+          processed_at: new Date().toISOString(),
+          status: 'processing',
+          bills_extracted: 0,
+          error_message: null
+        };
+        
+        try {
+          // Extract bills from email content with language consideration
+          const emailBills = await extractBillsFromEmails(emailContent, {
+            inputLanguage: settings.inputLanguage,
+            outputLanguage: settings.outputLanguage
+          });
           
-          // Extract bills from PDFs
-          const pdfBills = await extractBillsFromPdfs(attachments);
-          bills = [...bills, ...pdfBills];
+          if (emailBills.length > 0) {
+            console.log(`Extracted ${emailBills.length} bills from email content`);
+            bills = [...bills, ...emailBills];
+            stats.billsFound += emailBills.length;
+            processedItem.bills_extracted += emailBills.length;
+          }
+          
+          // Process attachments if enabled
+          if (settings.processAttachments) {
+            const hasPdfAttachments = emailContent.payload?.parts?.some(part => 
+              part.mimeType === 'application/pdf' || 
+              part.filename?.toLowerCase().endsWith('.pdf')
+            );
+            
+            if (hasPdfAttachments) {
+              console.log('Found PDF attachments, processing...');
+              
+              // Get attachments
+              const attachments = await getAttachments(token, messageId);
+              stats.attachmentsProcessed += attachments.length;
+              
+              // Extract bills from PDFs
+              const pdfBills = await extractBillsFromPdfs(attachments, {
+                inputLanguage: settings.inputLanguage,
+                outputLanguage: settings.outputLanguage
+              });
+              
+              if (pdfBills.length > 0) {
+                console.log(`Extracted ${pdfBills.length} bills from PDF attachments`);
+                bills = [...bills, ...pdfBills];
+                stats.billsFound += pdfBills.length;
+                processedItem.bills_extracted += pdfBills.length;
+              }
+            }
+          }
+          
+          // Update processed item status to success
+          processedItem.status = 'success';
+          
+        } catch (extractError) {
+          console.error(`Error extracting from email ${messageId}:`, extractError);
+          processedItem.status = 'error';
+          processedItem.error_message = extractError instanceof Error 
+            ? extractError.message 
+            : 'Unknown extraction error';
+          stats.errors++;
         }
-      } catch (error) {
-        console.error('Error processing email:', error);
+        
+        // Add to processed items list
+        processedItems.push(processedItem);
+        
+      } catch (emailError) {
+        console.error('Error processing email:', emailError);
+        stats.errors++;
         // Continue with next email
       }
     }
     
-    // Store extracted bills in local storage for later use
-    await chrome.storage.local.set({ extractedBills: bills });
+    // Store extraction results
+    console.log(`Scan complete. Processed ${stats.totalProcessed} emails, found ${stats.billsFound} bills, had ${stats.errors} errors`);
+    await chrome.storage.local.set({ 
+      extractedBills: bills,
+      lastScanStats: stats,
+      lastScanTime: new Date().toISOString()
+    });
     
-    sendResponse({ success: true, bills });
+    // Update user stats in Supabase if available
+    if (userId && updateUserStats && supabaseClient) {
+      try {
+        // Update aggregated user stats
+        await updateUserStats(userId, {
+          total_processed_items: stats.totalProcessed,
+          successful_processed_items: stats.billsFound,
+          last_processed_at: new Date().toISOString()
+        });
+        
+        // Store individual processed items if possible
+        try {
+          const { error } = await supabaseClient
+            .from('processed_items')
+            .insert(processedItems);
+          
+          if (error) {
+            console.error('Error inserting processed items:', error);
+          } else {
+            console.log(`Successfully recorded ${processedItems.length} processed items in database`);
+          }
+        } catch (recordError) {
+          console.error('Error recording processed items:', recordError);
+        }
+        
+      } catch (statsError) {
+        console.error('Error updating user stats:', statsError);
+      }
+    }
+    
+    // Send notifications if enabled
+    if (settings.notifyProcessed) {
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icons/icon-128.png',
+        title: 'Scan Complete',
+        message: `Processed ${stats.totalProcessed} emails, found ${stats.billsFound} bills`
+      });
+    }
+    
+    // If high value bills found and notification enabled
+    if (settings.notifyHighAmount) {
+      const threshold = settings.highAmountThreshold || 100;
+      const highValueBills = bills.filter(bill => 
+        parseFloat(bill.amount?.toString() || '0') > threshold
+      );
+      
+      if (highValueBills.length > 0) {
+        chrome.notifications.create({
+          type: 'basic',
+          iconUrl: 'icons/icon-128.png',
+          title: 'High Value Bills Found',
+          message: `Found ${highValueBills.length} bills over $${threshold}`
+        });
+      }
+    }
+    
+    // Send response with bills and stats
+    sendResponse({ 
+      success: true, 
+      bills,
+      stats: {
+        processed: stats.totalProcessed,
+        billsFound: stats.billsFound,
+        errors: stats.errors
+      }
+    });
   } catch (error) {
     console.error('Error scanning emails:', error);
     sendResponse({ 
