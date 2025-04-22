@@ -525,22 +525,22 @@ const FieldMappingSection = ({
     return (
       <div 
         key={fieldMapping.mapping_id}
-        className="bg-white border border-gray-200 rounded-lg shadow-sm mb-2"
+        className="bg-white border border-gray-200 rounded-lg shadow-sm mb-1.5"
         draggable={!isUpdating && Boolean(userId)}
         onDragStart={() => handleDragStart(fieldMapping)}
         onDragEnd={handleDragEnd}
         onDragOver={(e) => handleDragOverForReordering(e, fieldMapping)}
       >
-        <div className="flex items-center justify-between p-3">
+        <div className="flex items-center justify-between py-2 px-3">
           <div className="flex items-center">
-            <div className="w-7 h-7 flex-shrink-0 rounded-md bg-gray-50 flex items-center justify-center mr-3 text-gray-700 font-medium border border-gray-200">
+            <div className="w-6 h-6 flex-shrink-0 rounded-md bg-gray-50 flex items-center justify-center mr-2 text-gray-700 font-medium border border-gray-200 text-sm">
               {fieldMapping.column_mapping}
             </div>
-            <div className="mr-2 text-gray-400">⠿⠿</div>
-            <span className="text-gray-900 font-medium">{fieldMapping.display_name}</span>
+            <div className="mr-2 text-gray-300 text-xs">⠿⠿</div>
+            <span className="text-gray-900 font-medium text-sm">{fieldMapping.display_name}</span>
           </div>
           <button 
-            className="text-gray-400 hover:text-gray-600 p-0.5 rounded-full text-xl"
+            className="text-gray-400 hover:text-gray-600 p-0.5 rounded-full"
             onClick={() => handleDisableField(fieldMapping)}
             title="Remove field"
             disabled={isUpdating}
@@ -561,7 +561,7 @@ const FieldMappingSection = ({
     return (
       <div 
         key={isUnmapped ? field.id : field.mapping_id}
-        className="bg-white border border-gray-200 rounded-lg p-3 mb-2 flex items-center cursor-move"
+        className="bg-white border border-gray-200 rounded-lg py-1.5 px-3 mb-1.5 flex items-center cursor-move"
         draggable={!isUpdating && Boolean(userId)}
         onDragStart={() => handleDragStart(
           isUnmapped ? { 
@@ -573,8 +573,8 @@ const FieldMappingSection = ({
         onDragEnd={handleDragEnd}
         onClick={() => isUnmapped ? handleAddNewField(field) : null}
       >
-        <div className="text-blue-500 mr-2">⊕</div>
-        <span className="text-gray-700">{displayName}</span>
+        <div className="text-blue-500 mr-2 text-sm">⊕</div>
+        <span className="text-gray-700 text-sm">{displayName}</span>
       </div>
     );
   };
@@ -586,7 +586,7 @@ const FieldMappingSection = ({
       ) : (
         <>
           <div className="mb-1">
-            <div className="text-sm text-gray-600 mb-3">
+            <div className="text-xs text-gray-500 mb-2">
               Drag fields to reorder or remove from your sheet
             </div>
             
@@ -600,7 +600,7 @@ const FieldMappingSection = ({
               {/* Enabled fields section - always visible and draggable */}
               <div 
                 ref={activeFieldsRef}
-                className={`mb-4 p-1 rounded-lg ${isDraggingOver === 'active' ? 'bg-blue-50 border-2 border-dashed border-blue-300' : ''}`}
+                className={`mb-2 p-0.5 rounded-lg ${isDraggingOver === 'active' ? 'bg-blue-50 border-2 border-dashed border-blue-300' : ''}`}
                 onDragOver={handleDragOverActiveFields}
                 onDragLeave={handleDragLeaveActiveFields}
                 onDrop={handleDropOnActiveFields}
@@ -610,7 +610,7 @@ const FieldMappingSection = ({
                     {enabledMappings.map(mapping => renderFieldCard(mapping))}
                   </div>
                 ) : (
-                  <div className="text-sm text-gray-500 py-4 text-center italic">
+                  <div className="text-sm text-gray-500 py-3 text-center italic">
                     No fields configured yet. Drag fields here from below.
                   </div>
                 )}
@@ -619,26 +619,26 @@ const FieldMappingSection = ({
               {/* Add More Fields button */}
               <button 
                 onClick={toggleAvailableFields}
-                className="w-full py-3 rounded-lg bg-blue-50 text-blue-600 mb-4 flex items-center justify-center"
+                className="w-full py-2 rounded-lg bg-blue-50 text-blue-600 mb-2 flex items-center justify-center text-sm"
               >
-                <span className="mr-1">{showAvailableFields ? "▲" : "▼"}</span>
+                <span className="mr-1 text-blue-500">{showAvailableFields ? "▲" : "▼"}</span>
                 {showAvailableFields ? "Hide Available Fields" : "Add More Fields"}
               </button>
               
               {/* Available Fields section */}
               {showAvailableFields && (
                 <div>
-                  <div className="text-sm font-medium text-gray-700 mb-2">Available Fields</div>
-                  <div className="max-h-60 overflow-y-auto">
+                  <div className="text-xs font-medium text-gray-700 mb-1.5">Available Fields</div>
+                  <div className="max-h-48 overflow-y-auto">
                     {/* Combine both types of available fields */}
                     {availableFields.length === 0 && unmappedFields.length === 0 && !isLoadingFields && (
-                      <div className="text-center py-3 text-sm text-gray-500">
+                      <div className="text-center py-2 text-xs text-gray-500">
                         No available fields
                       </div>
                     )}
                     
                     {isLoadingFields && (
-                      <div className="text-center py-3 text-sm text-gray-500">
+                      <div className="text-center py-2 text-xs text-gray-500">
                         Loading...
                       </div>
                     )}
