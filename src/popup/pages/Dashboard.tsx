@@ -1,4 +1,4 @@
-import React, { useContext } from 'react';
+import React, { useContext, useState } from 'react';
 import { BarChart2, Clock, RefreshCcw, FileSpreadsheet, Check, AlertTriangle, PieChart, Calendar } from 'lucide-react';
 import CollapsibleSection from '../components/CollapsibleSection';
 import StatCard from '../components/StatCard';
@@ -8,6 +8,7 @@ import { useSettings } from '../hooks/useSettings';
 import { Settings as MessageSettings } from '../../types/Message';
 import InitialScanButton from '../components/InitialScanButton';
 import { useAuth } from '../hooks/useAuth';
+import { DebugPanel } from '../components/DebugPanel';
 
 interface DashboardProps {
   onNavigate: (tab: string) => void;
@@ -17,6 +18,7 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
   const context = useContext(ScanContext);
   const { userProfile } = useAuth();
   const userId = userProfile?.id || null;
+  const [showDebug, setShowDebug] = useState(false);
   
   const { 
     scanStatus, 
@@ -87,6 +89,11 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
     } else {
       return `${diffDays}d ago`;
     }
+  };
+
+  // Toggle debug panel
+  const toggleDebugPanel = () => {
+    setShowDebug(!showDebug);
   };
 
   return (
@@ -213,6 +220,20 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
           <FileSpreadsheet size={14} className="mr-2" />
           Export to Sheets
         </button>
+      )}
+      
+      {/* Debug Section - Only in development */}
+      {process.env.NODE_ENV !== 'production' && (
+        <>
+          <button 
+            onClick={toggleDebugPanel}
+            className="mt-6 text-xs text-gray-500 hover:text-gray-700 underline w-full text-center"
+          >
+            {showDebug ? 'Hide Debug Panel' : 'Show Debug Panel'}
+          </button>
+          
+          {showDebug && <DebugPanel />}
+        </>
       )}
     </div>
   );

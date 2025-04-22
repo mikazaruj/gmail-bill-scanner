@@ -77,29 +77,130 @@ export async function appendBillData(
       return true; // Nothing to append
     }
     
-    // Transform bill data for sheet format
-    const rows = bills.map(bill => {
-      // Format date if it exists
-      const formattedDate = bill.date ? 
-        (typeof bill.date === 'string' ? bill.date : bill.date.toISOString().split('T')[0]) : 
-        '';
-      
-      return [
-        bill.vendor || '',
-        bill.amount || 0,
-        formattedDate,
-        bill.accountNumber || '',
-        false, // Default to unpaid
-        bill.emailId || '',
-        bill.attachmentId || '',
-        new Date().toISOString()
+    // Try to get user ID from storage
+    const userData = await chrome.storage.local.get(['supabase_user_id', 'google_user_id']);
+    const userId = userData?.supabase_user_id || userData?.google_user_id;
+    
+    // Try to get field mappings if we have a userId
+    let fieldMappings: any[] = [];
+    if (userId) {
+      try {
+        // Import dynamically to avoid circular dependencies
+        const { getFieldMappings } = await import('../fieldMapping');
+        fieldMappings = await getFieldMappings(userId);
+        console.log(`Retrieved ${fieldMappings.length} field mappings for sheet export`);
+      } catch (error) {
+        console.warn('Error getting field mappings, using default columns:', error);
+      }
+    }
+    
+    // Get enabled field mappings sorted by display order
+    const enabledMappings = fieldMappings.length > 0 
+      ? [...fieldMappings.filter((m: any) => m.is_enabled)].sort((a: any, b: any) => a.display_order - b.display_order)
+      : [];
+    
+    if (enabledMappings.length > 0) {
+      console.log('Using custom field mappings for export');
+    } else {
+      console.log('Using default field mappings for export');
+    }
+    
+    // Create a map from field name to column letter
+    const fieldToColumnMap: Record<string, string> = {};
+    
+    // If we have custom mappings, use them
+    if (enabledMappings.length > 0) {
+      enabledMappings.forEach((mapping: any) => {
+        // Normalize field name and map it to column
+        const normalizedFieldName = mapping.name.toLowerCase();
+        fieldToColumnMap[normalizedFieldName] = mapping.column_mapping || 'A';
+      });
+    } else {
+      // Default mappings if none found
+      const defaultFields = [
+        { name: 'vendor', column: 'A' },
+        { name: 'amount', column: 'B' },
+        { name: 'date', column: 'C' },
+        { name: 'accountnumber', column: 'D' },
+        { name: 'paid', column: 'E' },
+        { name: 'category', column: 'F' },
+        { name: 'emailid', column: 'G' },
+        { name: 'attachmentid', column: 'H' },
+        { name: 'createdat', column: 'I' }
       ];
+      
+      defaultFields.forEach(field => {
+        fieldToColumnMap[field.name] = field.column;
+      });
+    }
+    
+    // Create a mapping between property names and normalized field names
+    const propertyToFieldMap: Record<string, string> = {
+      'vendor': 'vendor',
+      'amount': 'amount',
+      'date': 'date',
+      'accountNumber': 'accountnumber',
+      'paid': 'paid',
+      'category': 'category',
+      'emailId': 'emailid',
+      'attachmentId': 'attachmentid',
+      'createdAt': 'createdat',
+      'currency': 'currency',
+      'dueDate': 'duedate',
+      'extractedFrom': 'extractedfrom',
+      'id': 'id'
+    };
+    
+    // Transform bill data to match field mappings
+    const rows = bills.map(bill => {
+      // Create array with enough space for all possible columns (A-Z)
+      const row = Array(26).fill('');
+      
+      // Map each bill property to its corresponding column
+      Object.entries(bill).forEach(([key, value]) => {
+        // Get the normalized field name for this property
+        const normalizedField = propertyToFieldMap[key] || key.toLowerCase();
+        // Get the column letter for this field
+        const columnLetter = fieldToColumnMap[normalizedField];
+        
+        if (columnLetter) {
+          // Convert column letter to array index (A=0, B=1, etc.)
+          const columnIndex = columnLetter.charCodeAt(0) - 65;
+          
+          // Format the value based on its type
+          if (key === 'date' || key === 'dueDate' || key === 'createdAt') {
+            // Format dates
+            const dateValue = value ? new Date(value as string | number | Date) : null;
+            row[columnIndex] = dateValue && !isNaN(dateValue.getTime()) 
+              ? dateValue.toISOString().split('T')[0] 
+              : '';
+          } else if (typeof value === 'boolean') {
+            // Format booleans
+            row[columnIndex] = value ? 'Yes' : 'No';
+          } else {
+            // Default formatting
+            row[columnIndex] = value !== null && value !== undefined ? value : '';
+          }
+        }
+      });
+      
+      return row;
     });
+    
+    // Find highest used column index
+    let maxColIndex = 0;
+    for (const colLetter of Object.values(fieldToColumnMap)) {
+      const colIndex = colLetter.charCodeAt(0) - 65;
+      maxColIndex = Math.max(maxColIndex, colIndex);
+    }
+    
+    // Convert max column index back to letter (0=A, 1=B, etc.)
+    const maxColLetter = String.fromCharCode(65 + maxColIndex);
     
     // Append rows to sheet
     await appendSheetValues(
       spreadsheetId,
-      'Bills!A2:H',
+      `Bills!A2:${maxColLetter}`,
       rows,
       token
     );

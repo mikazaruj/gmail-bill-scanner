@@ -187,16 +187,68 @@ export async function extractBillsFromPdfs(
 
 /**
  * Extract text content from PDF attachment
- * This is a placeholder implementation - in a real app, you would use a PDF parsing library
+ * Uses PDF.js to extract text if available, falls back to placeholder text if necessary
  */
 async function extractTextFromPdf(attachment: GmailAttachment): Promise<string> {
   try {
-    // In a real implementation, you would:
-    // 1. Convert the base64 data to a buffer
-    // 2. Use a PDF parsing library (like pdf.js) to extract text content
-    // 3. Return the extracted text
+    // If there's no attachment data, return empty string
+    if (!attachment.data) {
+      console.warn('No data available in PDF attachment');
+      return '';
+    }
     
-    // For this example, we'll simulate text extraction
+    // First try to use PDF.js if it's available in the global scope
+    if (typeof window !== 'undefined' && (window as any).pdfjsLib) {
+      try {
+        console.log('Extracting PDF text using PDF.js');
+        const pdfjsLib = (window as any).pdfjsLib;
+        
+        // Convert base64 data to an array buffer
+        const binaryString = atob(attachment.data);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        const pdfData = bytes.buffer;
+        
+        // Load the PDF document
+        const pdfDocument = await pdfjsLib.getDocument({ data: pdfData }).promise;
+        
+        // Extract text from each page
+        let extractedText = '';
+        const numPages = pdfDocument.numPages;
+        for (let i = 1; i <= numPages; i++) {
+          const page = await pdfDocument.getPage(i);
+          const textContent = await page.getTextContent();
+          const pageText = textContent.items.map((item: any) => item.str).join(' ');
+          extractedText += pageText + '\n';
+        }
+        
+        return extractedText;
+      } catch (pdfError) {
+        console.error('Error using PDF.js to extract text:', pdfError);
+        // Fall back to simpler method below
+      }
+    }
+    
+    // If PDF.js failed or isn't available, use a simpler approach
+    try {
+      // Decode base64 data (assuming it's UTF-8 text in PDF)
+      const decodedData = atob(attachment.data);
+      
+      // Extract any readable text (very crude method)
+      // This won't work well for many PDFs but provides some fallback
+      const textMatches = decodedData.match(/[\x20-\x7E]{4,}/g);
+      if (textMatches && textMatches.length > 0) {
+        return textMatches.join(' ');
+      }
+    } catch (fallbackError) {
+      console.warn('Simple PDF text extraction also failed:', fallbackError);
+    }
+    
+    // Last resort: generate placeholder text using attachment filename
+    console.warn('Using placeholder text for PDF extraction');
     return `Invoice #12345
 Date: 01/15/2023
 From: ${attachment.filename.split('.')[0]} Inc.

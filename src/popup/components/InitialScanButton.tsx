@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useCallback, useState, useContext } from 'react';
+import { useCallback, useState, useContext, useEffect } from 'react';
 import { RefreshCcw, CalendarClock } from 'lucide-react';
 import { useSettingsApi } from '../hooks/settings/useSettingsApi';
 import { ScanContext } from '../context/ScanContext';
@@ -25,12 +25,43 @@ const InitialScanButton = ({
   onScanComplete
 }: InitialScanButtonProps): React.ReactElement => {
   const [isRunning, setIsRunning] = useState(false);
+  const [initialScanComplete, setInitialScanComplete] = useState(false);
   const { updateSetting } = useSettingsApi();
   const { startScan, scanStatus } = useContext(ScanContext);
   const { settings } = useSettings();
   
+  // Check if initial scan has already been run
+  useEffect(() => {
+    const checkInitialScanStatus = async () => {
+      if (!userId) return;
+      
+      try {
+        // First check settings for initial_scan_date (database value takes precedence)
+        if (settings.initialScanDate) {
+          console.log('Initial scan date found in settings:', settings.initialScanDate);
+          setInitialScanComplete(true);
+          // Update local storage for future reference
+          await chrome.storage.local.set({ initialScanComplete: true });
+          return;
+        }
+        
+        // Only check local storage if settings don't have initial_scan_date
+        const localData = await chrome.storage.local.get(['initialScanComplete']);
+        if (localData.initialScanComplete) {
+          console.log('Initial scan already completed according to local storage');
+          setInitialScanComplete(true);
+          return;
+        }
+      } catch (error) {
+        console.error('Error checking initial scan status:', error);
+      }
+    };
+    
+    checkInitialScanStatus();
+  }, [userId, settings]);
+  
   const handleRunInitialScan = useCallback(async () => {
-    if (!userId || isRunning || scanStatus === 'scanning') return;
+    if (!userId || isRunning || scanStatus === 'scanning' || initialScanComplete) return;
     
     setIsRunning(true);
     
@@ -65,7 +96,11 @@ const InitialScanButton = ({
       // 3. Trigger the scan
       await startScan(scanSettings);
       
-      // 4. Call the onScanComplete callback if provided
+      // 4. Mark initial scan as complete in local storage
+      await chrome.storage.local.set({ initialScanComplete: true });
+      setInitialScanComplete(true);
+      
+      // 5. Call the onScanComplete callback if provided
       if (onScanComplete) {
         onScanComplete();
       }
@@ -74,7 +109,7 @@ const InitialScanButton = ({
     } finally {
       setIsRunning(false);
     }
-  }, [userId, isRunning, scanStatus, updateSetting, settings, searchDays, startScan, onScanComplete]);
+  }, [userId, isRunning, scanStatus, updateSetting, settings, searchDays, startScan, onScanComplete, initialScanComplete]);
   
   // Choose the appropriate styling based on the variant
   const buttonClassName = variant === 'dashboard' 
@@ -82,9 +117,10 @@ const InitialScanButton = ({
     : "w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium transition-colors";
   
   const ButtonIcon = variant === 'dashboard' ? RefreshCcw : CalendarClock;
-  const buttonText = isRunning || scanStatus === 'scanning' 
-    ? 'Scanning...' 
-    : variant === 'dashboard' ? 'Run First Scan' : 'Run Initial Scan';
+  const buttonText = 
+    initialScanComplete ? 'Scan Complete' :
+    isRunning || scanStatus === 'scanning' ? 'Scanning...' : 
+    variant === 'dashboard' ? 'Run First Scan' : 'Run Initial Scan';
   
   // Optional helper text for schedule variant
   const helperText = variant === 'schedule' 
@@ -95,8 +131,10 @@ const InitialScanButton = ({
     <>
       <button 
         onClick={handleRunInitialScan}
-        disabled={isRunning || scanStatus === 'scanning'}
-        className={buttonClassName}
+        disabled={isRunning || scanStatus === 'scanning' || initialScanComplete}
+        className={initialScanComplete ? 
+          "w-full bg-gray-400 text-white py-2 px-3 rounded-lg flex items-center justify-center text-sm font-medium" : 
+          buttonClassName}
       >
         <ButtonIcon size={14} className="mr-2" />
         {buttonText}

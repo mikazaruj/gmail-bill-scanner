@@ -778,6 +778,35 @@ export async function getUserSettings(userId: string) {
   try {
     console.log('Getting user settings with service role for user:', userId);
     
+    // First try with user_settings_view
+    const { data: viewData, error: viewError } = await supabase
+      .from('user_settings_view')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+    
+    if (!viewError && viewData) {
+      console.log('Retrieved settings from user_settings_view');
+      return viewData;
+    }
+    
+    if (viewError) {
+      console.warn('Error getting settings from user_settings_view:', viewError.message);
+    }
+    
+    // Try with user_preferences if view failed
+    const { data: prefData, error: prefError } = await supabase
+      .from('user_preferences')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+    
+    if (!prefError && prefData) {
+      console.log('Retrieved settings from user_preferences');
+      return prefData;
+    }
+    
+    // If both failed, try the original user_settings table as last resort
     const { data, error } = await supabase
       .from('user_settings')
       .select('*')
@@ -785,7 +814,7 @@ export async function getUserSettings(userId: string) {
       .maybeSingle();
     
     if (error) {
-      console.error('Error getting user settings:', error);
+      console.error('Error getting user settings from all tables:', error);
       return null;
     }
       
