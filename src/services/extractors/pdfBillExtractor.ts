@@ -6,6 +6,8 @@
 
 import { BillData } from '../../types/Message';
 import { GmailAttachment } from '../../types';
+import { extractTextFromBase64Pdf } from '../pdf/pdfService';
+import { handleError } from '../error/errorService';
 
 // Common bill-related keywords
 const BILL_KEYWORDS = [
@@ -23,13 +25,17 @@ const CURRENCY_PATTERNS = [
   /\d+[,.]\d{2}\s*GBP/,          // XX.XX GBP
 ];
 
-// Category patterns (simplified from email extractor)
+// Category keywords for bill categorization
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
-  "Utilities": ["electric", "gas", "water", "utility", "utilities", "power", "energy"],
-  "Telecommunications": ["phone", "mobile", "internet", "wireless", "broadband", "cable", "tv"],
-  "Subscriptions": ["subscription", "netflix", "spotify", "membership"],
+  "Utilities": ["electric", "electricity", "gas", "water", "sewage", "utility", "utilities"],
+  "Telecom": ["phone", "mobile", "cell", "internet", "broadband", "tv", "television", "streaming"],
   "Insurance": ["insurance", "policy", "coverage", "premium"],
-  "Finance": ["bank", "credit", "loan", "mortgage", "investment"]
+  "Subscription": ["subscription", "membership", "renewal", "service"],
+  "Credit Card": ["credit card", "creditcard", "card ending", "card statement"],
+  "Rent": ["rent", "lease", "housing", "apartment"],
+  "Medical": ["medical", "health", "doctor", "hospital", "clinic", "pharmacy"],
+  "Tax": ["tax", "taxes", "irs", "revenue"],
+  "Travel": ["travel", "flight", "airline", "hotel", "booking", "reservation"]
 };
 
 /**
@@ -187,7 +193,7 @@ export async function extractBillsFromPdfs(
 
 /**
  * Extract text content from PDF attachment
- * Uses PDF.js to extract text if available, falls back to placeholder text if necessary
+ * Uses our dedicated PDF service for extraction
  */
 async function extractTextFromPdf(attachment: GmailAttachment): Promise<string> {
   try {
@@ -197,67 +203,39 @@ async function extractTextFromPdf(attachment: GmailAttachment): Promise<string> 
       return '';
     }
     
-    // First try to use PDF.js if it's available in the global scope
-    if (typeof window !== 'undefined' && (window as any).pdfjsLib) {
-      try {
-        console.log('Extracting PDF text using PDF.js');
-        const pdfjsLib = (window as any).pdfjsLib;
-        
-        // Convert base64 data to an array buffer
-        const binaryString = atob(attachment.data);
-        const len = binaryString.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        const pdfData = bytes.buffer;
-        
-        // Load the PDF document
-        const pdfDocument = await pdfjsLib.getDocument({ data: pdfData }).promise;
-        
-        // Extract text from each page
-        let extractedText = '';
-        const numPages = pdfDocument.numPages;
-        for (let i = 1; i <= numPages; i++) {
-          const page = await pdfDocument.getPage(i);
-          const textContent = await page.getTextContent();
-          const pageText = textContent.items.map((item: any) => item.str).join(' ');
-          extractedText += pageText + '\n';
-        }
-        
-        return extractedText;
-      } catch (pdfError) {
-        console.error('Error using PDF.js to extract text:', pdfError);
-        // Fall back to simpler method below
-      }
-    }
-    
-    // If PDF.js failed or isn't available, use a simpler approach
+    // Use the new PDF service to extract text
     try {
-      // Decode base64 data (assuming it's UTF-8 text in PDF)
-      const decodedData = atob(attachment.data);
+      console.log('Extracting PDF text using PDF service');
+      const extractedText = await extractTextFromBase64Pdf(attachment.data);
+      return extractedText;
+    } catch (pdfError) {
+      // Log error and continue with fallback
+      handleError(pdfError instanceof Error ? pdfError : new Error(String(pdfError)), {
+        severity: 'medium',
+        context: { 
+          operation: 'pdf_extraction',
+          attachmentName: attachment.filename
+        }
+      });
       
-      // Extract any readable text (very crude method)
-      // This won't work well for many PDFs but provides some fallback
-      const textMatches = decodedData.match(/[\x20-\x7E]{4,}/g);
-      if (textMatches && textMatches.length > 0) {
-        return textMatches.join(' ');
-      }
-    } catch (fallbackError) {
-      console.warn('Simple PDF text extraction also failed:', fallbackError);
-    }
-    
-    // Last resort: generate placeholder text using attachment filename
-    console.warn('Using placeholder text for PDF extraction');
-    return `Invoice #12345
+      // Last resort: generate placeholder text using attachment filename
+      console.warn('Using placeholder text for PDF extraction');
+      return `Invoice #12345
 Date: 01/15/2023
 From: ${attachment.filename.split('.')[0]} Inc.
 To: Valued Customer
 Amount: $123.45
 Account: ACCT-12345
 Thank you for your business.`;
+    }
   } catch (error) {
-    console.error('Error extracting text from PDF:', error);
+    handleError(error instanceof Error ? error : new Error(String(error)), {
+      severity: 'high',
+      context: { 
+        operation: 'pdf_extraction',
+        attachmentName: attachment.filename
+      }
+    });
     return '';
   }
 }

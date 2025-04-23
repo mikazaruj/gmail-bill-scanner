@@ -58,7 +58,8 @@ export const ScanProvider = ({ children }: ScanProviderProps) => {
   const [timeSaved, setTimeSaved] = useState<number>(0);
   
   // Get auth context to access user ID
-  const { userId } = useAuth?.() || { userId: null };
+  const { userProfile } = useAuth?.() || { userProfile: null };
+  const userId = userProfile?.id || null;
   
   // Load user stats from Supabase when user is authenticated
   useEffect(() => {
@@ -173,6 +174,13 @@ export const ScanProvider = ({ children }: ScanProviderProps) => {
           billsFound: (response.bills || []).length
         }));
         setScanStatus('completed');
+        
+        // Automatically export to Google Sheets if we have results
+        if (response.bills && response.bills.length > 0) {
+          setScanProgressMessage('Exporting to Google Sheets...');
+          await exportToSheets();
+          setScanProgressMessage('Export complete!');
+        }
       } else {
         throw new Error(response?.error || 'Scan failed');
       }

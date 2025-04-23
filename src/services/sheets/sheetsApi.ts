@@ -85,7 +85,7 @@ export async function appendBillData(
     let fieldMappings: any[] = [];
     if (userId) {
       try {
-        // Import dynamically to avoid circular dependencies
+        // Import from the field mapping service
         const { getFieldMappings } = await import('../fieldMapping');
         fieldMappings = await getFieldMappings(userId);
         console.log(`Retrieved ${fieldMappings.length} field mappings for sheet export`);
@@ -596,7 +596,18 @@ async function appendSheetValues(
  * @returns Auth token
  */
 async function getAuthToken(scopes: string[]): Promise<string> {
-  // TODO: Implement real token acquisition when Chrome extension auth is set up
-  // This is a placeholder to make the TypeScript compiler happy
-  return 'placeholder_token';
+  try {
+    // Import getAccessToken from googleAuth
+    const { getAccessToken } = await import('../auth/googleAuth');
+    const token = await getAccessToken();
+    
+    if (!token) {
+      throw new Error('Not authenticated with Google');
+    }
+    
+    return token;
+  } catch (error) {
+    console.error('Error getting auth token for Google Sheets:', error);
+    throw error;
+  }
 } 

@@ -13,15 +13,17 @@ import { extractBillsFromEmails } from '../services/extractors/emailBillExtracto
 import { extractBillsFromPdfs } from '../services/extractors/pdfBillExtractor';
 import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../types/Message';
 import { 
-  isAuthenticated as isGoogleAuthenticated,
-  getAccessToken as getGoogleAccessToken,
-  authenticate as googleAuthenticate,
+  isAuthenticated,
+  getAccessToken,
+  authenticate,
   fetchGoogleUserInfo,
-  fetchGoogleUserInfoExtended
+  fetchGoogleUserInfoExtended,
+  signOut as googleSignOut
 } from '../services/auth/googleAuth';
 import { signInWithGoogle, syncAuthState } from '../services/supabase/client';
 import { searchEmails } from '../services/gmail/gmailService';
 import { ensureUserRecord } from '../services/identity/userIdentityService';
+import { handleError } from '../services/error/errorService';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -65,344 +67,56 @@ self.addEventListener('unload', () => {
   console.log('Gmail Bill Scanner background service worker shutting down');
 });
 
-// Token storage key
+// Token storage key for compatibility
 const TOKEN_STORAGE_KEY = "gmail_bill_scanner_auth_token";
 
-// Get access token using Chrome identity API
-async function getAccessToken(): Promise<string | null> {
-  try {
-    console.warn('Getting access token using chrome.identity.getAuthToken...');
-    
-    return new Promise((resolve) => {
-      chrome.identity.getAuthToken({ 
-        interactive: false,
-        scopes: SCOPES
-      }, (token) => {
-        if (chrome.runtime.lastError) {
-          console.warn("Error getting auth token (this is expected if not authenticated):", chrome.runtime.lastError.message);
-          resolve(null);
-          return;
-        }
-        
-        if (!token) {
-          console.warn('No token received, user may need to authenticate');
-          resolve(null);
-          return;
-        }
-        
-        console.warn('Valid token retrieved from Chrome identity');
-        resolve(token);
-      });
-    });
-  } catch (error) {
-    console.error("Error getting access token:", error);
-    return null;
-  }
-}
-
-// Check if user is authenticated
-async function isAuthenticated(): Promise<boolean> {
-  try {
-    console.warn('Checking if user is authenticated...');
-    
-    return new Promise((resolve) => {
-      chrome.identity.getAuthToken({ 
-        interactive: false,
-        scopes: SCOPES
-      }, (token) => {
-        if (chrome.runtime.lastError) {
-          console.warn("Auth check failed:", chrome.runtime.lastError.message);
-          resolve(false);
-          return;
-        }
-        
-        const isAuth = !!token;
-        console.warn('Authentication status:', isAuth ? 'Authenticated' : 'Not authenticated');
-        resolve(isAuth);
-      });
-    });
-  } catch (error) {
-    console.error("Error checking authentication status:", error);
-    return false;
-  }
-}
-
-// Authenticate user with Google
-async function authenticate(isSignUp: boolean = false): Promise<{ success: boolean; error?: string; isAuthenticated?: boolean; profile?: any; message?: string; existingUser?: boolean; newUser?: boolean }> {
-  try {
-    console.log(`Starting Chrome extension Google authentication process for ${isSignUp ? 'sign-up' : 'sign-in'}...`);
-    
-    // Store the auth mode for later reference
-    await chrome.storage.local.set({ auth_mode: isSignUp ? 'signup' : 'signin' });
-    
-    // Only clear cached tokens if this is an explicit sign-up attempt 
-    // AND the user specifically wants to create a new account
-    if (isSignUp) {
-      const shouldClearTokens = await new Promise<boolean>(resolve => {
-        chrome.storage.local.get('force_clear_tokens', (data) => {
-          // Default to NOT clearing tokens unless explicitly requested
-          resolve(!!data.force_clear_tokens);
-        });
-      });
-      
-      if (shouldClearTokens) {
-        await new Promise<void>((resolve) => {
-          chrome.identity.clearAllCachedAuthTokens(() => {
-            console.log('Cleared all cached auth tokens for forced new sign-up');
-            resolve();
-          });
-        });
-        // Reset the flag
-        await chrome.storage.local.remove('force_clear_tokens');
-      }
-    }
-    
-    // Get Google access token
-    const token = await getGoogleAccessToken();
-    
-    if (!token) {
-      throw new Error('Failed to get Google access token');
-    }
-    
-    // Get user info from Google
-    let userInfo = await fetchGoogleUserInfo(token);
-    
-    // If user info fetch fails, try refreshing the token
-    if (!userInfo || !userInfo.email) {
-      console.log('Failed to get user info, attempting token refresh...');
-      
-      // Remove cached token
-      await new Promise<void>((resolve) => {
-        chrome.identity.removeCachedAuthToken({ token }, () => {
-          console.log('Removed cached auth token for refresh');
-          resolve();
-        });
-      });
-      
-      // Clear all cached auth tokens if first refresh fails
-      await new Promise<void>((resolve) => {
-        chrome.identity.clearAllCachedAuthTokens(() => {
-          console.log('Cleared all cached auth tokens for a fresh start');
-          resolve();
-        });
-      });
-      
-      // Get a completely new token with interactive mode
-      const newToken = await new Promise<string | null>((resolve) => {
-        console.log('Requesting new token with interactive mode...');
-        chrome.identity.getAuthToken({ 
-          interactive: true,
-          scopes: SCOPES
-        }, (token) => {
-          if (chrome.runtime.lastError || !token) {
-            console.log('Failed to get new token:', chrome.runtime.lastError?.message || 'No token');
-            resolve(null);
-            return;
-          }
-          console.log('Got fresh token with interactive mode');
-          resolve(token);
-        });
-      });
-      
-      if (!newToken) {
-        throw new Error('Failed to refresh Google access token');
-      }
-      
-      // First try with the standard endpoint
-      let retryUserInfo = await fetchGoogleUserInfo(newToken);
-      
-      // If that fails, try the extended endpoint
-      if (!retryUserInfo || !retryUserInfo.email) {
-        console.log('Standard user info endpoint failed, trying extended endpoint...');
-        retryUserInfo = await fetchGoogleUserInfoExtended(newToken);
-      }
-      
-      if (!retryUserInfo || !retryUserInfo.email) {
-        throw new Error('Failed to get user info from Google after token refresh');
-      }
-      
-      // Update the token in storage
-      await chrome.storage.local.set({
-        'google_access_token': newToken,
-        'token_received_at': Date.now()
-      });
-      
-      userInfo = retryUserInfo;
-    }
-    
-    if (!userInfo.email) {
-      throw new Error('Failed to get user email from Google');
-    }
-    
-    console.log('Got user info from Google:', userInfo.email);
-    console.log('Full Google User Info:', {
-      id: userInfo.id,
-      googleIdType: typeof userInfo.id,
-      googleIdLength: userInfo.id ? userInfo.id.length : 0,
-      email: userInfo.email,
-      name: userInfo.name,
-      picture: userInfo.picture,
-      hasProfile: !!userInfo
-    });
-    
-    // Store Google ID in Chrome storage for later use
-    if (userInfo.id) {
-      console.log('Storing Google user ID in Chrome storage:', userInfo.id);
-      await chrome.storage.local.set({
-        'google_user_id': userInfo.id,
-        'google_profile': userInfo,
-        'gmail_connected': true,
-        'gmail_email': userInfo.email,
-        'last_gmail_update': new Date().toISOString()
-      });
-    } else {
-      throw new Error('Google user ID is missing from profile');
-    }
-
-    // Import Supabase client and functions
-    const { 
-      linkGoogleUserInSupabase, 
-      createLocalSession,
-      storeGoogleToken 
-    } = await import('../services/supabase/client');
-    
-    console.log('Linking Google user to Supabase with Google ID:', userInfo.id);
-    
-    const linkResult = await linkGoogleUserInSupabase({
-      profile: {
-        id: userInfo.id,
-        email: userInfo.email,
-        name: userInfo.name,
-        picture: userInfo.picture
-      },
-      token: null // Token not needed for this operation
-    });
-    
-    if (!linkResult.success) {
-      throw new Error(linkResult.error || 'Failed to link Google user to Supabase');
-    }
-    
-    // Create local session
-    const sessionResult = await createLocalSession(userInfo.id, userInfo);
-    
-    if (!sessionResult.success) {
-      throw new Error(sessionResult.error || 'Failed to create local session');
-    }
-    
-    // Store Google token
-    await storeGoogleToken(userInfo.id, token);
-    
-    return {
-      success: true,
-      isAuthenticated: true,
-      profile: userInfo,
-      message: 'Successfully authenticated with Google'
-    };
-  } catch (error) {
-    console.error('Authentication error:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error during authentication',
-      isAuthenticated: false
-    };
-  }
-}
-
-/**
- * Complete replacement for any function trying to store tokens in Supabase.
- * This function only stores the token in Chrome storage and never attempts any Supabase operations.
- */
+// Helper functions for token storage safety
 async function storeGoogleTokenSafely(userId: string, googleId: string, token: string): Promise<boolean> {
   try {
-    console.log('Storing Google token and ID safely in Chrome storage only (no Supabase)');
+    console.log(`Storing Google token for user ${userId} with Google ID ${googleId}`);
     
-    // Store token and related information in Chrome storage
-    await chrome.storage.local.set({
-      // Token related information
-      'google_access_token': token,
-      'google_token_user_id': userId,
-      'google_token_expiry': Date.now() + (3600 * 1000), // 1 hour from now
-      
-      // Google ID related information (stored redundantly in multiple keys for reliability)
-      'google_user_id': googleId,
-      'google_id': googleId,
-      'supabase_user_id': userId,
-      
-      // Also store mapping from user ID to Google ID
-      'user_google_id_mapping': { [userId]: googleId }
-    });
+    // Store via RPC to service worker if available (preferred)
+    const rpcResult = await storeTokenViaRPC(userId, token);
+    if (rpcResult.success) {
+      return true;
+    }
     
-    console.log('Successfully stored token and Google ID in Chrome storage');
-    return true;
+    // Fall back to direct storage if RPC fails
+    const directResult = await storeTokenDirectly(userId, token);
+    return directResult.success;
   } catch (error) {
-    console.error('Error storing Google token and ID in Chrome storage:', error);
+    console.error("Error storing Google token:", error);
     return false;
   }
 }
 
-// Sign out user
+// Sign out helper function - simplify to use the imported signOut
 async function signOut(): Promise<void> {
   try {
-    return new Promise((resolve) => {
-      chrome.identity.getAuthToken({ interactive: false }, (token) => {
-        if (chrome.runtime.lastError || !token) {
-          console.warn('No token to remove or error:', chrome.runtime.lastError?.message);
-          resolve();
-          return;
-        }
-        
-        chrome.identity.removeCachedAuthToken({ token }, () => {
-          console.warn('Token removed from Chrome identity');
-          chrome.storage.local.remove(TOKEN_STORAGE_KEY, () => {
-            console.warn('Token removed from local storage');
-            resolve();
-          });
-        });
-      });
-    });
+    await googleSignOut();
   } catch (error) {
-    console.error("Error signing out:", error);
+    console.error("Error during sign out:", error);
+    handleError(error instanceof Error ? error : new Error(String(error)), {
+      severity: 'medium', 
+      shouldNotify: true,
+      context: { operation: 'sign_out' }
+    });
   }
 }
 
-/**
- * Sign out the user and clear authentication state
- */
+// Logout function - simplified to use googleSignOut
 async function logout(): Promise<{ success: boolean; error?: string }> {
   try {
-    // Import Supabase client functions on demand to avoid circular dependencies
-    const { signOut } = await import('../services/supabase/client');
-    
-    // Sign out from Supabase
-    await signOut();
-    
-    // Clear token from Chrome identity
-    // This is optional if using Supabase auth, but won't hurt
-    try {
-      await new Promise<void>((resolve, reject) => {
-        chrome.identity.clearAllCachedAuthTokens(() => {
-          if (chrome.runtime.lastError) {
-            reject(chrome.runtime.lastError);
-          } else {
-            resolve();
-          }
-        });
-      });
-    } catch (clearTokenError) {
-      console.warn('Failed to clear cached auth tokens:', clearTokenError);
-      // Continue with logout even if this fails
-    }
-    
-    // Sync auth state to ensure other components know we're logged out
-    await syncAuthState();
-    
+    await googleSignOut();
     return { success: true };
   } catch (error) {
-    console.error('Logout error:', error);
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error during logout'
-    };
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    handleError(error instanceof Error ? error : new Error(errorMessage), {
+      severity: 'medium',
+      shouldNotify: true,
+      context: { operation: 'logout' }
+    });
+    return { success: false, error: errorMessage };
   }
 }
 
@@ -1921,7 +1635,16 @@ async function handleScanEmails(
           processedItem.status = 'success';
           
         } catch (extractError) {
-          console.error(`Error extracting from email ${messageId}:`, extractError);
+          handleError(extractError instanceof Error ? extractError : new Error(String(extractError)), {
+            severity: 'medium',
+            context: {
+              operation: 'email_extraction',
+              messageId,
+              fromAddress,
+              subject
+            }
+          });
+          
           processedItem.status = 'error';
           processedItem.error_message = extractError instanceof Error 
             ? extractError.message 
@@ -1933,7 +1656,13 @@ async function handleScanEmails(
         processedItems.push(processedItem);
         
       } catch (emailError) {
-        console.error('Error processing email:', emailError);
+        handleError(emailError instanceof Error ? emailError : new Error(String(emailError)), {
+          severity: 'high',
+          context: {
+            operation: 'process_email',
+            messageId
+          }
+        });
         stats.errors++;
         // Continue with next email
       }
@@ -2027,8 +1756,8 @@ async function handleScanEmails(
  * Handle exporting bills to Google Sheets
  */
 async function handleExportToSheets(
-  payload: { spreadsheetId: string }, 
-  sendResponse: (response: { success: boolean, error?: string }) => void
+  payload: { bills?: BillData[], spreadsheetId?: string }, 
+  sendResponse: (response: { success: boolean, error?: string, spreadsheetUrl?: string }) => void
 ) {
   try {
     const token = await getAccessToken();
@@ -2037,19 +1766,45 @@ async function handleExportToSheets(
       return;
     }
     
-    // Get stored bills
-    const data = await chrome.storage.local.get('extractedBills');
-    const bills: BillData[] = data.extractedBills || [];
+    // Get bills either from payload or storage
+    let bills: BillData[] = payload.bills || [];
+    
+    // If no bills in payload, get from storage
+    if (bills.length === 0) {
+      const data = await chrome.storage.local.get('extractedBills');
+      bills = data.extractedBills || [];
+    }
     
     if (bills.length === 0) {
       sendResponse({ success: false, error: 'No bills to export' });
       return;
     }
     
-    // Append bills to spreadsheet
-    await appendBillData(token, payload.spreadsheetId, bills);
+    // Get or create the spreadsheet
+    let spreadsheetId = payload.spreadsheetId;
+    let spreadsheetUrl;
     
-    sendResponse({ success: true });
+    if (!spreadsheetId) {
+      // Create a new spreadsheet
+      console.log('Creating new spreadsheet for auto-export');
+      const date = new Date().toLocaleDateString();
+      const { spreadsheetId: newId } = await createSpreadsheet(token, `Bills Export - ${date}`);
+      spreadsheetId = newId;
+      
+      // Get the URL to the new spreadsheet
+      spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}`;
+      
+      // Store the spreadsheet ID for future use
+      await chrome.storage.local.set({ lastSpreadsheetId: spreadsheetId });
+    }
+    
+    // Append bills to spreadsheet
+    await appendBillData(token, spreadsheetId, bills);
+    
+    sendResponse({ 
+      success: true,
+      spreadsheetUrl
+    });
   } catch (error) {
     console.error('Error exporting to sheets:', error);
     sendResponse({ 
