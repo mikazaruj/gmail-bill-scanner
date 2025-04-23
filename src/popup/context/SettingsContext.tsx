@@ -34,7 +34,8 @@
 
 import React, { createContext, useState, useEffect, ReactNode } from 'react';
 import { BillFieldConfig } from '../../types/Message';
-import { DEFAULT_USER_PREFERENCES } from '../../services/settings';
+import { DEFAULT_USER_PREFERENCES, getUserSettingsWithDefaults } from '../../services/settings';
+import { resolveUserIdentity } from '../../services/identity/userIdentityService';
 
 // Create the interface for settings in the UI
 export interface Settings {
@@ -48,7 +49,7 @@ export interface Settings {
   scheduleEnabled: boolean;
   scheduleFrequency: string;
   scheduleTime: string;
-  initialScanDate: string;
+  initialScanDate: string | null;
   
   // Search parameters
   maxResults: number; // Not stored in DB but kept for UI/code compatibility
@@ -130,6 +131,39 @@ export const SettingsProvider = ({ children }: SettingsProviderProps) => {
     setIsLoading(true);
     
     try {
+      // Try to get settings directly from Supabase first for most up-to-date values
+      let settingsFromSupabase: Settings | null = null;
+      try {
+        const identity = await resolveUserIdentity();
+        if (identity.supabaseId) {
+          const supabaseSettings = await getUserSettingsWithDefaults(identity.supabaseId);
+          console.log('SettingsContext: Loaded settings from Supabase:', supabaseSettings);
+          
+          // Convert from database format to UI format
+          settingsFromSupabase = {
+            immediateProcessing: supabaseSettings.immediate_processing,
+            processAttachments: supabaseSettings.process_attachments,
+            trustedSourcesOnly: supabaseSettings.trusted_sources_only,
+            captureImportantNotices: supabaseSettings.capture_important_notices,
+            scheduleEnabled: supabaseSettings.schedule_enabled,
+            scheduleFrequency: supabaseSettings.schedule_frequency,
+            scheduleTime: supabaseSettings.schedule_time,
+            initialScanDate: supabaseSettings.initial_scan_date,
+            maxResults: 50, // Not in database
+            searchDays: supabaseSettings.search_days,
+            inputLanguage: supabaseSettings.input_language,
+            outputLanguage: supabaseSettings.output_language,
+            notifyProcessed: supabaseSettings.notify_processed,
+            notifyHighAmount: supabaseSettings.notify_high_amount,
+            notifyErrors: supabaseSettings.notify_errors,
+            highAmountThreshold: supabaseSettings.high_amount_threshold
+          };
+        }
+      } catch (err) {
+        console.error('Error loading settings from Supabase:', err);
+      }
+      
+      // Then get local settings from Chrome storage as a fallback
       const result = await new Promise<any>((resolve) => {
         chrome.storage.sync.get(['settings', 'billFields'], (result) => {
           if (chrome.runtime.lastError) {
@@ -139,7 +173,14 @@ export const SettingsProvider = ({ children }: SettingsProviderProps) => {
         });
       });
       
-      if (result.settings) {
+      // Determine which settings to use - Supabase takes precedence
+      if (settingsFromSupabase) {
+        // Use Supabase settings but also update Chrome storage
+        setSettings(settingsFromSupabase);
+        chrome.storage.sync.set({ settings: settingsFromSupabase }, () => {
+          console.log('Updated Chrome storage with Supabase settings');
+        });
+      } else if (result.settings) {
         setSettings(result.settings);
       }
       

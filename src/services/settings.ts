@@ -15,7 +15,7 @@ export interface UserSettingsView {
   schedule_enabled: boolean;
   schedule_frequency: string;
   schedule_time: string;
-  initial_scan_date: string;
+  initial_scan_date: string | null;
   // Search parameters
   search_days: number;
   // Language options
@@ -45,7 +45,7 @@ export const DEFAULT_USER_PREFERENCES = {
   schedule_enabled: false,
   schedule_frequency: 'weekly',
   schedule_time: '09:00',
-  initial_scan_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // Tomorrow
+  initial_scan_date: null, // No default scan date
   // Search parameters
   search_days: 30,
   // Language options

@@ -5,6 +5,8 @@ import { useSettingsApi } from '../hooks/settings/useSettingsApi';
 import { ScanContext } from '../context/ScanContext';
 import { Settings as MessageSettings } from '../../types/Message';
 import { useSettings } from '../hooks/useSettings';
+import { getUserSettingsWithDefaults } from '../../services/settings';
+import { resolveUserIdentity } from '../../services/identity/userIdentityService';
 
 interface InitialScanButtonProps {
   userId: string | null;
@@ -26,9 +28,23 @@ const InitialScanButton = ({
 }: InitialScanButtonProps): React.ReactElement => {
   const [isRunning, setIsRunning] = useState(false);
   const [initialScanComplete, setInitialScanComplete] = useState(false);
-  const { updateSetting } = useSettingsApi();
+  const { updateSetting, loadUserSettings } = useSettingsApi();
   const { startScan, scanStatus } = useContext(ScanContext);
   const { settings } = useSettings();
+  
+  // Clear local storage entries that might affect initial scan status
+  useEffect(() => {
+    const clearLocalStorage = async () => {
+      try {
+        await chrome.storage.local.remove(['initialScanComplete']);
+        console.log('InitialScanButton: Cleared initialScanComplete from local storage');
+      } catch (error) {
+        console.error('Error clearing local storage:', error);
+      }
+    };
+    
+    clearLocalStorage();
+  }, []);
   
   // Check if initial scan has already been run
   useEffect(() => {
@@ -36,24 +52,42 @@ const InitialScanButton = ({
       if (!userId) return;
       
       try {
-        // First check settings for initial_scan_date (database value takes precedence)
-        if (settings.initialScanDate) {
-          console.log('Initial scan date found in settings:', settings.initialScanDate);
-          setInitialScanComplete(true);
-          // Update local storage for future reference
-          await chrome.storage.local.set({ initialScanComplete: true });
-          return;
-        }
+        // First check context settings
+        console.log('InitialScanButton: Checking initial scan status from context settings:', settings);
         
-        // Only check local storage if settings don't have initial_scan_date
-        const localData = await chrome.storage.local.get(['initialScanComplete']);
-        if (localData.initialScanComplete) {
-          console.log('Initial scan already completed according to local storage');
-          setInitialScanComplete(true);
-          return;
+        // Get direct from Supabase to verify
+        const identity = await resolveUserIdentity();
+        if (identity.supabaseId) {
+          const supabaseSettings = await getUserSettingsWithDefaults(identity.supabaseId);
+          console.log('InitialScanButton: Direct Supabase settings check for initial_scan_date:', supabaseSettings.initial_scan_date);
+          
+          // Trust the Supabase value
+          if (supabaseSettings.initial_scan_date) {
+            console.log('InitialScanButton: Initial scan date confirmed from Supabase:', supabaseSettings.initial_scan_date);
+            setInitialScanComplete(true);
+          } else {
+            console.log('InitialScanButton: No initial scan date found in Supabase');
+            setInitialScanComplete(false);
+          }
+        } else {
+          // Fall back to context settings
+          if (settings.initialScanDate) {
+            console.log('InitialScanButton: Using context settings for initialScanDate:', settings.initialScanDate);
+            setInitialScanComplete(true);
+          } else {
+            console.log('InitialScanButton: No initial scan date in context settings');
+            setInitialScanComplete(false);
+          }
         }
       } catch (error) {
         console.error('Error checking initial scan status:', error);
+        
+        // Fall back to context settings if direct check fails
+        if (settings.initialScanDate) {
+          setInitialScanComplete(true);
+        } else {
+          setInitialScanComplete(false);
+        }
       }
     };
     
@@ -96,8 +130,7 @@ const InitialScanButton = ({
       // 3. Trigger the scan
       await startScan(scanSettings);
       
-      // 4. Mark initial scan as complete in local storage
-      await chrome.storage.local.set({ initialScanComplete: true });
+      // 4. Mark as complete locally
       setInitialScanComplete(true);
       
       // 5. Call the onScanComplete callback if provided
