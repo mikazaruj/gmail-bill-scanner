@@ -24,6 +24,7 @@ import { signInWithGoogle, syncAuthState } from '../services/supabase/client';
 import { searchEmails } from '../services/gmail/gmailService';
 import { ensureUserRecord } from '../services/identity/userIdentityService';
 import { handleError } from '../services/error/errorService';
+import { buildBillSearchQuery } from '../services/gmailSearchBuilder';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -1546,31 +1547,18 @@ async function handleScanEmails(
       }
     }
 
-    // Calculate date range (last X days)
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - settings.scanDays);
+    // Build Gmail search query using the improved builder
+    const trustedEmailAddresses = settings.trustedSourcesOnly 
+      ? trustedSources.map(source => source.email_address)
+      : undefined;
     
-    // Prepare base query for Gmail search
-    let query = 'subject:(invoice OR bill OR receipt OR payment OR statement OR due)';
-    
-    // Add date range to query
-    query += ' after:' + startDate.toISOString().split('T')[0];
-    
-    // Add trusted sources filter if enabled
-    if (settings.trustedSourcesOnly && trustedSources.length > 0) {
-      const sourceFilter = trustedSources
-        .map(source => `from:(${source.email_address})`)
-        .join(' OR ');
-      
-      query += ` AND (${sourceFilter})`;
-      console.log('Using trusted sources filter with', trustedSources.length, 'sources');
-    } else if (settings.trustedSourcesOnly && trustedSources.length === 0) {
-      // If trusted sources is enabled but no sources defined, use a placeholder query
-      // that won't return any results (this is a policy decision - could be changed)
-      console.warn('Trusted sources only is enabled but no sources are defined');
-      query += ' AND from:(no-trusted-sources-defined@placeholder.com)';
-    }
+    // Build the search query based on language and trusted sources settings
+    let query = buildBillSearchQuery(
+      settings.scanDays || 30,
+      settings.inputLanguage as 'en' | 'hu' | undefined,
+      trustedEmailAddresses,
+      settings.trustedSourcesOnly
+    );
     
     // Add non-bill related email search if enabled
     if (settings.captureImportantNotices) {
@@ -1582,6 +1570,13 @@ async function handleScanEmails(
     // Search for emails using the constructed query
     const messageIds = await searchEmails(query, settings.maxResults);
     console.log(`Found ${messageIds.length} emails matching search criteria`);
+    
+    // Add detailed logging of found emails
+    if (messageIds.length === 0) {
+      console.log('No messages found with the search query. Try adjusting search criteria or check if there are emails in the specified date range.');
+    } else {
+      console.log(`Processing ${messageIds.length} emails for bill extraction`);
+    }
     
     // Track statistics for processing
     const stats = {

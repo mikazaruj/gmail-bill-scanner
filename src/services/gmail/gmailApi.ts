@@ -19,9 +19,12 @@ export interface SearchOptions {
  */
 export async function searchEmails(token: string, options: SearchOptions): Promise<GmailMessage[]> {
   try {
-    const { query, maxResults = 10 } = options;
+    const { query, maxResults = 30 } = options;
     
-    // Implement pagination and batching for large result sets
+    console.log(`Gmail API: Executing search with query: ${query}`);
+    console.log(`Gmail API: Maximum results to fetch: ${maxResults}`);
+    
+    // First fetch message IDs
     const response = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`,
       {
@@ -33,18 +36,55 @@ export async function searchEmails(token: string, options: SearchOptions): Promi
     
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(`Gmail API error: ${error.error.message}`);
+      console.error('Gmail API search error:', error);
+      throw new Error(`Gmail API error: ${error.error?.message || 'Unknown error'}`);
     }
     
     const data = await response.json();
     
     if (!data.messages || data.messages.length === 0) {
+      console.log('Gmail API: No messages found matching search criteria');
       return [];
     }
     
-    return Promise.all(data.messages.map((msg: { id: string }) => getEmailContent(token, msg.id)));
+    console.log(`Gmail API: Found ${data.messages.length} matching messages, retrieving details...`);
+    
+    // Fetch message details in parallel, but with reasonable batch size to avoid rate limits
+    const BATCH_SIZE = 5;
+    const results: GmailMessage[] = [];
+    let successCount = 0;
+    
+    for (let i = 0; i < data.messages.length; i += BATCH_SIZE) {
+      const batch = data.messages.slice(i, i + BATCH_SIZE);
+      console.log(`Gmail API: Fetching details for messages ${i+1} to ${Math.min(i+BATCH_SIZE, data.messages.length)}`);
+      
+      // Process batch in parallel
+      const batchPromises = batch.map((msg: { id: string }) => 
+        getEmailContent(token, msg.id)
+          .catch(err => {
+            console.error(`Error fetching message ${msg.id}:`, err);
+            return null;
+          })
+      );
+      
+      // Await all promises in this batch
+      const batchResults = await Promise.all(batchPromises);
+      
+      // Filter out null results and add valid ones to our array
+      const validResults = batchResults.filter(msg => msg !== null);
+      results.push(...validResults);
+      successCount += validResults.length;
+      
+      // Add a small delay between batches to avoid rate limiting
+      if (i + BATCH_SIZE < data.messages.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+    
+    console.log(`Gmail API: Successfully retrieved details for ${successCount}/${data.messages.length} messages`);
+    return results;
   } catch (error) {
-    console.error('Failed to search emails:', error);
+    console.error('Gmail API: Failed to search emails:', error);
     throw error;
   }
 }

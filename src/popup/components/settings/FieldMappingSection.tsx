@@ -1,6 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import CollapsibleSection from '../CollapsibleSection';
-import { FieldMapping, updateFieldMapping, getFieldDefinitions, FieldDefinition, createFieldMapping } from '../../../services/fieldMapping';
+import { 
+  FieldMapping, 
+  updateFieldMapping, 
+  updateFieldMappingAndSync,
+  getFieldDefinitions, 
+  FieldDefinition, 
+  createFieldMapping,
+  syncFieldMappingsWithSheet
+} from '../../../services/fieldMapping';
 
 interface FieldMappingSectionProps {
   userId: string | null;
@@ -26,6 +34,8 @@ const FieldMappingSection = ({
   const [pendingCreation, setPendingCreation] = useState<{ fieldId: string, column: string } | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ success: boolean, message: string } | null>(null);
   
   // Ref for the active fields container
   const activeFieldsRef = useRef<HTMLDivElement>(null);
@@ -341,12 +351,12 @@ const FieldMappingSection = ({
         });
         
         // Finally move the target mapping to the dragged item's original column
-        await updateFieldMapping(userId, targetMapping.field_id, {
+        await updateFieldMappingAndSync(userId, targetMapping.field_id, {
           column_mapping: draggedMapping.column_mapping
         });
       } else {
-        // No swapping needed, just update the dragged item
-        await updateFieldMapping(userId, draggedMapping.field_id, {
+        // No swapping needed, just update the dragged item and sync
+        await updateFieldMappingAndSync(userId, draggedMapping.field_id, {
           column_mapping: targetColumn,
           is_enabled: true
         });
@@ -415,11 +425,15 @@ const FieldMappingSection = ({
       // Save all display orders
       const enabledMappings = mappings.filter(m => m.is_enabled);
       
+      // Update mappings individually with sync=false to avoid multiple syncs
       for (const mapping of enabledMappings) {
         await updateFieldMapping(userId, mapping.field_id, {
           display_order: mapping.display_order
         });
       }
+      
+      // Then do a single sync after all updates
+      await syncFieldMappingsWithSheet(userId);
       
       onRefresh();
       setHasChanges(false);
@@ -445,8 +459,8 @@ const FieldMappingSection = ({
       // Add to available fields
       setAvailableFields(prev => [...prev, { ...mapping, is_enabled: false }]);
       
-      // Update in the database
-      await updateFieldMapping(userId, mapping.field_id, {
+      // Update in the database and sync with Google Sheets
+      await updateFieldMappingAndSync(userId, mapping.field_id, {
         is_enabled: false
       });
       
@@ -518,6 +532,29 @@ const FieldMappingSection = ({
   // Toggle showing available fields
   const toggleAvailableFields = () => {
     setShowAvailableFields(!showAvailableFields);
+  };
+
+  // Add a function to manually sync with Google Sheets
+  const handleSyncNow = async () => {
+    if (!userId || isUpdating || isSyncing) return;
+    
+    setSyncResult(null);
+    setIsSyncing(true);
+    try {
+      console.log('Manually syncing field mappings with Google Sheets');
+      const result = await syncFieldMappingsWithSheet(userId);
+      
+      if (result) {
+        setSyncResult({ success: true, message: 'Google Sheet headers updated successfully!' });
+      } else {
+        setSyncResult({ success: false, message: 'Failed to update Google Sheet headers. Check console for details.' });
+      }
+    } catch (error) {
+      console.error('Error syncing with Google Sheets:', error);
+      setSyncResult({ success: false, message: 'Error syncing with Google Sheets' });
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   // Render a field card to match the mockup
@@ -615,6 +652,25 @@ const FieldMappingSection = ({
                   </div>
                 )}
               </div>
+
+              {/* Sync Now button and status */}
+              {enabledMappings.length > 0 && (
+                <div className="mb-3">
+                  <button 
+                    onClick={handleSyncNow}
+                    disabled={isUpdating || isSyncing}
+                    className="w-full py-2 rounded-lg bg-green-50 text-green-600 text-sm flex items-center justify-center transition-colors hover:bg-green-100"
+                  >
+                    {isSyncing ? 'Syncing...' : 'Sync Columns to Google Sheet'}
+                  </button>
+                  
+                  {syncResult && (
+                    <div className={`mt-1 text-xs ${syncResult.success ? 'text-green-600' : 'text-red-600'}`}>
+                      {syncResult.message}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Add More Fields button */}
               <button 
