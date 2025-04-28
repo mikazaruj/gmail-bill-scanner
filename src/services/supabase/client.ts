@@ -1266,25 +1266,71 @@ export async function linkGoogleUserInSupabase({
 }
 
 /**
- * Get user stats from the user_profile_view view
+ * Get user statistics
  * @param userId Supabase user ID
  * @returns User stats
  */
 export async function getUserStats(userId: string) {
-  const supabase = await getSupabaseClient();
-  
-  const { data, error } = await supabase
-    .from('user_profile_view')
-    .select('*')
-    .eq('id', userId)
-    .single();
+  try {
+    console.log('Fetching user stats for user ID:', userId);
     
-  if (error) {
-    console.error('Error fetching user profile:', error);
+    // Ensure we're using a valid UUID
+    if (!userId || typeof userId !== 'string' || userId.length !== 36) {
+      console.warn('Invalid user ID format for stats query:', userId);
+      return null;
+    }
+    
+    const supabase = await getSupabaseClient();
+    
+    // Use the user_profile_view which already includes stats
+    const { data, error } = await supabase
+      .from('user_profile_view')
+      .select('*')
+      .eq('id', userId)
+      .single();
+      
+    if (error) {
+      console.error('Error fetching user profile view:', error);
+      
+      // Fall back to basic users query if view doesn't exist
+      try {
+        const { data: basicUserData, error: basicError } = await supabase
+          .from('users')
+          .select('id, email, created_at')
+          .eq('id', userId)
+          .single();
+          
+        if (basicError) {
+          console.error('Error fetching basic user data:', basicError);
+          return null;
+        }
+        
+        // Return minimal data
+        return {
+          ...basicUserData,
+          total_processed_items: 0,
+          successful_processed_items: 0,
+          last_processed_at: null
+        };
+      } catch (fallbackError) {
+        console.error('Error in fallback stats query:', fallbackError);
+        return null;
+      }
+    }
+      
+    // Convert stats from array count to numbers for consistency
+    const processedStats = {
+      ...data,
+      total_processed_items: data.total_items || 0,
+      successful_processed_items: data.successful_items || 0
+    };
+    
+    console.log('Successfully retrieved user stats:', processedStats);
+    return processedStats;
+  } catch (error) {
+    console.error('Error in getUserStats:', error);
     return null;
   }
-    
-  return data;
 }
 
 /**
@@ -2039,50 +2085,32 @@ export async function updateUserProcessingStats(
   try {
     const supabase = await getSupabaseClient();
     
-    // First check if user stats record exists
-    const { data: existingStats, error: checkError } = await supabase
-      .from('user_stats')
-      .select('id')
-      .eq('user_id', userId)
-      .maybeSingle();
+    // Instead of trying to update the user_stats view directly,
+    // we'll create a summary record in processed_items that captures the stats
     
-    if (checkError) {
-      console.error('Error checking user stats:', checkError);
+    // Create a summary record in processed_items
+    const { error } = await supabase
+      .from('processed_items')
+      .insert({
+        user_id: userId,
+        message_id: `summary-${Date.now()}`, // Generate a unique ID for this summary
+        source_email: 'stats-summary',
+        processed_at: stats.last_processed_at || new Date().toISOString(),
+        status: 'summary', // Special status to mark this as a summary record
+        extracted_data: {
+          total_processed: stats.total_processed_items,
+          successful_processed: stats.successful_processed_items,
+          summary_type: 'scan_stats'
+        }
+      });
+    
+    if (error) {
+      console.error('Error inserting processing stats record:', error);
       return false;
     }
     
-    // If record exists, update it
-    if (existingStats?.id) {
-      const { error: updateError } = await supabase
-        .from('user_stats')
-        .update({
-          total_processed_items: stats.total_processed_items,
-          successful_processed_items: stats.successful_processed_items,
-          last_processed_at: stats.last_processed_at
-        })
-        .eq('user_id', userId);
-      
-      if (updateError) {
-        console.error('Error updating user stats:', updateError);
-        return false;
-      }
-    } else {
-      // If record doesn't exist, create it
-      const { error: insertError } = await supabase
-        .from('user_stats')
-        .insert({
-          user_id: userId,
-          total_processed_items: stats.total_processed_items || 0,
-          successful_processed_items: stats.successful_processed_items || 0,
-          last_processed_at: stats.last_processed_at || new Date().toISOString()
-        });
-      
-      if (insertError) {
-        console.error('Error inserting user stats:', insertError);
-        return false;
-      }
-    }
-    
+    // The user_stats view will automatically reflect these stats through its queries
+    console.log('Successfully updated user stats with summary record');
     return true;
   } catch (error) {
     console.error('Error in updateUserProcessingStats:', error);

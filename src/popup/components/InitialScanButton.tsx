@@ -127,6 +127,9 @@ const InitialScanButton = ({
         highAmountThreshold: settings.highAmountThreshold || 100
       };
       
+      // Log language settings being used for the scan
+      console.log(`InitialScanButton: Running scan with input language: ${scanSettings.inputLanguage}, output language: ${scanSettings.outputLanguage}`);
+      
       // 3. Trigger the scan
       await startScan(scanSettings);
       
@@ -155,9 +158,16 @@ const InitialScanButton = ({
     isRunning || scanStatus === 'scanning' ? 'Scanning...' : 
     variant === 'dashboard' ? 'Run First Scan' : 'Run Initial Scan';
   
+  // Language info for the helper text
+  const languageInfo = settings.inputLanguage === 'hu' ? 
+    ' in Hungarian' : 
+    settings.inputLanguage === 'en' ? 
+    ' in English' : 
+    '';
+  
   // Optional helper text for schedule variant
   const helperText = variant === 'schedule' 
-    ? `Initial scan will look back ${searchDays} days from today, based on your search preferences.`
+    ? `Initial scan will look back ${searchDays} days from today${languageInfo}, based on your search preferences.`
     : null;
   
   return (

@@ -6,50 +6,85 @@
 
 import { BillData } from "../../types/Message";
 import { GmailMessage } from "../../types";
+import { extractBillData, ExtractedBill } from "../billExtractor";
+import { buildBillSearchQuery } from "../gmailSearchBuilder";
 
 // Common bill-related keywords
 const BILL_KEYWORDS = [
   "bill", "invoice", "receipt", "payment", "due", "statement", "transaction",
-  "charge", "fee", "subscription", "order", "purchase"
+  "charge", "fee", "subscription", "order", "purchase",
+  // Hungarian keywords
+  "számla", "fizetés", "díj", "határidő", "fizetési", "értesítő"
 ];
 
 // Category mapping based on merchant patterns
 const CATEGORY_PATTERNS: Record<string, RegExp[]> = {
   "Utilities": [
     /electric/i, /gas/i, /water/i, /sewage/i, /utility/i, /utilities/i, /power/i,
-    /energy/i, /hydro/i
+    /energy/i, /hydro/i,
+    // Hungarian patterns
+    /áram/i, /gáz/i, /víz/i, /közüzemi/i, /szolgáltató/i
   ],
   "Telecommunications": [
     /phone/i, /mobile/i, /cell/i, /wireless/i, /telecom/i, /internet/i, 
-    /broadband/i, /fiber/i, /wifi/i, /cable/i, /tv/i, /television/i
+    /broadband/i, /fiber/i, /wifi/i, /cable/i, /tv/i, /television/i,
+    // Hungarian patterns
+    /telefon/i, /mobil/i, /internet/i, /vodafone/i, /telekom/i, /yettel/i, /digi/i
   ],
   "Subscriptions": [
     /netflix/i, /spotify/i, /hulu/i, /disney/i, /apple/i, /prime/i, /amazon prime/i,
-    /youtube/i, /subscription/i, /membership/i
+    /youtube/i, /subscription/i, /membership/i,
+    // Hungarian patterns
+    /előfizetés/i, /havi díj/i, /ismétlődő/i
   ],
   "Shopping": [
     /amazon/i, /walmart/i, /target/i, /best buy/i, /ebay/i, /etsy/i, /shop/i, 
-    /store/i, /purchase/i, /order/i
+    /store/i, /purchase/i, /order/i,
+    // Hungarian patterns
+    /vásárlás/i, /rendelés/i, /webáruház/i
   ],
   "Travel": [
     /airline/i, /flight/i, /hotel/i, /motel/i, /booking/i, /reservation/i, 
-    /travel/i, /trip/i, /vacation/i, /airbnb/i, /expedia/i
+    /travel/i, /trip/i, /vacation/i, /airbnb/i, /expedia/i,
+    // Hungarian patterns
+    /repülő/i, /szállás/i, /hotel/i, /foglalás/i, /utazás/i
   ],
   "Insurance": [
     /insurance/i, /policy/i, /coverage/i, /claim/i, /premium/i, /health/i, 
-    /dental/i, /vision/i, /car insurance/i, /auto insurance/i
+    /dental/i, /vision/i, /car insurance/i, /auto insurance/i,
+    // Hungarian patterns
+    /biztosítás/i, /biztosító/i, /életbiztosítás/i, /casco/i, /kötelező/i
   ],
   "Entertainment": [
-    /entertainment/i, /movie/i, /game/i, /concert/i, /ticket/i, /event/i
+    /entertainment/i, /movie/i, /game/i, /concert/i, /ticket/i, /event/i,
+    // Hungarian patterns
+    /szórakozás/i, /film/i, /játék/i, /koncert/i, /jegy/i, /esemény/i
   ],
   "Food": [
     /restaurant/i, /food/i, /meal/i, /delivery/i, /doordash/i, /grubhub/i, 
-    /ubereats/i, /postmates/i
+    /ubereats/i, /postmates/i,
+    // Hungarian patterns
+    /étterem/i, /étel/i, /kiszállítás/i, /wolt/i, /foodpanda/i, /netpincér/i
   ]
 };
 
-// Common currency symbols
-const CURRENCY_SYMBOLS = ["$", "€", "£", "¥", "₹", "₽", "₩", "C$", "A$", "HK$"];
+// Common currency symbols with their currency codes
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  "$": "USD",
+  "€": "EUR",
+  "£": "GBP",
+  "¥": "JPY",
+  "₹": "INR",
+  "₽": "RUB",
+  "₩": "KRW",
+  "C$": "CAD",
+  "A$": "AUD",
+  "HK$": "HKD",
+  "Ft": "HUF",
+  "Ft.": "HUF",
+  "HUF": "HUF",
+  "forint": "HUF"
+};
 
 /**
  * Extract email content from Gmail message
@@ -113,9 +148,15 @@ export async function extractBillsFromEmails(
   } = {}
 ): Promise<any[]> {
   try {
+    // Get email metadata
+    const headers = emailContent.payload?.headers || [];
+    const from = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || '';
+    const subject = headers.find((h: any) => h.name.toLowerCase() === 'subject')?.value || '';
+    const date = headers.find((h: any) => h.name.toLowerCase() === 'date')?.value || '';
+    
     // Extract text content from email
-    const textContent = extractTextFromEmail(emailContent);
-    if (!textContent) {
+    const body = extractTextFromEmail(emailContent);
+    if (!body) {
       console.warn('No text content found in email');
       return [];
     }
@@ -126,25 +167,41 @@ export async function extractBillsFromEmails(
     
     console.log(`Extracting bills with input language: ${inputLang}, output language: ${outputLang}`);
     
-    // Get email metadata
-    const headers = emailContent.payload?.headers || [];
-    const from = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || '';
-    const subject = headers.find((h: any) => h.name.toLowerCase() === 'subject')?.value || '';
-    const date = headers.find((h: any) => h.name.toLowerCase() === 'date')?.value || '';
+    // First try to use pattern-based extraction (which supports both languages)
+    const patternExtraction = extractBillData(subject, body);
     
-    // Extract bill data using regular expressions based on language
-    const bills = [];
+    if (patternExtraction && patternExtraction.confidence >= 0.7) {
+      console.log('Successfully extracted bill using pattern-based approach:', patternExtraction);
+      
+      // Convert ExtractedBill to BillData
+      return [{
+        id: emailContent.id,
+        merchant: patternExtraction.vendor || extractVendor(from, subject),
+        amount: patternExtraction.amount,
+        date: new Date(date), // Use email date as fallback
+        currency: patternExtraction.currency,
+        category: categorize(patternExtraction.vendor || '', subject, body),
+        dueDate: patternExtraction.dueDate,
+        accountNumber: patternExtraction.accountNumber,
+        language: patternExtraction.language,
+        confidence: patternExtraction.confidence,
+        emailId: emailContent.id
+      }];
+    }
     
-    // Detect potential bill data
+    // If pattern-based extraction fails, fall back to the existing approach
+    console.log('Pattern-based extraction failed, falling back to traditional approach');
+    
+    // Detect potential bill data (using language-specific regexes)
     const amountRegex = getAmountRegexForLanguage(inputLang);
     const dateRegex = getDateRegexForLanguage(inputLang);
     const vendorRegex = getVendorRegexForLanguage(inputLang);
     const accountRegex = getAccountRegexForLanguage(inputLang);
     
     // Extract potential amount
-    const amountMatch = textContent.match(amountRegex);
-    let amount = null;
-    let currency = 'USD'; // Default currency
+    const amountMatch = body.match(amountRegex);
+    let amount: number | undefined = undefined;
+    let currency = inputLang === 'hu' ? 'HUF' : 'USD'; // Default currency based on language
     
     if (amountMatch) {
       // Clean up and parse amount
@@ -155,24 +212,26 @@ export async function extractBillsFromEmails(
       );
       
       // Try to detect currency
-      const currencyMatch = textContent.match(/(\$|€|£|USD|EUR|GBP)/i);
+      const currencyMatch = body.match(/(\$|€|£|Ft|HUF|USD|EUR|GBP)/i);
       if (currencyMatch) {
         // Map currency symbol to code
         const currencyMap: Record<string, string> = {
           '$': 'USD',
           '€': 'EUR',
           '£': 'GBP',
+          'ft': 'HUF',
+          'huf': 'HUF',
           'usd': 'USD',
           'eur': 'EUR',
           'gbp': 'GBP'
         };
-        currency = currencyMap[currencyMatch[0].toLowerCase()] || 'USD';
+        currency = currencyMap[currencyMatch[0].toLowerCase()] || currency;
       }
     }
     
     // Extract potential date
-    const dateMatch = textContent.match(dateRegex);
-    let billDate = null;
+    const dateMatch = body.match(dateRegex);
+    let billDate: Date | undefined = undefined;
     
     if (dateMatch) {
       try {
@@ -186,10 +245,18 @@ export async function extractBillsFromEmails(
             billDate = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
           }
         } else {
-          // Try DD/MM/YYYY format for non-English
-          const parts = dateMatch[0].split(/[\/\-\.]/);
-          if (parts.length === 3) {
-            billDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+          // Try YYYY.MM.DD format for Hungarian
+          const hunMatches = dateMatch[0].match(/(\d{4})[.-](\d{1,2})[.-](\d{1,2})/);
+          if (hunMatches) {
+            const [_, year, month, day] = hunMatches;
+            billDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+          } else {
+            // Try DD.MM.YYYY for Hungarian
+            const hunAltMatches = dateMatch[0].match(/(\d{1,2})[.-](\d{1,2})[.-](\d{4})/);
+            if (hunAltMatches) {
+              const [_, day, month, year] = hunAltMatches;
+              billDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+            }
           }
         }
       }
@@ -200,58 +267,35 @@ export async function extractBillsFromEmails(
       billDate = new Date(date);
     }
     
-    // Extract vendor from email
-    let vendor = '';
+    // Extract vendor
+    const vendor = extractVendor(from, subject);
     
-    // Try to extract from content first
-    const vendorMatch = textContent.match(vendorRegex);
-    if (vendorMatch && vendorMatch[1]) {
-      vendor = vendorMatch[1].trim();
-    } else {
-      // Fallback to extracting from email sender
-      const fromParts = from.split('<');
-      if (fromParts.length > 1) {
-        // If format is "Name <email@example.com>"
-        vendor = fromParts[0].trim();
-      } else {
-        // If format is just "email@example.com"
-        const emailParts = from.split('@');
-        if (emailParts.length > 1) {
-          // Use domain name as vendor
-          vendor = emailParts[1].split('.')[0];
-          // Capitalize first letter
-          vendor = vendor.charAt(0).toUpperCase() + vendor.slice(1);
-        }
-      }
+    // Extract account number if available
+    const accountNumber = extractAccountNumber(body);
+    
+    // Categorize the bill
+    const category = categorize(vendor, subject, body);
+    
+    // Only proceed if we have a valid amount
+    if (amount && amount > 0) {
+      return [{
+        id: emailContent.id,
+        merchant: vendor,
+        amount: amount,
+        date: billDate,
+        currency: currency,
+        category: category,
+        dueDate: billDate, // Using same date as fallback
+        accountNumber: accountNumber,
+        language: inputLang as 'en' | 'hu',
+        confidence: 0.6, // Lower confidence for fallback approach
+        emailId: emailContent.id
+      }];
     }
     
-    // Extract account number if present
-    let accountNumber = '';
-    const accountMatch = textContent.match(accountRegex);
-    if (accountMatch && accountMatch[1]) {
-      accountNumber = accountMatch[1].trim();
-    }
-    
-    // Only create a bill object if we have at least an amount
-    if (amount !== null) {
-      const bill = {
-        vendor,
-        amount,
-        currency,
-        date: billDate?.toISOString() || new Date().toISOString(),
-        accountNumber,
-        emailId: emailContent.id,
-        subject,
-        extractedFrom: 'email',
-        createdAt: new Date().toISOString()
-      };
-      
-      bills.push(bill);
-    }
-    
-    return bills;
+    return [];
   } catch (error) {
-    console.error('Error extracting bills from email:', error);
+    console.error("Error extracting bills from email:", error);
     return [];
   }
 }
@@ -507,4 +551,16 @@ function categorize(vendor: string, subject: string, body: string): string {
   }
   
   return "Other";
+}
+
+/**
+ * Build a Gmail search query to find bills based on the current language settings
+ * 
+ * @param days Number of days to look back
+ * @param language Language to use for search terms
+ * @returns Gmail search query string
+ */
+export function getBillSearchQuery(days: number = 30, language?: string): string {
+  const typedLanguage = language as ('en' | 'hu' | undefined);
+  return buildBillSearchQuery(days, typedLanguage);
 } 

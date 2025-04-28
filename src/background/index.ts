@@ -1436,19 +1436,12 @@ async function handleScanEmails(
       console.warn('No user email found in Google profile');
     }
     
-    // Get Supabase user ID for stats tracking
-    const userData = await chrome.storage.local.get(['supabase_user_id', 'google_user_id']);
-    const userId = userData?.supabase_user_id || userData?.google_user_id;
-    
-    if (!userId) {
-      console.warn('No user ID found for stats tracking');
-    }
-
-    // Import necessary client functions
+    // Import necessary modules and functions
     let supabaseClient;
     let getUserSettings;
     let getTrustedSources;
     let updateUserStats;
+    let resolveUserIdentity;
     
     try {
       const { 
@@ -1458,6 +1451,9 @@ async function handleScanEmails(
         updateUserProcessingStats
       } = await import('../services/supabase/client');
       
+      const { resolveUserIdentity: resolveIdentity } = await import('../services/identity/userIdentityService');
+      
+      resolveUserIdentity = resolveIdentity;
       supabaseClient = await getSupabaseClient();
       getUserSettings = getSettings;
       getTrustedSources = getTrustedEmailSources;
@@ -1467,8 +1463,42 @@ async function handleScanEmails(
       // Continue with local storage only if import fails
     }
 
-    // Get user settings from both Chrome storage and Supabase
-    const chromeSettings = await chrome.storage.sync.get({
+    // Resolve user identity to get the correct Supabase ID
+    let userId = null;
+    if (resolveUserIdentity) {
+      try {
+        const identity = await resolveUserIdentity();
+        console.log('Resolved user identity for scan:', identity);
+        
+        // Use the Supabase ID for database operations
+        userId = identity.supabaseId;
+        
+        if (!userId) {
+          console.warn('No Supabase user ID found after identity resolution. Using Google ID as fallback.');
+          // Fall back to Google ID from storage only if necessary
+          const userData = await chrome.storage.local.get(['google_user_id']);
+          userId = userData?.google_user_id;
+        }
+      } catch (identityError) {
+        console.error('Error resolving user identity:', identityError);
+        // Fall back to Google ID from storage if identity resolution fails
+        const userData = await chrome.storage.local.get(['google_user_id']);
+        userId = userData?.google_user_id;
+      }
+    } else {
+      // Fallback if resolveUserIdentity couldn't be imported
+      const userData = await chrome.storage.local.get(['supabase_user_id', 'google_user_id']);
+      userId = userData?.supabase_user_id || userData?.google_user_id;
+    }
+    
+    if (!userId) {
+      console.warn('No user ID found for stats tracking');
+    } else {
+      console.log('Using user ID for scan operations:', userId);
+    }
+
+    // Create a settings object with default values
+    const settings = {
       scanDays: payload.searchDays || 30,
       maxResults: payload.maxResults || 20,
       processAttachments: true,
@@ -1480,29 +1510,33 @@ async function handleScanEmails(
       notifyHighAmount: true,
       notifyErrors: true,
       highAmountThreshold: 100
-    });
+    };
+    
+    // Get user settings from Chrome storage
+    const chromeSettings = await chrome.storage.sync.get(settings);
+    
+    // Override with Chrome settings
+    Object.assign(settings, chromeSettings);
     
     // Attempt to get more detailed settings from Supabase if available
-    let dbSettings = null;
     if (userId && getUserSettings) {
       try {
-        dbSettings = await getUserSettings(userId);
+        const dbSettings = await getUserSettings(userId);
         console.log('Retrieved user settings from Supabase:', dbSettings);
+        
+        // Override with database settings if they exist
+        if (dbSettings) {
+          Object.assign(settings, dbSettings);
+        }
       } catch (settingsError) {
         console.error('Error fetching settings from Supabase:', settingsError);
       }
     }
     
-    // Merge settings with Supabase taking precedence
-    const settings = {
-      ...chromeSettings,
-      ...(dbSettings || {})
-    };
-    
     console.log('Using scan settings:', settings);
     
     // Get trusted email sources if the setting is enabled
-    let trustedSources = [];
+    let trustedSources: { email_address: string; id?: string; description?: string }[] = [];
     if (settings.trustedSourcesOnly && userId && getTrustedSources) {
       try {
         trustedSources = await getTrustedSources(userId);
@@ -1676,31 +1710,22 @@ async function handleScanEmails(
       lastScanTime: new Date().toISOString()
     });
     
-    // Update user stats in Supabase if available
-    if (userId && updateUserStats && supabaseClient) {
+    // Update user stats in database if we have a userId (must be a Supabase ID for this to work)
+    if (userId && updateUserStats) {
       try {
-        // Update aggregated user stats
-        await updateUserStats(userId, {
-          total_processed_items: stats.totalProcessed,
-          successful_processed_items: stats.billsFound,
-          last_processed_at: new Date().toISOString()
-        });
-        
-        // Store individual processed items if possible
-        try {
-          const { error } = await supabaseClient
-            .from('processed_items')
-            .insert(processedItems);
+        // Only attempt to update stats if we have a valid Supabase ID (UUID format)
+        // This ensures we don't attempt to use a Google ID for this operation
+        if (userId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+          const success = await updateUserStats(userId, {
+            total_processed_items: stats.totalProcessed,
+            successful_processed_items: stats.billsFound,
+            last_processed_at: new Date().toISOString()
+          });
           
-          if (error) {
-            console.error('Error inserting processed items:', error);
-          } else {
-            console.log(`Successfully recorded ${processedItems.length} processed items in database`);
-          }
-        } catch (recordError) {
-          console.error('Error recording processed items:', recordError);
+          console.log('Successfully recorded', stats.totalProcessed, 'processed items in database');
+        } else {
+          console.warn('Skipping stats update: User ID is not in UUID format:', userId);
         }
-        
       } catch (statsError) {
         console.error('Error updating user stats:', statsError);
       }
