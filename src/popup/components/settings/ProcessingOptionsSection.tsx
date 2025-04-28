@@ -203,10 +203,8 @@ const ProcessingOptionsSection = ({
             onChange={handleChangeInputLanguage}
           >
             <option value="auto">Auto-detect</option>
-            <option value="english">English</option>
-            <option value="spanish">Spanish</option>
-            <option value="french">French</option>
-            <option value="german">German</option>
+            <option value="en">English</option>
+            <option value="hu">Hungarian</option>
           </select>
         </div>
         
@@ -217,10 +215,8 @@ const ProcessingOptionsSection = ({
             value={settings.outputLanguage}
             onChange={handleChangeOutputLanguage}
           >
-            <option value="english">English</option>
-            <option value="spanish">Spanish</option>
-            <option value="french">French</option>
-            <option value="german">German</option>
+            <option value="en">English</option>
+            <option value="hu">Hungarian</option>
           </select>
         </div>
         

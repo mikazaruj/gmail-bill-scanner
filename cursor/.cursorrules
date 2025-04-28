@@ -105,3 +105,6 @@ You are an expert Chrome extension developer, proficient in JavaScript/TypeScrip
 - Always verify database structure at @supabase-env.js file for tables and views definition, @database.types.ts for functions definition
 - Use Supabase MCP tools to get the latest database structure if needed
   
+## Timestamp
+
+Your training data has an earlier cut off date than today's current date. Ask me for today's date if we have any issues concerning dates.
