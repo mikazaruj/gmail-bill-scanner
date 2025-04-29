@@ -612,30 +612,44 @@ async function formatHeaderRow(spreadsheetId: string, sheetName: string, token: 
  */
 async function findSheetByName(name: string, token: string): Promise<{ sheetId: string; sheetName: string } | null> {
   try {
-    const response = await fetch(
-      'https://www.googleapis.com/drive/v3/files?q=' + 
-      encodeURIComponent(`name='${name}' and mimeType='application/vnd.google-apps.spreadsheet'`),
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+    console.log(`Searching for spreadsheet with name: "${name}"`);
+    
+    // Get recent spreadsheets from storage
+    const storageData = await chrome.storage.local.get(['recentSpreadsheets']);
+    const recentSpreadsheets = storageData.recentSpreadsheets || [];
+    
+    // First check in storage for spreadsheets with matching name
+    for (const sheet of recentSpreadsheets) {
+      if (sheet.name === name) {
+        console.log(`Found existing sheet with name "${name}" in storage`);
+        
+        // Verify it's still accessible
+        try {
+          const response = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}?fields=properties.title`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            }
+          );
+          
+          if (response.ok) {
+            console.log(`Verified sheet "${name}" exists and is accessible`);
+            return {
+              sheetId: sheet.id,
+              sheetName: 'Bills' // Assuming the first sheet is named 'Bills'
+            };
+          }
+        } catch (error) {
+          console.warn(`Sheet "${name}" exists in storage but isn't accessible:`, error);
+        }
       }
-    );
-    
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(`Drive API error: ${error.error.message}`);
     }
     
-    const data = await response.json();
-    
-    if (data.files && data.files.length > 0) {
-      return {
-        sheetId: data.files[0].id,
-        sheetName: 'Bills', // Assuming the first sheet is named 'Bills'
-      };
-    }
-    
+    // The prior implementation using Drive API isn't compatible with our scopes,
+    // so we return null to indicate that a new sheet should be created
+    console.log(`No existing spreadsheet found with name "${name}", will need to create a new one`);
     return null;
   } catch (error) {
     console.error('Failed to find sheet:', error);

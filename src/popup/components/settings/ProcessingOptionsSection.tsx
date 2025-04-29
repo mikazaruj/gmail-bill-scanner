@@ -24,9 +24,10 @@ const ProcessingOptionsSection = ({
       settings.immediateProcessing || 
       settings.notifyHighAmount || 
       settings.captureImportantNotices || 
+      settings.autoExportToSheets ||
       false
     );
-  }, [settings.immediateProcessing, settings.notifyHighAmount, settings.captureImportantNotices]);
+  }, [settings.immediateProcessing, settings.notifyHighAmount, settings.captureImportantNotices, settings.autoExportToSheets]);
 
   const handleToggleImmediateProcessing = useCallback(async (checked: boolean) => {
     // Update UI state first for responsive feel
@@ -85,6 +86,21 @@ const ProcessingOptionsSection = ({
       // Revert UI state on error if needed
       if (!success) {
         updateSettings({ captureImportantNotices: !checked });
+      }
+    }
+  }, [userId, updateSettings, updateSetting]);
+
+  const handleToggleAutoExportToSheets = useCallback(async (checked: boolean) => {
+    // Update UI state first for responsive feel
+    updateSettings({ autoExportToSheets: checked });
+    
+    // Update in Supabase if we have a user ID
+    if (userId) {
+      const success = await updateSetting('auto_export_to_sheets', checked);
+      
+      // Revert UI state on error if needed
+      if (!success) {
+        updateSettings({ autoExportToSheets: !checked });
       }
     }
   }, [userId, updateSettings, updateSetting]);
@@ -192,6 +208,13 @@ const ProcessingOptionsSection = ({
           label="Capture important notices"
           isEnabled={settings.captureImportantNotices}
           onChange={handleToggleCaptureImportantNotices}
+        />
+        
+        <SettingsToggle
+          label="Auto-export to Google Sheets"
+          isEnabled={settings.autoExportToSheets}
+          onChange={handleToggleAutoExportToSheets}
+          description="Automatically export scan results to Google Sheets"
         />
         
         <div className="text-xs font-medium text-gray-600 mb-1 mt-3">Language</div>

@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS public.user_preferences (
   process_attachments boolean NULL DEFAULT true,
   trusted_sources_only boolean NULL DEFAULT true,
   capture_important_notices boolean NULL DEFAULT false,
+  auto_export_to_sheets boolean NULL DEFAULT true,
   -- Schedule options
   schedule_enabled boolean NULL DEFAULT false,
   schedule_frequency text NULL DEFAULT 'weekly',

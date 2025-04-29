@@ -18,6 +18,7 @@ BEGIN
             process_attachments,
             trusted_sources_only,
             capture_important_notices,
+            auto_export_to_sheets,
             schedule_enabled,
             schedule_frequency,
             schedule_day_of_week,
@@ -41,6 +42,7 @@ BEGIN
             true,  -- process_attachments
             true,  -- trusted_sources_only
             false, -- capture_important_notices
+            true,  -- auto_export_to_sheets
             false,     -- schedule_enabled
             'weekly',  -- schedule_frequency
             'monday',  -- schedule_day_of_week

@@ -115,8 +115,17 @@ export async function extractTextFromPdf(pdfData: Uint8Array): Promise<string> {
  */
 export async function extractTextFromBase64Pdf(base64Data: string): Promise<string> {
   try {
+    // Fix base64 encoding by replacing URL-safe characters and adding padding
+    let fixedBase64 = base64Data.replace(/-/g, '+').replace(/_/g, '/');
+    
+    // Add padding if needed
+    const padding = fixedBase64.length % 4;
+    if (padding) {
+      fixedBase64 += '='.repeat(4 - padding);
+    }
+    
     // Convert base64 to binary
-    const binaryString = atob(base64Data);
+    const binaryString = atob(fixedBase64);
     const bytes = new Uint8Array(binaryString.length);
     
     for (let i = 0; i < binaryString.length; i++) {

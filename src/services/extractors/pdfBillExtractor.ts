@@ -215,8 +215,18 @@ async function extractTextFromPdf(attachment: GmailAttachment): Promise<string> 
         // Add a workaround - if it contains a placeholder message about PDF.js not being available
         // We'll use a more basic approach to try to extract some content
         const base64Data = attachment.data;
+        
+        // Fix base64 encoding by replacing URL-safe characters and adding padding
+        let fixedBase64 = base64Data.replace(/-/g, '+').replace(/_/g, '/');
+        
+        // Add padding if needed
+        const padding = fixedBase64.length % 4;
+        if (padding) {
+          fixedBase64 += '='.repeat(4 - padding);
+        }
+        
         // Try to extract some readable text even without PDF.js
-        const readableChars = atob(base64Data)
+        const readableChars = atob(fixedBase64)
           .split('')
           .filter(char => char.charCodeAt(0) >= 32 && char.charCodeAt(0) < 127)
           .join('');

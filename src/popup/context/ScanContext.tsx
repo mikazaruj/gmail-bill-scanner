@@ -152,16 +152,18 @@ export const ScanProvider = ({ children }: ScanProviderProps) => {
         }));
       }
 
-      const response = await new Promise<any>((resolve) => {
+      const response = await new Promise<any>((resolve, reject) => {
         chrome.runtime.sendMessage({
           type: 'SCAN_EMAILS',
           payload: {
             maxResults: settings.maxResults,
-            searchDays: settings.searchDays
+            searchDays: settings.searchDays,
+            autoExportToSheets: settings.autoExportToSheets
           }
         }, (response) => {
           if (chrome.runtime.lastError) {
-            throw new Error(chrome.runtime.lastError.message);
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
           }
           resolve(response);
         });
@@ -171,21 +173,27 @@ export const ScanProvider = ({ children }: ScanProviderProps) => {
         setScanResults(response.bills || []);
         setDashboardStats(prev => ({
           ...prev,
-          billsFound: (response.bills || []).length
+          billsFound: (response.bills || []).length,
+          ...(response.stats ? {
+            processed: response.stats.processed || prev.processed,
+            errors: response.stats.errors || 0
+          } : {})
         }));
         setScanStatus('completed');
         
-        // Automatically export to Google Sheets if we have results
-        if (response.bills && response.bills.length > 0) {
-          setScanProgressMessage('Exporting to Google Sheets...');
-          await exportToSheets();
-          setScanProgressMessage('Export complete!');
+        if (settings.autoExportToSheets && response.bills && response.bills.length > 0) {
+          setScanProgressMessage('Export to Google Sheets in progress...');
+          setTimeout(() => {
+            setScanProgressMessage('Scan complete! Export handled in background.');
+          }, 3000);
         }
       } else {
         throw new Error(response?.error || 'Scan failed');
       }
     } catch (error) {
-      setError((error as Error).message);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown scan error';
+      console.error('Scan error:', errorMessage);
+      setError(errorMessage);
       setScanStatus('idle');
     }
   };
@@ -198,9 +206,12 @@ export const ScanProvider = ({ children }: ScanProviderProps) => {
 
     setExportInProgress(true);
     setError(null);
+    setScanProgressMessage('Exporting to Google Sheets...');
 
     try {
-      const response = await new Promise<any>((resolve) => {
+      console.log(`Attempting to export ${scanResults.length} bills to Google Sheets...`);
+      
+      const response = await new Promise<any>((resolve, reject) => {
         chrome.runtime.sendMessage({
           type: 'EXPORT_TO_SHEETS',
           payload: {
@@ -208,21 +219,38 @@ export const ScanProvider = ({ children }: ScanProviderProps) => {
           }
         }, (response) => {
           if (chrome.runtime.lastError) {
-            throw new Error(chrome.runtime.lastError.message);
+            console.error('Chrome runtime error during export:', chrome.runtime.lastError);
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
           }
           resolve(response);
         });
       });
       
       if (response?.success) {
+        console.log('Export to Google Sheets successful');
+        setScanProgressMessage('Export complete!');
+        
         if (response.spreadsheetUrl) {
+          console.log('Opening spreadsheet URL:', response.spreadsheetUrl);
           chrome.tabs.create({ url: response.spreadsheetUrl });
         }
       } else {
-        throw new Error(response?.error || 'Export failed');
+        const errorMsg = response?.error || 'Export failed with unknown error';
+        console.error('Export failed:', errorMsg);
+        setScanProgressMessage('Export failed');
+        
+        if (errorMsg.includes('permission') || errorMsg.includes('scope') || errorMsg.includes('auth')) {
+          throw new Error(`Export failed: ${errorMsg}. You may need to re-authenticate with Google and ensure the Sheets API is enabled.`);
+        }
+        
+        throw new Error(errorMsg);
       }
     } catch (error) {
-      setError((error as Error).message);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown export error';
+      console.error('Error during export:', errorMessage);
+      setError(errorMessage);
+      setScanProgressMessage('Export failed');
     } finally {
       setExportInProgress(false);
     }

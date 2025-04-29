@@ -6,6 +6,7 @@ interface SettingsToggleProps {
   onChange: (enabled: boolean) => void;
   disabled?: boolean;
   proFeature?: boolean;
+  description?: string; // Optional description to show below the label
 }
 
 const SettingsToggle = ({
@@ -13,7 +14,8 @@ const SettingsToggle = ({
   isEnabled,
   onChange,
   disabled = false,
-  proFeature = false
+  proFeature = false,
+  description
 }: SettingsToggleProps) => {
   // Handle direct click on the toggle container
   const handleToggleClick = () => {
@@ -24,10 +26,15 @@ const SettingsToggle = ({
 
   return (
     <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
-      <div className="flex items-center">
-        <span className="text-sm text-gray-900">{label}</span>
-        {proFeature && (
-          <span className="ml-1.5 px-1.5 py-0.5 bg-purple-100 text-purple-800 text-xs font-medium rounded">PRO</span>
+      <div className="flex flex-col">
+        <div className="flex items-center">
+          <span className="text-sm text-gray-900">{label}</span>
+          {proFeature && (
+            <span className="ml-1.5 px-1.5 py-0.5 bg-purple-100 text-purple-800 text-xs font-medium rounded">PRO</span>
+          )}
+        </div>
+        {description && (
+          <span className="text-xs text-gray-500 mt-0.5">{description}</span>
         )}
       </div>
       <div 

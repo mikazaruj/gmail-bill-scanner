@@ -327,29 +327,79 @@ export async function listUserSpreadsheets(): Promise<Array<{ id: string; name: 
       throw new Error("Not authenticated");
     }
     
-    // Use the Drive API to list files of type spreadsheet
-    const response = await fetch(
-      "https://www.googleapis.com/drive/v3/files?q=mimeType='application/vnd.google-apps.spreadsheet'",
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    console.log('Listing available spreadsheets from local storage');
     
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(`Drive API error: ${error.error?.message || "Unknown error"}`);
+    // Get the user's spreadsheets from storage
+    const storageData = await chrome.storage.local.get(['lastSpreadsheetId', 'recentSpreadsheets']);
+    const lastSpreadsheetId = storageData.lastSpreadsheetId;
+    const recentSpreadsheets = storageData.recentSpreadsheets || [];
+    
+    const sheets: Array<{ id: string; name: string }> = [];
+    
+    // Add last used spreadsheet if available
+    if (lastSpreadsheetId) {
+      try {
+        // Validate the spreadsheet exists and is accessible
+        const response = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${lastSpreadsheetId}?fields=properties.title`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        
+        if (response.ok) {
+          const data = await response.json();
+          sheets.push({
+            id: lastSpreadsheetId,
+            name: data.properties.title || 'Last Used Spreadsheet'
+          });
+          console.log('Successfully added last used spreadsheet to list');
+        }
+      } catch (validateError) {
+        console.warn('Error validating last spreadsheet, it may be inaccessible:', validateError);
+      }
     }
     
-    const data = await response.json();
+    // Add recent spreadsheets if available
+    if (recentSpreadsheets && recentSpreadsheets.length > 0) {
+      for (const recent of recentSpreadsheets) {
+        // Skip if it's the same as the last spreadsheet
+        if (recent.id === lastSpreadsheetId) continue;
+        
+        try {
+          // Validate the spreadsheet exists and is accessible
+          const response = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${recent.id}?fields=properties.title`,
+            {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "Content-Type": "application/json",
+              },
+            }
+          );
+          
+          if (response.ok) {
+            const data = await response.json();
+            // Use stored name if title validation fails
+            sheets.push({
+              id: recent.id,
+              name: data.properties?.title || recent.name || 'Unnamed Spreadsheet'
+            });
+          }
+        } catch (validateError) {
+          console.warn(`Error validating recent spreadsheet ${recent.id}, skipping:`, validateError);
+        }
+      }
+      console.log(`Added ${sheets.length - (lastSpreadsheetId ? 1 : 0)} recent spreadsheets to list`);
+    }
     
-    return (data.files || []).map((file: { id: string; name: string }) => ({
-      id: file.id,
-      name: file.name,
-    }));
+    // If no spreadsheets were found, return empty array
+    return sheets;
   } catch (error) {
     console.error("Error listing spreadsheets:", error);
     throw error;

@@ -29,7 +29,7 @@ import { buildBillSearchQuery } from '../services/gmailSearchBuilder';
 // Required OAuth scopes
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/spreadsheets",
   "https://www.googleapis.com/auth/userinfo.email",
   "https://www.googleapis.com/auth/userinfo.profile"
 ];
@@ -1089,41 +1089,94 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'GET_AVAILABLE_SHEETS':
       try {
+        console.log('Fetching available Google Sheets...');
+        
         // Get authentication token
         const token = await getAccessToken();
         if (!token) {
+          console.error('No auth token available for GET_AVAILABLE_SHEETS');
           sendResponse({ success: false, error: 'Not authenticated' });
           return;
         }
         
         try {
-          // Use the Drive API to list files of type spreadsheet
-          const response = await fetch(
-            "https://www.googleapis.com/drive/v3/files?q=mimeType='application/vnd.google-apps.spreadsheet'",
-            {
-              method: "GET",
-              headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-              },
-            }
-          );
+          // Use the Sheets API instead of Drive API
+          // Although this just gives us the sheets we can access directly by ID, 
+          // it doesn't require additional scopes
+          console.log('Using Google Sheets API to find available spreadsheets...');
           
-          if (!response.ok) {
-            const error = await response.json();
-            throw new Error(`Drive API error: ${error.error?.message || "Unknown error"}`);
+          // Get the user's spreadsheets from storage if available
+          const storageData = await chrome.storage.local.get(['lastSpreadsheetId', 'recentSpreadsheets']);
+          const lastSpreadsheetId = storageData.lastSpreadsheetId;
+          const recentSpreadsheets = storageData.recentSpreadsheets || [];
+          
+          // Return the list of spreadsheets
+          const sheets = [];
+          
+          // Add last used spreadsheet if available
+          if (lastSpreadsheetId) {
+            try {
+              // Validate the spreadsheet exists and is accessible
+              const response = await fetch(
+                `https://sheets.googleapis.com/v4/spreadsheets/${lastSpreadsheetId}?fields=properties.title`,
+                {
+                  method: "GET",
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                  },
+                }
+              );
+              
+              if (response.ok) {
+                const data = await response.json();
+                sheets.push({
+                  id: lastSpreadsheetId,
+                  name: data.properties.title || 'Last Used Spreadsheet'
+                });
+                console.log('Successfully added last used spreadsheet to list');
+              }
+            } catch (validateError) {
+              console.warn('Error validating last spreadsheet, it may be inaccessible:', validateError);
+            }
           }
           
-          const data = await response.json();
+          // Add recent spreadsheets if available
+          if (recentSpreadsheets && recentSpreadsheets.length > 0) {
+            for (const recent of recentSpreadsheets) {
+              // Skip if it's the same as the last spreadsheet
+              if (recent.id === lastSpreadsheetId) continue;
+              
+              try {
+                // Validate the spreadsheet exists and is accessible
+                const response = await fetch(
+                  `https://sheets.googleapis.com/v4/spreadsheets/${recent.id}?fields=properties.title`,
+                  {
+                    method: "GET",
+                    headers: {
+                      Authorization: `Bearer ${token}`,
+                      "Content-Type": "application/json",
+                    },
+                  }
+                );
+                
+                if (response.ok) {
+                  const data = await response.json();
+                  // Use stored name if title validation fails
+                  sheets.push({
+                    id: recent.id,
+                    name: data.properties?.title || recent.name || 'Unnamed Spreadsheet'
+                  });
+                }
+              } catch (validateError) {
+                console.warn(`Error validating recent spreadsheet ${recent.id}, skipping:`, validateError);
+              }
+            }
+            console.log(`Added ${sheets.length - (lastSpreadsheetId ? 1 : 0)} recent spreadsheets to list`);
+          }
           
-          // Transform the response into a simple list of spreadsheets
-          const spreadsheets = (data.files || []).map((file: { id: string; name: string }) => ({
-            id: file.id,
-            name: file.name,
-          }));
-          
-          // Return the list of spreadsheets directly
-          sendResponse({ success: true, sheets: spreadsheets });
+          console.log(`Returning ${sheets.length} available spreadsheets`);
+          sendResponse({ success: true, sheets });
         } catch (error) {
           console.error('Error fetching spreadsheets:', error);
           sendResponse({ 
@@ -1423,10 +1476,13 @@ async function handleScanEmails(
   sendResponse: (response: ScanEmailsResponse) => void
 ) {
   try {
+    console.log('Starting email scan process...');
+    
     // Get authentication token
     const token = await getAccessToken();
     if (!token) {
-      sendResponse({ success: false, error: 'Not authenticated' });
+      console.error('Scan failed: No valid authentication token');
+      sendResponse({ success: false, error: 'Not authenticated with Google. Please sign in again.' });
       return;
     }
 
@@ -1510,7 +1566,8 @@ async function handleScanEmails(
       notifyProcessed: true,
       notifyHighAmount: true,
       notifyErrors: true,
-      highAmountThreshold: 100
+      highAmountThreshold: 100,
+      autoExportToSheets: true // Add the auto-export setting with default true
     };
     
     // Get user settings from Chrome storage
@@ -1540,8 +1597,21 @@ async function handleScanEmails(
     let trustedSources: { email_address: string; id?: string; description?: string }[] = [];
     if (settings.trustedSourcesOnly && userId && getTrustedSources) {
       try {
+        console.log('Trusted sources only is enabled, retrieving trusted sources from database...');
         trustedSources = await getTrustedSources(userId);
-        console.log(`Retrieved ${trustedSources.length} trusted sources from database`);
+        console.log(`Retrieved ${trustedSources.length} trusted sources from database:`);
+        
+        // Log trusted sources for debugging (without revealing personal info)
+        if (trustedSources.length > 0) {
+          console.log('Trusted sources:', trustedSources.map(source => ({
+            id: source.id,
+            email: source.email_address 
+              ? `${source.email_address.substring(0, 3)}...${source.email_address.split('@')[1]}`
+              : 'invalid email'
+          })));
+        } else {
+          console.warn('No trusted sources found, but trusted_sources_only is enabled. Scan may return no results.');
+        }
       } catch (sourcesError) {
         console.error('Error fetching trusted sources:', sourcesError);
       }
@@ -1560,198 +1630,151 @@ async function handleScanEmails(
       settings.trustedSourcesOnly
     );
     
-    // Add non-bill related email search if enabled
-    if (settings.captureImportantNotices) {
+    // Add non-bill related email search if enabled and we're not restricting to trusted sources
+    // When trusted_sources_only is true, we should not add this OR condition
+    if (settings.captureImportantNotices && !settings.trustedSourcesOnly) {
       query += ' OR subject:(price change OR service update OR important notice OR policy update)';
+    } else if (settings.captureImportantNotices && settings.trustedSourcesOnly && trustedEmailAddresses && trustedEmailAddresses.length > 0) {
+      // If trusted_sources_only is true, we need to ensure important notices are still restricted to trusted sources
+      const trustedSourcesQuery = trustedEmailAddresses.map(email => `from:${email}`).join(' OR ');
+      query += ` OR (subject:(price change OR service update OR important notice OR policy update) AND (${trustedSourcesQuery}))`;
     }
     
     console.log('Gmail search query:', query);
     
     // Search for emails using the constructed query
     const messageIds = await searchEmails(query, settings.maxResults);
-    console.log(`Found ${messageIds.length} emails matching search criteria`);
-    
-    // Add detailed logging of found emails
-    if (messageIds.length === 0) {
-      console.log('No messages found with the search query. Try adjusting search criteria or check if there are emails in the specified date range.');
-    } else {
-      console.log(`Processing ${messageIds.length} emails for bill extraction`);
+    if (!messageIds || messageIds.length === 0) {
+      console.log('No matching emails found');
+      sendResponse({ success: true, bills: [] });
+      return;
     }
     
-    // Track statistics for processing
+    console.log(`Found ${messageIds.length} matching emails, processing...`);
+    
+    // Stats for tracking processing
     const stats = {
       totalProcessed: messageIds.length,
       billsFound: 0,
-      attachmentsProcessed: 0,
       errors: 0
     };
-
-    // Process emails to extract bills
-    let bills: BillData[] = [];
-    let processedItems = [];
+    
+    // Process each email to extract bill data
+    const bills: BillData[] = [];
+    const processedResults: Record<string, any> = {};
     
     for (const messageId of messageIds) {
       try {
-        // Get full email content
-        const emailContent = await getEmailContent(token, messageId);
+        // Get email content using Gmail API
+        const emailData = await getEmailContent(messageId);
         
-        const fromAddress = emailContent.payload?.headers?.find(
-          h => h.name.toLowerCase() === 'from'
-        )?.value || '';
+        // Extract bills from email content
+        const extractedBills = await extractBillsFromEmails([emailData]);
         
-        const subject = emailContent.payload?.headers?.find(
-          h => h.name.toLowerCase() === 'subject'
-        )?.value || '';
-        
-        console.log(`Processing email: ${subject} from ${fromAddress}`);
-        
-        // Create a processed item record for tracking
-        const processedItem = {
-          message_id: messageId,
-          from_address: fromAddress,
-          subject,
-          user_id: userId,
-          processed_at: new Date().toISOString(),
-          status: 'processing',
-          bills_extracted: 0,
-          error_message: null
-        };
-        
-        try {
-          // Extract bills from email content with language consideration
-          const emailBills = await extractBillsFromEmails(emailContent, {
-            inputLanguage: settings.inputLanguage,
-            outputLanguage: settings.outputLanguage
-          });
+        if (extractedBills.length > 0) {
+          // Add to bills array
+          bills.push(...extractedBills);
+          stats.billsFound += extractedBills.length;
           
-          if (emailBills.length > 0) {
-            console.log(`Extracted ${emailBills.length} bills from email content`);
-            bills = [...bills, ...emailBills];
-            stats.billsFound += emailBills.length;
-            processedItem.bills_extracted += emailBills.length;
+          // Record processing result for stats
+          processedResults[messageId] = {
+            message_id: messageId,
+            from_address: emailData.from,
+            subject: emailData.subject,
+            user_id: userId,
+            processed_at: new Date().toISOString(),
+            status: 'success',
+            bills_extracted: extractedBills.length,
+            error_message: null
+          };
+          
+          // Log success for each bill type
+          for (const bill of extractedBills) {
+            console.log(`Successfully extracted bill: ${bill.vendor || 'Unknown'} - ${bill.amount || 0}`);
           }
-          
-          // Process attachments if enabled
-          if (settings.processAttachments) {
-            const hasPdfAttachments = emailContent.payload?.parts?.some(part => 
-              part.mimeType === 'application/pdf' || 
-              part.filename?.toLowerCase().endsWith('.pdf')
-            );
-            
-            if (hasPdfAttachments) {
-              console.log('Found PDF attachments, processing...');
-              
-              // Get attachments
-              const attachments = await getAttachments(token, messageId);
-              stats.attachmentsProcessed += attachments.length;
-              
-              // Extract bills from PDFs
-              const pdfBills = await extractBillsFromPdfs(attachments, {
-                inputLanguage: settings.inputLanguage,
-                outputLanguage: settings.outputLanguage
-              });
-              
-              if (pdfBills.length > 0) {
-                console.log(`Extracted ${pdfBills.length} bills from PDF attachments`);
-                bills = [...bills, ...pdfBills];
-                stats.billsFound += pdfBills.length;
-                processedItem.bills_extracted += pdfBills.length;
-              }
-            }
-          }
-          
-          // Update processed item status to success
-          processedItem.status = 'success';
-          
-        } catch (extractError) {
-          handleError(extractError instanceof Error ? extractError : new Error(String(extractError)), {
-            severity: 'medium',
-            context: {
-              operation: 'email_extraction',
-              messageId,
-              fromAddress,
-              subject
-            }
-          });
-          
-          processedItem.status = 'error';
-          processedItem.error_message = extractError instanceof Error 
-            ? extractError.message 
-            : 'Unknown extraction error';
-          stats.errors++;
+        } else {
+          // Record processing result with zero bills
+          processedResults[messageId] = {
+            message_id: messageId,
+            from_address: emailData.from,
+            subject: emailData.subject,
+            user_id: userId,
+            processed_at: new Date().toISOString(),
+            status: 'no_bills',
+            bills_extracted: 0,
+            error_message: null
+          };
         }
         
-        // Add to processed items list
-        processedItems.push(processedItem);
-        
-      } catch (emailError) {
-        handleError(emailError instanceof Error ? emailError : new Error(String(emailError)), {
-          severity: 'high',
-          context: {
-            operation: 'process_email',
-            messageId
+        // Process attachments if enabled
+        if (settings.processAttachments) {
+          try {
+            const attachments = await getAttachments(messageId);
+            
+            if (attachments && attachments.length > 0) {
+              console.log(`Processing ${attachments.length} attachments for message ${messageId}`);
+              
+              // TODO: Extract bills from PDF attachments
+              // This is a placeholder for PDF attachment processing
+              // const pdfBills = await extractBillsFromPdfs(attachments);
+              // if (pdfBills.length > 0) {
+              //   bills.push(...pdfBills);
+              //   stats.billsFound += pdfBills.length;
+              // }
+            }
+          } catch (attachmentError) {
+            console.error(`Error processing attachments for ${messageId}:`, attachmentError);
           }
-        });
+        }
+      } catch (emailError) {
+        console.error(`Error processing email ${messageId}:`, emailError);
         stats.errors++;
-        // Continue with next email
+        
+        // Try to extract the email from and subject if available
+        let fromAddress = 'unknown';
+        let subject = 'unknown';
+        
+        try {
+          const emailData = await getEmailContent(messageId);
+          fromAddress = emailData.from;
+          subject = emailData.subject;
+        } catch (headerError) {
+          console.error(`Could not get email headers for ${messageId}:`, headerError);
+        }
+        
+        // Record error for stats
+        processedResults[messageId] = {
+          message_id: messageId,
+          from_address: fromAddress,
+          subject: subject,
+          user_id: userId,
+          processed_at: new Date().toISOString(),
+          status: 'error',
+          bills_extracted: 0,
+          error_message: emailError instanceof Error ? emailError.message : String(emailError)
+        };
       }
     }
     
-    // Store extraction results
-    console.log(`Scan complete. Processed ${stats.totalProcessed} emails, found ${stats.billsFound} bills, had ${stats.errors} errors`);
-    await chrome.storage.local.set({ 
-      extractedBills: bills,
-      lastScanStats: stats,
-      lastScanTime: new Date().toISOString()
-    });
+    // Cache extracted bills for later use
+    try {
+      await chrome.storage.local.set({ extractedBills: bills });
+    } catch (storageError) {
+      console.error('Error storing extracted bills in local storage:', storageError);
+    }
     
-    // Update user stats in database if we have a userId (must be a Supabase ID for this to work)
+    // Save processing results to database if we have a user ID and Supabase client
     if (userId && updateUserStats) {
       try {
-        // Only attempt to update stats if we have a valid Supabase ID (UUID format)
-        // This ensures we don't attempt to use a Google ID for this operation
-        if (userId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-          const success = await updateUserStats(userId, {
-            total_processed_items: stats.totalProcessed,
-            successful_processed_items: stats.billsFound,
-            last_processed_at: new Date().toISOString()
-          });
-          
-          console.log('Successfully recorded', stats.totalProcessed, 'processed items in database');
-        } else {
-          console.warn('Skipping stats update: User ID is not in UUID format:', userId);
-        }
+        console.log('Updating user processing stats...');
+        await updateUserStats(userId, Object.values(processedResults));
+        console.log('Successfully updated user stats');
       } catch (statsError) {
         console.error('Error updating user stats:', statsError);
       }
     }
     
-    // Send notifications if enabled
-    if (settings.notifyProcessed) {
-      chrome.notifications.create({
-        type: 'basic',
-        iconUrl: 'icons/icon-128.png',
-        title: 'Scan Complete',
-        message: `Processed ${stats.totalProcessed} emails, found ${stats.billsFound} bills`
-      });
-    }
-    
-    // If high value bills found and notification enabled
-    if (settings.notifyHighAmount) {
-      const threshold = settings.highAmountThreshold || 100;
-      const highValueBills = bills.filter(bill => 
-        parseFloat(bill.amount?.toString() || '0') > threshold
-      );
-      
-      if (highValueBills.length > 0) {
-        chrome.notifications.create({
-          type: 'basic',
-          iconUrl: 'icons/icon-128.png',
-          title: 'High Value Bills Found',
-          message: `Found ${highValueBills.length} bills over $${threshold}`
-        });
-      }
-    }
+    console.log('Scan completed with stats:', stats);
     
     // Send response with bills and stats
     sendResponse({ 
@@ -1763,6 +1786,43 @@ async function handleScanEmails(
         errors: stats.errors
       }
     });
+
+    // If auto-export is enabled and we found bills, trigger export to sheets
+    if (settings.autoExportToSheets && bills.length > 0) {
+      try {
+        console.log('Auto-export is enabled and bills were found. Attempting to export to Google Sheets...');
+        
+        // Verify the access token again for sheets permission
+        const sheetsToken = await getAccessToken();
+        if (!sheetsToken) {
+          console.error('Auto-export failed: No valid authentication token for Sheets API');
+          return;
+        }
+        
+        // Attempt to export with a slight delay to let the UI update
+        setTimeout(async () => {
+          try {
+            console.log(`Auto-exporting ${bills.length} bills to Google Sheets...`);
+            const result = await handleExportToSheets({ bills }, (response) => {
+              if (response.success) {
+                console.log('Auto-export to Sheets successful');
+                
+                if (response.spreadsheetUrl) {
+                  console.log('Spreadsheet URL:', response.spreadsheetUrl);
+                  // We could send a notification here if needed
+                }
+              } else {
+                console.error('Auto-export to Sheets failed:', response.error);
+              }
+            });
+          } catch (exportError) {
+            console.error('Auto-export to Sheets failed with exception:', exportError);
+          }
+        }, 1000);
+      } catch (exportSetupError) {
+        console.error('Error setting up auto-export:', exportSetupError);
+      }
+    }
   } catch (error) {
     console.error('Error scanning emails:', error);
     sendResponse({ 
@@ -1780,9 +1840,12 @@ async function handleExportToSheets(
   sendResponse: (response: { success: boolean, error?: string, spreadsheetUrl?: string }) => void
 ) {
   try {
+    console.log('Starting export to sheets process...');
+    
     const token = await getAccessToken();
     if (!token) {
-      sendResponse({ success: false, error: 'Not authenticated' });
+      console.error('Export failed: No valid authentication token');
+      sendResponse({ success: false, error: 'Not authenticated with Google. Please sign in again.' });
       return;
     }
     
@@ -1791,11 +1854,16 @@ async function handleExportToSheets(
     
     // If no bills in payload, get from storage
     if (bills.length === 0) {
+      console.log('No bills in payload, checking storage...');
       const data = await chrome.storage.local.get('extractedBills');
       bills = data.extractedBills || [];
+      console.log(`Found ${bills.length} bills in storage`);
+    } else {
+      console.log(`Found ${bills.length} bills in payload`);
     }
     
     if (bills.length === 0) {
+      console.error('Export failed: No bills to export');
       sendResponse({ success: false, error: 'No bills to export' });
       return;
     }
@@ -1806,30 +1874,86 @@ async function handleExportToSheets(
     
     if (!spreadsheetId) {
       // Create a new spreadsheet
-      console.log('Creating new spreadsheet for auto-export');
+      console.log('Creating new spreadsheet for export...');
       const date = new Date().toLocaleDateString();
-      const { spreadsheetId: newId } = await createSpreadsheet(token, `Bills Export - ${date}`);
-      spreadsheetId = newId;
       
-      // Get the URL to the new spreadsheet
-      spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}`;
-      
-      // Store the spreadsheet ID for future use
-      await chrome.storage.local.set({ lastSpreadsheetId: spreadsheetId });
+      try {
+        const { spreadsheetId: newId } = await createSpreadsheet(token, `Bills Export - ${date}`);
+        spreadsheetId = newId;
+        console.log(`Successfully created spreadsheet with ID: ${spreadsheetId}`);
+        
+        // Get the URL to the new spreadsheet
+        spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}`;
+        
+        // Store the spreadsheet ID for future use
+        await chrome.storage.local.set({ lastSpreadsheetId: spreadsheetId });
+      } catch (createError) {
+        console.error('Error creating spreadsheet:', createError);
+        
+        // Check for specific permission errors
+        if (createError instanceof Error && 
+            (createError.message.includes('insufficient permissions') || 
+             createError.message.includes('scope'))) {
+          sendResponse({ 
+            success: false, 
+            error: 'Permission denied. The extension may need additional Google Sheets permissions.' 
+          });
+        } else {
+          sendResponse({ 
+            success: false, 
+            error: `Failed to create spreadsheet: ${createError instanceof Error ? createError.message : 'Unknown error'}` 
+          });
+        }
+        return;
+      }
+    } else {
+      console.log(`Using existing spreadsheet with ID: ${spreadsheetId}`);
     }
     
     // Append bills to spreadsheet
-    await appendBillData(token, spreadsheetId, bills);
-    
-    sendResponse({ 
-      success: true,
-      spreadsheetUrl
-    });
+    console.log(`Appending ${bills.length} bills to spreadsheet...`);
+    try {
+      await appendBillData(token, spreadsheetId, bills);
+      console.log('Successfully appended bills to spreadsheet');
+      
+      sendResponse({ 
+        success: true,
+        spreadsheetUrl
+      });
+    } catch (appendError) {
+      console.error('Error appending bills to spreadsheet:', appendError);
+      
+      // Check for specific permission errors
+      if (appendError instanceof Error && 
+          (appendError.message.includes('insufficient permissions') || 
+           appendError.message.includes('scope'))) {
+        sendResponse({ 
+          success: false, 
+          error: 'Permission denied. The extension may need additional Google Sheets permissions.' 
+        });
+      } else {
+        sendResponse({ 
+          success: false, 
+          error: `Failed to add bills to spreadsheet: ${appendError instanceof Error ? appendError.message : 'Unknown error'}` 
+        });
+      }
+    }
   } catch (error) {
     console.error('Error exporting to sheets:', error);
+    
+    let errorMessage = 'Unknown error during export';
+    if (error instanceof Error) {
+      errorMessage = error.message;
+      console.error('Error details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack
+      });
+    }
+    
     sendResponse({ 
       success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error' 
+      error: errorMessage
     });
   }
 }

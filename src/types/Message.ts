@@ -22,6 +22,7 @@ export interface Settings {
   processAttachments: boolean;
   trustedSourcesOnly: boolean;
   captureImportantNotices: boolean;
+  autoExportToSheets: boolean; // Whether to automatically export to Google Sheets after scanning
   // Schedule options
   scheduleEnabled: boolean;
   scheduleFrequency: string;
@@ -74,10 +75,12 @@ export interface Message {
 export interface ScanEmailsRequest {
   maxResults?: number;
   searchDays?: number;
+  autoExportToSheets?: boolean; // Whether to automatically export to Google Sheets after scanning
 }
 
 export interface ScanEmailsResponse {
   success: boolean;
   error?: string;
   bills?: BillData[];
+  stats?: DashboardStats; // Include scan statistics in the response
 } 

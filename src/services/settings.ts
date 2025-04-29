@@ -11,6 +11,7 @@ export interface UserSettingsView {
   process_attachments: boolean;
   trusted_sources_only: boolean;
   capture_important_notices: boolean;
+  auto_export_to_sheets: boolean;
   // Schedule options
   schedule_enabled: boolean;
   schedule_frequency: string;
@@ -41,6 +42,7 @@ export const DEFAULT_USER_PREFERENCES = {
   process_attachments: true,
   trusted_sources_only: true,
   capture_important_notices: false,
+  auto_export_to_sheets: true,
   // Schedule options
   schedule_enabled: false,
   schedule_frequency: 'weekly',
@@ -50,7 +52,7 @@ export const DEFAULT_USER_PREFERENCES = {
   search_days: 30,
   // Language options
   input_language: 'auto',
-  output_language: 'english',
+  output_language: 'en',
   // Notification preferences
   notify_processed: true,
   notify_high_amount: false,
@@ -232,6 +234,7 @@ export const getFallbackUserSettings = async (userId: string): Promise<UserSetti
       process_attachments: prefsData?.process_attachments ?? DEFAULT_USER_PREFERENCES.process_attachments,
       trusted_sources_only: prefsData?.trusted_sources_only ?? DEFAULT_USER_PREFERENCES.trusted_sources_only,
       capture_important_notices: prefsData?.capture_important_notices ?? DEFAULT_USER_PREFERENCES.capture_important_notices,
+      auto_export_to_sheets: prefsData?.auto_export_to_sheets ?? DEFAULT_USER_PREFERENCES.auto_export_to_sheets,
       // Schedule options
       schedule_enabled: prefsData?.schedule_enabled ?? DEFAULT_USER_PREFERENCES.schedule_enabled,
       schedule_frequency: prefsData?.schedule_frequency ?? DEFAULT_USER_PREFERENCES.schedule_frequency,
@@ -466,6 +469,7 @@ export const getUserSettingsWithDefaults = async (userId: string): Promise<UserS
       process_attachments: DEFAULT_USER_PREFERENCES.process_attachments,
       trusted_sources_only: DEFAULT_USER_PREFERENCES.trusted_sources_only,
       capture_important_notices: DEFAULT_USER_PREFERENCES.capture_important_notices,
+      auto_export_to_sheets: DEFAULT_USER_PREFERENCES.auto_export_to_sheets,
       // Schedule options
       schedule_enabled: DEFAULT_USER_PREFERENCES.schedule_enabled,
       schedule_frequency: DEFAULT_USER_PREFERENCES.schedule_frequency,
@@ -523,6 +527,7 @@ export const createDefaultSettings = (userId: string): UserSettingsView => {
     process_attachments: DEFAULT_USER_PREFERENCES.process_attachments,
     trusted_sources_only: DEFAULT_USER_PREFERENCES.trusted_sources_only,
     capture_important_notices: DEFAULT_USER_PREFERENCES.capture_important_notices,
+    auto_export_to_sheets: DEFAULT_USER_PREFERENCES.auto_export_to_sheets,
     // Schedule options
     schedule_enabled: DEFAULT_USER_PREFERENCES.schedule_enabled,
     schedule_frequency: DEFAULT_USER_PREFERENCES.schedule_frequency,
