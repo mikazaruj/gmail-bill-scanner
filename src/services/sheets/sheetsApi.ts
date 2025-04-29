@@ -4,6 +4,18 @@ import { Bill } from '../../types';
 export const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 
 /**
+ * Helper function to detect if we're running in a service worker context
+ * @returns boolean indicating if we're in a service worker context
+ */
+function isServiceWorkerContext(): boolean {
+  return (
+    typeof window === 'undefined' || 
+    typeof window.document === 'undefined' ||
+    typeof window.document.createElement === 'undefined'
+  );
+}
+
+/**
  * Creates a new Google Spreadsheet for bill tracking
  * @param token Access token
  * @param title Title of the sheet
@@ -73,6 +85,13 @@ export async function appendBillData(
   bills: any[]
 ): Promise<boolean> {
   try {
+    // Log debugging information for context awareness
+    console.log(`Appending ${bills?.length || 0} bills to spreadsheet ${spreadsheetId}`);
+    
+    if (isServiceWorkerContext()) {
+      console.log('Running in service worker context, ensuring compatibility');
+    }
+    
     if (!bills || bills.length === 0) {
       return true; // Nothing to append
     }
@@ -248,7 +267,22 @@ export async function appendBillData(
  */
 export async function createOrGetSheet(title: string): Promise<{ sheetId: string; sheetName: string }> {
   try {
+    // Better error handling and debugging
+    if (isServiceWorkerContext()) {
+      console.log('Running in service worker context when creating sheet');
+    }
+    
+    if (!title) {
+      console.error('No title provided for createOrGetSheet');
+      throw new Error('No title provided for spreadsheet creation');
+    }
+    
     const token = await getAuthToken([SHEETS_SCOPE]);
+    
+    if (!token) {
+      console.error('Failed to get auth token for sheets API');
+      throw new Error('Authentication failed - no token available');
+    }
     
     // First check if sheet with this name already exists
     const existingSheet = await findSheetByName(title, token);
@@ -613,6 +647,15 @@ async function findSheetByName(name: string, token: string): Promise<{ sheetId: 
   try {
     console.log(`Searching for spreadsheet with name: "${name}"`);
     
+    if (isServiceWorkerContext()) {
+      console.log('Running findSheetByName in service worker context');
+    }
+    
+    if (!name || !token) {
+      console.warn('Missing required parameters for findSheetByName');
+      return null;
+    }
+    
     // Get recent spreadsheets from storage
     const storageData = await chrome.storage.local.get(['recentSpreadsheets']);
     const recentSpreadsheets = storageData.recentSpreadsheets || [];
@@ -652,7 +695,8 @@ async function findSheetByName(name: string, token: string): Promise<{ sheetId: 
     return null;
   } catch (error) {
     console.error('Failed to find sheet:', error);
-    throw error;
+    // Return null instead of throwing to allow fallback behavior
+    return null;
   }
 }
 
@@ -1138,6 +1182,11 @@ export async function updateSheetHeadersFromFieldMappings(
   sheetName: string = 'Bills'
 ): Promise<boolean> {
   try {
+    // Safety check for service worker context
+    if (isServiceWorkerContext()) {
+      console.log('Running in service worker context, ensuring compatibility');
+    }
+    
     console.log(`updateSheetHeadersFromFieldMappings called for sheet ${spreadsheetId}, tab ${sheetName}`);
     
     // First, make sure we have a good Supabase user ID

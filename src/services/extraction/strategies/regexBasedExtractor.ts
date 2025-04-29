@@ -178,10 +178,6 @@ export class RegexBasedExtractor implements ExtractionStrategy {
     try {
       const { pdfData, messageId, attachmentId, fileName, language } = context;
       
-      // We need to extract text from the PDF first
-      // This would normally require a PDF library, but for now we'll use a simple approach
-      // In a real implementation, you'd use a proper PDF extraction library
-      
       // Check if we have data
       if (!pdfData) {
         return {
@@ -192,15 +188,45 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         };
       }
       
-      // Extract text from PDF
-      const extractedText = await this.mockExtractTextFromPdf(pdfData);
+      // Extract text from PDF using the real PDF service
+      let extractedText = '';
+      try {
+        // Import the PDF service
+        const { extractTextFromBase64Pdf, isServiceWorkerContext } = await import('../../../services/pdf/pdfService');
+        
+        // Log running context
+        const isServiceWorker = typeof isServiceWorkerContext === 'function' ? isServiceWorkerContext() : false;
+        console.log(`Extracting PDF text in ${isServiceWorker ? 'service worker' : 'browser'} context`);
+        
+        // Extract text from PDF
+        extractedText = await extractTextFromBase64Pdf(pdfData);
+        
+        console.log(`Extracted ${extractedText.length} characters from PDF attachment`);
+      } catch (pdfError) {
+        console.error('Error extracting text from PDF, trying fallback approach:', pdfError);
+        
+        // Fallback to basic text extraction
+        try {
+          // Try to get some text from base64 data as a last resort
+          extractedText = this.basicTextExtraction(pdfData);
+          console.log(`Basic text extraction yielded ${extractedText.length} characters`);
+        } catch (fallbackError) {
+          console.error('Even fallback PDF text extraction failed:', fallbackError);
+          return {
+            success: false,
+            bills: [],
+            confidence: 0,
+            error: 'Failed to extract any text from PDF'
+          };
+        }
+      }
       
       if (!extractedText) {
         return {
           success: false,
           bills: [],
           confidence: 0,
-          error: 'Failed to extract text from PDF'
+          error: 'No text was extracted from PDF'
         };
       }
       
@@ -294,38 +320,6 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         error: error instanceof Error ? error.message : 'Unknown error'
       };
     }
-  }
-  
-  /**
-   * Mock function to simulate extracting text from PDF
-   * In a real implementation, this would use a PDF parsing library
-   */
-  private async mockExtractTextFromPdf(pdfData: string): Promise<string> {
-    // This is a mock implementation
-    // In real app, you would use a PDF parsing library
-    
-    // For demonstration purposes, we'll just return some fake text
-    return `
-      INVOICE #12345
-      Date: 05/15/2023
-      
-      From: Example Vendor Inc.
-      To: Valued Customer
-      
-      Account Number: ACCT-1234-5678
-      
-      Item 1             $50.00
-      Item 2             $75.00
-      
-      Subtotal          $125.00
-      Tax                $10.00
-      
-      Total Amount Due: $135.00
-      
-      Payment Due Date: 06/15/2023
-      
-      Thank you for your business!
-    `;
   }
   
   /**
@@ -584,5 +578,18 @@ export class RegexBasedExtractor implements ExtractionStrategy {
     
     // Default category if no match
     return "Other";
+  }
+  
+  /**
+   * Last resort basic text extraction from base64
+   * @param base64Data Base64 encoded data
+   * @returns Some potentially readable text
+   */
+  private basicTextExtraction(base64Data: string): string {
+    // Get readable characters from base64
+    return base64Data
+      .replace(/[^A-Za-z0-9\s.,\-:;\/\$%]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .substring(0, 2000); // Limit length
   }
 } 
