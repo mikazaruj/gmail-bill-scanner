@@ -16,6 +16,7 @@ export interface EmailExtractionContext {
   body: string;
   date: string;
   language?: 'en' | 'hu';
+  isTrustedSource?: boolean; // Whether the email is from a trusted source
 }
 
 /**

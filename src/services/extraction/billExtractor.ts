@@ -30,7 +30,10 @@ export class BillExtractor {
    */
   async extractFromEmail(
     message: GmailMessage, 
-    options: { language?: 'en' | 'hu' } = {}
+    options: { 
+      language?: 'en' | 'hu';
+      isTrustedSource?: boolean;
+    } = {}
   ): Promise<BillExtractionResult> {
     try {
       // Extract email metadata
@@ -62,7 +65,8 @@ export class BillExtractor {
           subject,
           body,
           date,
-          language: options.language
+          language: options.language,
+          isTrustedSource: options.isTrustedSource
         });
         
         if (result.success && result.bills.length > 0) {

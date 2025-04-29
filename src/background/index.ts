@@ -1724,9 +1724,18 @@ async function handleScanEmails(
         // Get email content using Gmail API
         const email = await getEmailById(messageId);
         
+        // Check if this email is from a trusted source
+        const headers = email.payload?.headers || [];
+        const from = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || '';
+        const fromEmail = extractEmailAddress(from);
+        const isTrustedSource = settings.trustedSourcesOnly && trustedSources.some(
+          source => source.email_address.toLowerCase() === fromEmail.toLowerCase()
+        );
+        
         // Process with our unified bill extractor
         const extractionResult = await billExtractor.extractFromEmail(email, {
-          language: settings.inputLanguage as 'en' | 'hu' | undefined
+          language: settings.inputLanguage as 'en' | 'hu' | undefined,
+          isTrustedSource // Pass the trusted source flag to the extractor
         });
         
         // Convert Bill objects to BillData for UI compatibility
@@ -1959,19 +1968,26 @@ async function handleExportToSheets(
   sendResponse: (response: { success: boolean, error?: string, spreadsheetUrl?: string }) => void
 ) {
   try {
-    console.log('Starting export to sheets process...');
+    console.log('==== EXPORT TO SHEETS - START ====');
+    console.log(`Bills in payload: ${payload.bills ? payload.bills.length : 0}`);
+    console.log(`Spreadsheet ID provided: ${payload.spreadsheetId ? 'Yes' : 'No'}`);
+    console.log('Running in service worker context:', typeof window === 'undefined' || typeof document === 'undefined');
     
     // Fix the undefined function issue by importing it first
     const { getAccessTokenWithRefresh } = await import('../services/auth/googleAuth');
     const token = await getAccessTokenWithRefresh();
     
     if (!token) {
+      const errorMsg = 'Not authenticated. Please sign in first.';
+      console.error(errorMsg);
       sendResponse({
         success: false,
-        error: 'Not authenticated. Please sign in first.'
+        error: errorMsg
       });
       return;
     }
+    
+    console.log('Authentication token obtained successfully');
     
     // Validate bills payload
     if (!payload.bills || !Array.isArray(payload.bills) || payload.bills.length === 0) {
@@ -1985,7 +2001,11 @@ async function handleExportToSheets(
     }
     
     const bills = payload.bills;
-    console.log(`Found ${bills.length} bills in payload`);
+    console.log(`Found ${bills.length} bills in payload:`);
+    // Log first bill for debugging
+    if (bills.length > 0) {
+      console.log('Sample bill:', JSON.stringify(bills[0]).substring(0, 200) + '...');
+    }
     
     // Get user identity for storing export info
     const userIdentity = await import('../services/identity/userIdentityService').then(module => {
@@ -2002,10 +2022,14 @@ async function handleExportToSheets(
       return;
     }
     
+    console.log('User identity resolved:', userIdentity.supabaseId);
+    
     // Get the user settings to check for existing spreadsheet ID
     console.log('Checking for existing spreadsheet in user settings...');
     const { getUserSettings } = await import('../services/settings');
     const userSettings = await getUserSettings(userIdentity.supabaseId as string);
+    
+    console.log('User settings retrieved:', userSettings ? 'Yes' : 'No');
     
     let spreadsheetId = payload.spreadsheetId;
     
@@ -2026,274 +2050,116 @@ async function handleExportToSheets(
       return;
     }
     
+    console.log(`Using spreadsheet ID: ${spreadsheetId}`);
+    
     // Now that we have a spreadsheet ID, append the bill data
     try {
       console.log(`Exporting ${bills.length} bills to spreadsheet ${spreadsheetId}...`);
       
-      // Import the appendBillData function
-      const sheetsApi = await import('../services/sheets/sheetsApi');
-      
-      // Append the bill data to the spreadsheet - we catch errors here specifically
-      // to handle the "document is not defined" error that might happen
+      // Try direct API approach first - this avoids document issues in service workers
       try {
-        const success = await sheetsApi.appendBillData(token, spreadsheetId, bills);
+        console.log('Using direct API approach for export...');
         
-        if (!success) {
-          throw new Error('Failed to append bill data to spreadsheet');
+        // Prepare simple data rows with basic fields
+        const simpleRows = bills.map(bill => {
+          return [
+            bill.vendor || bill.issuer_name || '',     // A: Vendor
+            String(bill.amount || bill.total_amount || '0'),  // B: Amount
+            formatDateForSheet(bill.date || bill.invoice_date),         // C: Date
+            formatDateForSheet(bill.dueDate || bill.due_date),         // D: Due Date
+            bill.accountNumber || bill.account_number || '',  // E: Account Number
+            bill.paid ? 'Yes' : 'No',                 // F: Paid
+            bill.category || bill.bill_category || '', // G: Category
+            bill.emailId || '',                       // H: Email ID
+            bill.attachmentId || ''                  // I: Attachment ID
+          ];
+        });
+        
+        console.log(`Attempting direct append of ${simpleRows.length} rows to sheet...`);
+        console.log('Sample row data:', simpleRows[0]);
+        
+        // Direct API call to append values - this works in service workers
+        const appendRange = 'Bills!A2:I';
+        const response = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${appendRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              values: simpleRows,
+            }),
+          }
+        );
+        
+        // Check for response errors
+        if (!response.ok) {
+          const responseText = await response.text();
+          console.error('Direct append failed with status:', response.status);
+          console.error('Response text:', responseText);
+          
+          let errorData;
+          try {
+            errorData = JSON.parse(responseText);
+          } catch (e) {
+            errorData = { error: { message: responseText } };
+          }
+          
+          throw new Error(`Sheets API error: ${errorData.error?.message || responseText || 'Unknown error'}`);
         }
         
-        console.log('Successfully exported bills to spreadsheet');
+        console.log('Successfully exported bills to spreadsheet using direct API approach');
         
         // Generate spreadsheet URL for response
         const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-        
-        // Update usage stats if successful
-        if (userIdentity.supabaseId) {
-          try {
-            const { updateUserProcessingStats } = await import('../services/supabase/client');
-            await updateUserProcessingStats(userIdentity.supabaseId, {
-              last_processed_at: new Date().toISOString()
-            });
-          } catch (statsError) {
-            console.warn('Failed to update user stats after export:', statsError);
-            // Continue anyway, this is not a critical error
-          }
-        }
         
         sendResponse({
           success: true,
           spreadsheetUrl
         });
-      } catch (appendError) {
-        console.error('Error in appendBillData:', appendError);
         
-        // If there was a document not defined error, try to update the headers first and then try again
-        if (appendError instanceof Error && 
-            (appendError.message.includes('document is not defined') || 
-             appendError.message.includes('document undefined'))) {
+        console.log('==== EXPORT TO SHEETS - SUCCESS ====');
+        return;
+      } catch (directApiError) {
+        console.error('Direct API export attempt failed:', directApiError);
+        
+        // If direct API fails, try the sheetsApi module as a fallback
+        console.log('Falling back to sheetsApi module approach...');
+        
+        // Import the appendBillData function
+        const sheetsApi = await import('../services/sheets/sheetsApi');
+        
+        // Append the bill data to the spreadsheet
+        try {
+          const success = await sheetsApi.appendBillData(token, spreadsheetId, bills);
           
-          console.log('Detected document not defined error, will try a direct append approach...');
-          
-          try {
-            // Fallback approach: Direct API call to append values without using document-dependent code
-            
-            // First get the user's field mappings to understand their column structure
-            const { getFieldMappings } = await import('../services/fieldMapping');
-            console.log('Attempting to get user field mappings for user ID:', userIdentity.supabaseId);
-            
-            const fieldMappings = await getFieldMappings(userIdentity.supabaseId as string);
-            
-            // Get enabled field mappings sorted by display order
-            const enabledMappings = fieldMappings && fieldMappings.length > 0 
-              ? [...fieldMappings.filter((m: any) => m.is_enabled)]
-                  .sort((a: any, b: any) => a.display_order - b.display_order)
-              : [];
-            
-            if (enabledMappings.length > 0) {
-              console.log(`Found ${enabledMappings.length} enabled field mappings, using custom structure`);
-              
-              // Create a mapping from field name to column index
-              const fieldNameToColumnMap: Record<string, number> = {};
-              const columnLetters: string[] = [];
-              
-              // Collect column info and build the field name mapping
-              enabledMappings.forEach((mapping, index) => {
-                const fieldName = mapping.name.toLowerCase();
-                fieldNameToColumnMap[fieldName] = index;
-                
-                // Store column letter if available, or calculate it
-                const columnLetter = mapping.column_mapping || String.fromCharCode(65 + index);
-                columnLetters.push(columnLetter);
-              });
-              
-              // Define property to field name mapping
-              const propToFieldNameMap: Record<string, string> = {
-                'vendor': 'issuer_name',
-                'amount': 'total_amount',
-                'date': 'due_date',
-                'dueDate': 'due_date',
-                'invoiceDate': 'invoice_date',
-                'accountNumber': 'account_number',
-                'billCategory': 'bill_category',
-                'customerAddress': 'customer_address',
-                'invoiceNumber': 'invoice_number',
-                // Keep original mappings too
-                'issuer_name': 'issuer_name',
-                'total_amount': 'total_amount',
-                'invoice_date': 'invoice_date',
-                'due_date': 'due_date',
-                'account_number': 'account_number',
-                'bill_category': 'bill_category',
-                'customer_address': 'customer_address',
-                'invoice_number': 'invoice_number'
-              };
-              
-              // Prepare rows based on custom mappings
-              const customRows = bills.map(bill => {
-                // Create empty row with enough cells for all enabled fields
-                const row = Array(enabledMappings.length).fill('');
-                
-                // Map each bill property to the appropriate column based on field mappings
-                Object.entries(bill).forEach(([prop, value]) => {
-                  // Normalize the property name to match field mapping names
-                  const normalizedProp = propToFieldNameMap[prop] || prop.toLowerCase();
-                  
-                  // Find the column index for this field
-                  const columnIndex = fieldNameToColumnMap[normalizedProp];
-                  
-                  if (columnIndex !== undefined) {
-                    // Format the value appropriately
-                    if (prop === 'date' || prop === 'dueDate' || prop === 'invoice_date' || prop === 'due_date') {
-                      // Format dates
-                      if (value) {
-                        const dateValue = new Date(value as string | number | Date);
-                        if (!isNaN(dateValue.getTime())) {
-                          row[columnIndex] = dateValue.toISOString().split('T')[0]; // YYYY-MM-DD
-                        }
-                      }
-                    } else if (typeof value === 'boolean') {
-                      row[columnIndex] = value ? 'Yes' : 'No';
-                    } else if (typeof value === 'number') {
-                      row[columnIndex] = value.toString();
-                    } else {
-                      row[columnIndex] = value !== null && value !== undefined ? String(value) : '';
-                    }
-                  }
-                });
-                
-                return row;
-              });
-              
-              console.log(`Prepared ${customRows.length} rows using custom field mappings`);
-              
-              // Calculate appropriate range based on field mappings
-              // Use the column letters to determine the rightmost column
-              const lastColumnLetter = enabledMappings[enabledMappings.length - 1].column_mapping || 
-                String.fromCharCode(65 + enabledMappings.length - 1);
-                
-              const appendRange = `Bills!A2:${lastColumnLetter}`;
-              console.log(`Using range ${appendRange} for direct append`);
-              
-              // Direct API call to append values
-              const response = await fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${appendRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-                {
-                  method: 'POST',
-                  headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                    values: customRows,
-                  }),
-                }
-              );
-              
-              if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(`Sheets API error: ${errorData.error?.message || 'Unknown error'}`);
-              }
-              
-              console.log('Successfully exported bills to spreadsheet using direct API approach with custom mappings');
-              
-              // Generate spreadsheet URL for response
-              const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-              
-              sendResponse({
-                success: true,
-                spreadsheetUrl
-              });
-              return;
-            } else {
-              console.log('No enabled field mappings found, using default structure for direct append');
-              
-              // 1. Prepare simple data rows with basic fields only
-              const simpleRows = bills.map(bill => {
-                return [
-                  bill.vendor || bill.issuer_name || '',     // A: Vendor
-                  String(bill.amount || bill.total_amount || '0'),  // B: Amount
-                  bill.date || bill.due_date || '',         // C: Due Date
-                  bill.accountNumber || bill.account_number || '',  // D: Account Number
-                  bill.paid ? 'Yes' : 'No',                 // E: Paid
-                  bill.category || bill.bill_category || '', // F: Category
-                  bill.emailId || '',                       // G: Email ID
-                  bill.attachmentId || '',                  // H: Attachment ID
-                  bill.createdAt || new Date().toISOString().split('T')[0] // I: Created At
-                ];
-              });
-              
-              console.log(`Attempting direct append of ${simpleRows.length} rows to sheet...`);
-              
-              // 2. Use the lower-level appendSheetValues function
-              const appendRange = 'Bills!A2:I';
-              const response = await fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${appendRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-                {
-                  method: 'POST',
-                  headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                    values: simpleRows,
-                  }),
-                }
-              );
-              
-              if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(`Sheets API error: ${errorData.error?.message || 'Unknown error'}`);
-              }
-              
-              console.log('Successfully exported bills to spreadsheet using direct API approach with default fields');
-              
-              // Generate spreadsheet URL for response
-              const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-              
-              sendResponse({
-                success: true,
-                spreadsheetUrl
-              });
-              return;
-            }
-          } catch (directAppendError) {
-            console.error('Failed direct append attempt:', directAppendError);
-            
-            // Last resort: Try updating headers and then retry original approach
-            try {
-              console.log('Trying to update sheet headers and retry original approach...');
-              await sheetsApi.updateSheetHeadersFromFieldMappings(spreadsheetId, 'Bills');
-              
-              // Try again with the export
-              const retrySuccess = await sheetsApi.appendBillData(token, spreadsheetId, bills);
-              
-              if (!retrySuccess) {
-                throw new Error('Failed to append bill data after updating headers');
-              }
-              
-              console.log('Successfully exported bills to spreadsheet after fixing headers');
-              
-              // Generate spreadsheet URL for response
-              const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-              
-              sendResponse({
-                success: true,
-                spreadsheetUrl
-              });
-              return;
-            } catch (retryError) {
-              console.error('Failed all attempts to export bills:', retryError);
-              throw retryError; // Let the outer error handler take care of it
-            }
+          if (!success) {
+            throw new Error('Failed to append bill data to spreadsheet');
           }
-        } else {
-          // For other errors, just rethrow
-          throw appendError;
+          
+          console.log('Successfully exported bills to spreadsheet using sheetsApi module');
+          
+          // Generate spreadsheet URL for response
+          const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+          
+          sendResponse({
+            success: true,
+            spreadsheetUrl
+          });
+          
+          console.log('==== EXPORT TO SHEETS - SUCCESS ====');
+          return;
+        } catch (appendError) {
+          console.error('Error in appendBillData:', appendError);
+          throw appendError; // Let the outer error handler take care of it
         }
       }
     } catch (exportError) {
       const errorMsg = `Error exporting bills to spreadsheet: ${exportError instanceof Error ? exportError.message : 'Unknown error'}`;
       console.error(errorMsg);
+      console.error('==== EXPORT TO SHEETS - FAILED ====');
       sendResponse({
         success: false,
         error: errorMsg
@@ -2302,10 +2168,25 @@ async function handleExportToSheets(
   } catch (error) {
     const errorMsg = `Export to sheets failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
     console.error(errorMsg);
+    console.error('==== EXPORT TO SHEETS - FATAL ERROR ====');
     sendResponse({
       success: false,
       error: errorMsg
     });
+  }
+}
+
+// Helper function to format dates for Google Sheets
+function formatDateForSheet(dateLike: any): string {
+  if (!dateLike) return '';
+  
+  try {
+    const date = new Date(dateLike);
+    if (isNaN(date.getTime())) return '';
+    
+    return date.toISOString().split('T')[0]; // YYYY-MM-DD format
+  } catch (e) {
+    return '';
   }
 }
 
@@ -2632,3 +2513,21 @@ async function getEmailById(messageId: string): Promise<any> {
     throw error;
   }
 } 
+
+/**
+ * Extracts the email address from a "From" header value
+ * 
+ * @param fromHeader The value of the From header (e.g., "John Doe <john@example.com>")
+ * @returns The extracted email address
+ */
+function extractEmailAddress(fromHeader: string): string {
+  const emailRegex = /<([^>]+)>|([^\s<]+@[^\s>]+)/;
+  const match = fromHeader.match(emailRegex);
+  
+  if (match) {
+    // Return the first capturing group that has a value
+    return match[1] || match[2] || '';
+  }
+  
+  return fromHeader; // Return original string if no email pattern found
+}
