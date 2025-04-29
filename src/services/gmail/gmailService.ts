@@ -5,8 +5,8 @@
  */
 
 import { getAccessToken } from "../auth/googleAuth";
-import ScannedBill from "../../types/ScannedBill";
-import { processBillFromEmail } from "../../extractors/emailBillExtractor";
+import { Bill } from "../../types/Bill";
+import { getSharedBillExtractor } from "../extraction/extractorFactory";
 
 // Base URL for Gmail API
 const GMAIL_API_BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -54,10 +54,10 @@ export async function searchEmails(
 }
 
 /**
- * Fetches a specific email message by ID
+ * Fetches full email details by ID
  * 
- * @param messageId The ID of the message to fetch
- * @returns The email message data
+ * @param messageId Email message ID
+ * @returns Full email message object
  */
 export async function getEmailById(messageId: string): Promise<any> {
   try {
@@ -94,23 +94,33 @@ export async function getEmailById(messageId: string): Promise<any> {
  * Scans emails for bill information
  * 
  * @param maxResults Maximum number of emails to scan
- * @returns List of scanned bills
+ * @param options Scan options (language, etc.)
+ * @returns List of extracted bills
  */
-export async function scanEmailsForBills(maxResults: number = 20): Promise<ScannedBill[]> {
+export async function scanEmailsForBills(
+  maxResults: number = 20,
+  options: { language?: 'en' | 'hu' } = {}
+): Promise<Bill[]> {
   try {
-    const messageIds = await searchEmails(undefined, maxResults);
-    const bills: ScannedBill[] = [];
+    // Get the bill extractor instance
+    const billExtractor = getSharedBillExtractor();
     
+    // Search for emails using the search query
+    const messageIds = await searchEmails(undefined, maxResults);
+    const bills: Bill[] = [];
+    
+    // Process each email
     for (const messageId of messageIds) {
       try {
+        // Get the email content
         const email = await getEmailById(messageId);
-        const extractedBill = await processBillFromEmail(email);
         
-        if (extractedBill) {
-          bills.push({
-            ...extractedBill,
-            id: messageId,
-          });
+        // Process the email with our unified extractor
+        const extractionResult = await billExtractor.extractFromEmail(email, options);
+        
+        // Add any extracted bills to our results
+        if (extractionResult.success && extractionResult.bills.length > 0) {
+          bills.push(...extractionResult.bills);
         }
       } catch (error) {
         console.error(`Error processing email ${messageId}:`, error);
@@ -162,33 +172,26 @@ export function extractSender(message: any): string {
  * @returns Plain text body or empty string if not found
  */
 export function extractPlainTextBody(message: any): string {
-  const getParts = (part: any): any[] => {
-    if (!part) return [];
+  // Helper function to extract text from message parts
+  const extractTextFromPart = (part: any): string => {
+    if (!part) return "";
     
-    const parts: any[] = [];
-    
-    if (part.mimeType === "text/plain" && part.body?.data) {
-      parts.push(part);
+    if (part.mimeType === "text/plain" && part.body && part.body.data) {
+      // Decode base64
+      return atob(part.body.data.replace(/-/g, '+').replace(/_/g, '/'));
     }
     
-    if (part.parts) {
-      part.parts.forEach((subpart: any) => {
-        parts.push(...getParts(subpart));
-      });
+    if (part.parts && Array.isArray(part.parts)) {
+      for (const subPart of part.parts) {
+        const text = extractTextFromPart(subPart);
+        if (text) {
+          return text;
+        }
+      }
     }
     
-    return parts;
+    return "";
   };
   
-  const parts = getParts(message.payload);
-  
-  if (parts.length === 0) {
-    return "";
-  }
-  
-  // Base64 decode the body
-  const base64Text = parts[0].body.data.replace(/-/g, '+').replace(/_/g, '/');
-  const decodedText = atob(base64Text);
-  
-  return decodedText;
+  return extractTextFromPart(message.payload);
 } 

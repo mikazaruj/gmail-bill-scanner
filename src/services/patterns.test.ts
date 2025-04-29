@@ -1,4 +1,4 @@
-import { extractBillData } from '../services/billExtractor';
+import { extractBillData } from './billExtractor';
 // Jest types
 import '@types/jest';
 

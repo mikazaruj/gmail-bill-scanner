@@ -1,4 +1,4 @@
-import { BillPattern, allPatterns } from '../extractors/patterns';
+import { BillPattern, allPatterns } from '../services/extraction/patterns';
 
 export interface ExtractedBill {
   type: string;
@@ -49,15 +49,17 @@ export function extractBillData(subject: string, body: string): ExtractedBill | 
     if (!extraction.amount) continue;
     
     // Extract due date if available
-    for (const dueDateRegex of pattern.contentPatterns.dueDate) {
-      const match = fullText.match(dueDateRegex);
-      if (match && match[1]) {
-        const parsedDate = parseDateFromString(match[1], pattern.language);
-        if (parsedDate) {
-          extraction.dueDate = parsedDate;
-          extraction.confidence = extraction.confidence! + 0.1;
+    if (pattern.contentPatterns.dueDate) {
+      for (const dueDateRegex of pattern.contentPatterns.dueDate) {
+        const match = fullText.match(dueDateRegex);
+        if (match && match[1]) {
+          const parsedDate = parseDateFromString(match[1], pattern.language);
+          if (parsedDate) {
+            extraction.dueDate = parsedDate;
+            extraction.confidence = extraction.confidence! + 0.1;
+          }
+          break;
         }
-        break;
       }
     }
     

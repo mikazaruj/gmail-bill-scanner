@@ -9,8 +9,6 @@
 // Import core dependencies and types
 import { getEmailContent, getAttachments } from '../services/gmail/gmailApi';
 import { createSpreadsheet, appendBillData } from '../services/sheets/sheetsApi';
-import { extractBillsFromEmails } from '../services/extractors/emailBillExtractor';
-import { extractBillsFromPdfs } from '../services/extractors/pdfBillExtractor';
 import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../types/Message';
 import { 
   isAuthenticated,
@@ -25,6 +23,7 @@ import { searchEmails } from '../services/gmail/gmailService';
 import { ensureUserRecord } from '../services/identity/userIdentityService';
 import { handleError } from '../services/error/errorService';
 import { buildBillSearchQuery } from '../services/gmailSearchBuilder';
+import { Bill } from '../types/Bill';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -1111,7 +1110,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const recentSpreadsheets = storageData.recentSpreadsheets || [];
           
           // Return the list of spreadsheets
-          const sheets = [];
+          interface SpreadsheetInfo {
+            id: string;
+            name: string;
+          }
+          
+          const sheets: SpreadsheetInfo[] = [];
           
           // Add last used spreadsheet if available
           if (lastSpreadsheetId) {
@@ -1499,6 +1503,7 @@ async function handleScanEmails(
     let getTrustedSources;
     let updateUserStats;
     let resolveUserIdentity;
+    let getSharedBillExtractor;
     
     try {
       const { 
@@ -1509,14 +1514,16 @@ async function handleScanEmails(
       } = await import('../services/supabase/client');
       
       const { resolveUserIdentity: resolveIdentity } = await import('../services/identity/userIdentityService');
+      const { getSharedBillExtractor: getExtractor } = await import('../services/extraction/extractorFactory');
       
       resolveUserIdentity = resolveIdentity;
       supabaseClient = await getSupabaseClient();
       getUserSettings = getSettings;
       getTrustedSources = getTrustedEmailSources;
       updateUserStats = updateUserProcessingStats;
+      getSharedBillExtractor = getExtractor;
     } catch (error) {
-      console.error('Failed to import Supabase client functions:', error);
+      console.error('Failed to import required modules:', error);
       // Continue with local storage only if import fails
     }
 
@@ -1652,6 +1659,14 @@ async function handleScanEmails(
     
     console.log(`Found ${messageIds.length} matching emails, processing...`);
     
+    // Get the bill extractor
+    const billExtractor = getSharedBillExtractor ? getSharedBillExtractor() : null;
+    if (!billExtractor) {
+      console.error('Bill extractor not available');
+      sendResponse({ success: false, error: 'Bill extractor not available' });
+      return;
+    }
+    
     // Stats for tracking processing
     const stats = {
       totalProcessed: messageIds.length,
@@ -1666,61 +1681,114 @@ async function handleScanEmails(
     for (const messageId of messageIds) {
       try {
         // Get email content using Gmail API
-        const emailData = await getEmailContent(messageId);
+        const email = await getEmailById(messageId);
         
-        // Extract bills from email content
-        const extractedBills = await extractBillsFromEmails([emailData]);
+        // Process with our unified bill extractor
+        const extractionResult = await billExtractor.extractFromEmail(email, {
+          language: settings.inputLanguage as 'en' | 'hu' | undefined
+        });
         
-        if (extractedBills.length > 0) {
+        // Convert Bill objects to BillData for UI compatibility
+        let extractedBills: BillData[] = [];
+        
+        if (extractionResult.success && extractionResult.bills.length > 0) {
+          // Convert each Bill to BillData
+          extractedBills = extractionResult.bills.map(bill => transformBillToBillData(bill));
+          
           // Add to bills array
           bills.push(...extractedBills);
           stats.billsFound += extractedBills.length;
           
+          // Get email metadata for logging
+          const headers = email.payload?.headers || [];
+          const from = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || '';
+          const subject = headers.find((h: any) => h.name.toLowerCase() === 'subject')?.value || '';
+          
           // Record processing result for stats
           processedResults[messageId] = {
             message_id: messageId,
-            from_address: emailData.from,
-            subject: emailData.subject,
+            from_address: from,
+            subject: subject,
             user_id: userId,
             processed_at: new Date().toISOString(),
             status: 'success',
             bills_extracted: extractedBills.length,
+            confidence: extractionResult.confidence || 0,
             error_message: null
           };
           
-          // Log success for each bill type
+          // Log success for each bill
           for (const bill of extractedBills) {
             console.log(`Successfully extracted bill: ${bill.vendor || 'Unknown'} - ${bill.amount || 0}`);
           }
         } else {
+          // Get email metadata for logging
+          const headers = email.payload?.headers || [];
+          const from = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || '';
+          const subject = headers.find((h: any) => h.name.toLowerCase() === 'subject')?.value || '';
+          
           // Record processing result with zero bills
           processedResults[messageId] = {
             message_id: messageId,
-            from_address: emailData.from,
-            subject: emailData.subject,
+            from_address: from,
+            subject: subject,
             user_id: userId,
             processed_at: new Date().toISOString(),
             status: 'no_bills',
             bills_extracted: 0,
-            error_message: null
+            confidence: extractionResult.confidence || 0,
+            error_message: extractionResult.error || null
           };
         }
         
         // Process attachments if enabled
         if (settings.processAttachments) {
           try {
-            const attachments = await getAttachments(messageId);
+            const headers = email.payload?.headers || [];
+            const attachmentIds = extractAttachmentIds(email);
             
-            if (attachments && attachments.length > 0) {
-              console.log(`Processing ${attachments.length} attachments for message ${messageId}`);
+            if (attachmentIds.length > 0) {
+              console.log(`Found ${attachmentIds.length} attachments for message ${messageId}`);
               
-              // TODO: Extract bills from PDF attachments
-              // This is a placeholder for PDF attachment processing
-              // const pdfBills = await extractBillsFromPdfs(attachments);
-              // if (pdfBills.length > 0) {
-              //   bills.push(...pdfBills);
-              //   stats.billsFound += pdfBills.length;
-              // }
+              for (const attachmentData of attachmentIds) {
+                try {
+                  // Only process PDF attachments
+                  if (!attachmentData.fileName.toLowerCase().endsWith('.pdf')) {
+                    continue;
+                  }
+                  
+                  // Fetch the attachment content
+                  const attachment = await fetchAttachment(messageId, attachmentData.id);
+                  
+                  if (attachment) {
+                    console.log(`Processing PDF attachment: ${attachmentData.fileName}`);
+                    
+                    // Process with our unified bill extractor
+                    const pdfResult = await billExtractor.extractFromPdf(
+                      attachment,
+                      messageId,
+                      attachmentData.id,
+                      attachmentData.fileName,
+                      {
+                        language: settings.inputLanguage as 'en' | 'hu' | undefined
+                      }
+                    );
+                    
+                    if (pdfResult.success && pdfResult.bills.length > 0) {
+                      // Convert each Bill to BillData
+                      const pdfBills = pdfResult.bills.map(bill => transformBillToBillData(bill));
+                      
+                      // Add to bills array
+                      bills.push(...pdfBills);
+                      stats.billsFound += pdfBills.length;
+                      
+                      console.log(`Successfully extracted ${pdfBills.length} bills from PDF attachment`);
+                    }
+                  }
+                } catch (pdfError) {
+                  console.error(`Error processing PDF attachment ${attachmentData.id}:`, pdfError);
+                }
+              }
             }
           } catch (attachmentError) {
             console.error(`Error processing attachments for ${messageId}:`, attachmentError);
@@ -1730,29 +1798,39 @@ async function handleScanEmails(
         console.error(`Error processing email ${messageId}:`, emailError);
         stats.errors++;
         
-        // Try to extract the email from and subject if available
-        let fromAddress = 'unknown';
-        let subject = 'unknown';
-        
+        // Try to get minimal email info for logging
         try {
-          const emailData = await getEmailContent(messageId);
-          fromAddress = emailData.from;
-          subject = emailData.subject;
+          const email = await getEmailById(messageId);
+          const headers = email.payload?.headers || [];
+          const from = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || 'unknown';
+          const subject = headers.find((h: any) => h.name.toLowerCase() === 'subject')?.value || 'unknown';
+          
+          // Record error for stats
+          processedResults[messageId] = {
+            message_id: messageId,
+            from_address: from,
+            subject: subject,
+            user_id: userId,
+            processed_at: new Date().toISOString(),
+            status: 'error',
+            bills_extracted: 0,
+            error_message: emailError instanceof Error ? emailError.message : String(emailError)
+          };
         } catch (headerError) {
           console.error(`Could not get email headers for ${messageId}:`, headerError);
+          
+          // Record error with minimal info
+          processedResults[messageId] = {
+            message_id: messageId,
+            from_address: 'unknown',
+            subject: 'unknown',
+            user_id: userId,
+            processed_at: new Date().toISOString(),
+            status: 'error',
+            bills_extracted: 0,
+            error_message: emailError instanceof Error ? emailError.message : String(emailError)
+          };
         }
-        
-        // Record error for stats
-        processedResults[messageId] = {
-          message_id: messageId,
-          from_address: fromAddress,
-          subject: subject,
-          user_id: userId,
-          processed_at: new Date().toISOString(),
-          status: 'error',
-          bills_extracted: 0,
-          error_message: emailError instanceof Error ? emailError.message : String(emailError)
-        };
       }
     }
     
@@ -2159,5 +2237,125 @@ async function storeTokenDirectly(userId: string, token: string): Promise<{ succ
   } catch (error) {
     console.error('Error in storeTokenDirectly replacement:', error);
     return { success: false, error };
+  }
+} 
+
+/**
+ * Transform a Bill object to the BillData format for UI compatibility
+ */
+function transformBillToBillData(bill: Bill): BillData {
+  return {
+    id: bill.id,
+    vendor: bill.vendor,
+    amount: bill.amount,
+    date: bill.date,
+    currency: bill.currency,
+    category: bill.category,
+    dueDate: bill.dueDate,
+    isPaid: bill.isPaid,
+    notes: bill.notes,
+    accountNumber: bill.accountNumber,
+    emailId: bill.source?.messageId,
+    // Include any attachment ID from the source if available
+    attachmentId: bill.source?.attachmentId
+  };
+}
+
+/**
+ * Extract attachment IDs from email
+ */
+function extractAttachmentIds(email: any): Array<{ id: string; fileName: string }> {
+  const attachments: Array<{ id: string; fileName: string }> = [];
+  
+  try {
+    const parts = email.payload?.parts || [];
+    
+    for (const part of parts) {
+      if (part.body?.attachmentId && part.filename) {
+        attachments.push({
+          id: part.body.attachmentId,
+          fileName: part.filename
+        });
+      }
+      
+      // Check nested parts if any
+      if (part.parts && Array.isArray(part.parts)) {
+        for (const nestedPart of part.parts) {
+          if (nestedPart.body?.attachmentId && nestedPart.filename) {
+            attachments.push({
+              id: nestedPart.body.attachmentId,
+              fileName: nestedPart.filename
+            });
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error extracting attachment IDs:', error);
+  }
+  
+  return attachments;
+}
+
+/**
+ * Fetch attachment content
+ */
+async function fetchAttachment(messageId: string, attachmentId: string): Promise<string | null> {
+  try {
+    const token = await getAccessToken();
+    if (!token) {
+      throw new Error('No valid authentication token');
+    }
+    
+    const response = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch attachment: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    return data.data || null; // Base64 encoded attachment data
+  } catch (error) {
+    console.error(`Error fetching attachment ${attachmentId}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Get email by ID
+ */
+async function getEmailById(messageId: string): Promise<any> {
+  try {
+    const token = await getAccessToken();
+    if (!token) {
+      throw new Error('No valid authentication token');
+    }
+    
+    const response = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch email: ${response.status} ${response.statusText}`);
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error(`Error fetching email ${messageId}:`, error);
+    throw error;
   }
 } 
