@@ -313,60 +313,29 @@ async function setupSheetHeaders(spreadsheetId: string, sheetName: string, token
   try {
     console.log(`Setting up sheet headers for spreadsheet ${spreadsheetId}, sheet ${sheetName}`);
     
-    // Get the field mapping utility functions
-    const { getFieldMappings, fixColumnMappingIssues, getSupabaseUserIdFromStorage } = await import('../fieldMapping');
+    // Default headers if no custom mappings can be accessed
+    const defaultHeaders = [
+      'Vendor', 'Amount', 'Due Date', 'Account Number', 'Paid', 
+      'Category', 'Email ID', 'Attachment ID', 'Created At'
+    ];
     
-    // Get user ID safely from storage using the utility function
-    const userId = await getSupabaseUserIdFromStorage();
+    // Since we're in a service worker context, we can't use document-dependent code
+    // Just use default headers to allow the process to continue
+    console.log('Using default headers in service worker context');
     
-    if (!userId) {
-      console.warn('No valid Supabase user ID found in storage, using default headers');
-      await setupDefaultHeaders(spreadsheetId, sheetName, token);
-      return;
-    }
+    // Apply default headers
+    const lastColumnLetter = String.fromCharCode(64 + defaultHeaders.length);
+    await updateSheetValues(
+      spreadsheetId,
+      `${sheetName}!A1:${lastColumnLetter}1`,
+      [defaultHeaders],
+      token
+    );
     
-    console.log(`Using Supabase user ID for field mappings: ${userId}`);
+    // Format the header row
+    await formatHeaderRow(spreadsheetId, sheetName, token);
+    console.log('Headers set up successfully with default values');
     
-    try {
-      // Fix any column mapping issues before proceeding
-      console.log('Checking and fixing any column mapping issues');
-      await fixColumnMappingIssues(userId);
-      
-      // Now get the fixed field mappings
-      const fieldMappings = await getFieldMappings(userId);
-      console.log(`Retrieved ${fieldMappings.length} field mappings for sheet headers`);
-      
-      // Get enabled field mappings sorted by display order
-      const enabledMappings = fieldMappings.length > 0 
-        ? [...fieldMappings.filter((m: any) => m.is_enabled)].sort((a: any, b: any) => a.display_order - b.display_order)
-        : [];
-      
-      console.log(`Found ${enabledMappings.length} enabled field mappings sorted by display_order`);
-      
-      // Also verify that column mappings match display order (they should be sequential A-Z)
-      const hasConsistentColumns = enabledMappings.every((mapping, index) => {
-        const expectedColumn = String.fromCharCode(65 + index);
-        const isConsistent = mapping.column_mapping === expectedColumn;
-        if (!isConsistent) {
-          console.warn(`Column mapping inconsistency: mapping at index ${index} has column ${mapping.column_mapping} instead of expected ${expectedColumn}`);
-        }
-        return isConsistent;
-      });
-      
-      if (!hasConsistentColumns && enabledMappings.length > 0) {
-        console.warn('Column mappings are inconsistent with display order. Will create headers based on display order only.');
-      }
-      
-      if (enabledMappings.length > 0) {
-        await setupCustomHeaders(spreadsheetId, sheetName, token, enabledMappings);
-      } else {
-        console.log('No enabled field mappings found, using default headers');
-        await setupDefaultHeaders(spreadsheetId, sheetName, token);
-      }
-    } catch (error) {
-      console.warn('Error getting or fixing field mappings for headers, using default columns:', error);
-      await setupDefaultHeaders(spreadsheetId, sheetName, token);
-    }
   } catch (error) {
     console.error('Failed to set up sheet headers:', error);
     throw error;

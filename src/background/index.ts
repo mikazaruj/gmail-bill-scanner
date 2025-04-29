@@ -1961,118 +1961,119 @@ async function handleExportToSheets(
   try {
     console.log('Starting export to sheets process...');
     
-    const token = await getAccessToken();
+    // Fix the undefined function issue by importing it first
+    const { getAccessTokenWithRefresh } = await import('../services/auth/googleAuth');
+    const token = await getAccessTokenWithRefresh();
+    
     if (!token) {
-      console.error('Export failed: No valid authentication token');
-      sendResponse({ success: false, error: 'Not authenticated with Google. Please sign in again.' });
+      sendResponse({
+        success: false,
+        error: 'Not authenticated. Please sign in first.'
+      });
       return;
     }
     
-    // Get bills either from payload or storage
-    let bills: BillData[] = payload.bills || [];
-    
-    // If no bills in payload, get from storage
-    if (bills.length === 0) {
-      console.log('No bills in payload, checking storage...');
-      const data = await chrome.storage.local.get('extractedBills');
-      bills = data.extractedBills || [];
-      console.log(`Found ${bills.length} bills in storage`);
-    } else {
-      console.log(`Found ${bills.length} bills in payload`);
-    }
-    
-    if (bills.length === 0) {
-      console.error('Export failed: No bills to export');
-      sendResponse({ success: false, error: 'No bills to export' });
+    // Validate bills payload
+    if (!payload.bills || !Array.isArray(payload.bills) || payload.bills.length === 0) {
+      const errorMsg = 'No bills provided for export';
+      console.error(errorMsg);
+      sendResponse({
+        success: false,
+        error: errorMsg
+      });
       return;
     }
     
-    // Get or create the spreadsheet
+    const bills = payload.bills;
+    console.log(`Found ${bills.length} bills in payload`);
+    
+    // Get user identity for storing export info
+    const userIdentity = await import('../services/identity/userIdentityService').then(module => {
+      return module.resolveUserIdentity();  // Using resolveUserIdentity instead of getUserIdentity
+    });
+    
+    if (!userIdentity || !userIdentity.supabaseId) {
+      const errorMsg = 'Cannot export: User identity not found';
+      console.error(errorMsg);
+      sendResponse({
+        success: false,
+        error: errorMsg
+      });
+      return;
+    }
+    
+    // Get the user settings to check for existing spreadsheet ID
+    console.log('Checking for existing spreadsheet in user settings...');
+    const { getUserSettings } = await import('../services/settings');
+    const userSettings = await getUserSettings(userIdentity.supabaseId as string);
+    
     let spreadsheetId = payload.spreadsheetId;
-    let spreadsheetUrl;
     
-    if (!spreadsheetId) {
-      // Create a new spreadsheet
-      console.log('Creating new spreadsheet for export...');
-      const date = new Date().toLocaleDateString();
-      
-      try {
-        const { spreadsheetId: newId } = await createSpreadsheet(token, `Bills Export - ${date}`);
-        spreadsheetId = newId;
-        console.log(`Successfully created spreadsheet with ID: ${spreadsheetId}`);
-        
-        // Get the URL to the new spreadsheet
-        spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}`;
-        
-        // Store the spreadsheet ID for future use
-        await chrome.storage.local.set({ lastSpreadsheetId: spreadsheetId });
-      } catch (createError) {
-        console.error('Error creating spreadsheet:', createError);
-        
-        // Check for specific permission errors
-        if (createError instanceof Error && 
-            (createError.message.includes('insufficient permissions') || 
-             createError.message.includes('scope'))) {
-          sendResponse({ 
-            success: false, 
-            error: 'Permission denied. The extension may need additional Google Sheets permissions.' 
-          });
-        } else {
-          sendResponse({ 
-            success: false, 
-            error: `Failed to create spreadsheet: ${createError instanceof Error ? createError.message : 'Unknown error'}` 
-          });
-        }
-        return;
-      }
-    } else {
-      console.log(`Using existing spreadsheet with ID: ${spreadsheetId}`);
+    // If no spreadsheet ID was provided in the payload, try to use the one from settings
+    if (!spreadsheetId && userSettings && userSettings.sheet_id) {
+      console.log(`Using existing spreadsheet ID from user settings: ${userSettings.sheet_id}`);
+      spreadsheetId = userSettings.sheet_id;
     }
     
-    // Append bills to spreadsheet
-    console.log(`Appending ${bills.length} bills to spreadsheet...`);
+    // If we still don't have a spreadsheet ID, don't create a new one - inform user to set one up in settings
+    if (!spreadsheetId) {
+      const errorMsg = 'No spreadsheet configured. Please set up a Google Sheet in the Settings menu first.';
+      console.log(errorMsg);
+      sendResponse({
+        success: false,
+        error: errorMsg
+      });
+      return;
+    }
+    
+    // Now that we have a spreadsheet ID, append the bill data
     try {
-      await appendBillData(token, spreadsheetId, bills);
-      console.log('Successfully appended bills to spreadsheet');
+      console.log(`Exporting ${bills.length} bills to spreadsheet ${spreadsheetId}...`);
+      const { appendBillData } = await import('../services/sheets/sheetsApi');
       
-      sendResponse({ 
+      // Append the bill data to the spreadsheet
+      const success = await appendBillData(token, spreadsheetId, bills);
+      
+      if (!success) {
+        throw new Error('Failed to append bill data to spreadsheet');
+      }
+      
+      console.log('Successfully exported bills to spreadsheet');
+      
+      // Generate spreadsheet URL for response
+      const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+      
+      // Update usage stats if successful
+      if (userIdentity.supabaseId) {
+        try {
+          const { updateUserProcessingStats } = await import('../services/supabase/client');
+          await updateUserProcessingStats(userIdentity.supabaseId, {
+            last_processed_at: new Date().toISOString()
+          });
+        } catch (statsError) {
+          console.warn('Failed to update user stats after export:', statsError);
+          // Continue anyway, this is not a critical error
+        }
+      }
+      
+      sendResponse({
         success: true,
         spreadsheetUrl
       });
-    } catch (appendError) {
-      console.error('Error appending bills to spreadsheet:', appendError);
-      
-      // Check for specific permission errors
-      if (appendError instanceof Error && 
-          (appendError.message.includes('insufficient permissions') || 
-           appendError.message.includes('scope'))) {
-        sendResponse({ 
-          success: false, 
-          error: 'Permission denied. The extension may need additional Google Sheets permissions.' 
-        });
-      } else {
-        sendResponse({ 
-          success: false, 
-          error: `Failed to add bills to spreadsheet: ${appendError instanceof Error ? appendError.message : 'Unknown error'}` 
-        });
-      }
-    }
-  } catch (error) {
-    console.error('Error exporting to sheets:', error);
-    
-    let errorMessage = 'Unknown error during export';
-    if (error instanceof Error) {
-      errorMessage = error.message;
-      console.error('Error details:', {
-        name: error.name,
-        message: error.message,
-        stack: error.stack
+    } catch (exportError) {
+      const errorMsg = `Error exporting bills to spreadsheet: ${exportError instanceof Error ? exportError.message : 'Unknown error'}`;
+      console.error(errorMsg);
+      sendResponse({
+        success: false,
+        error: errorMsg
       });
     }
-    
-    sendResponse({ 
-      success: false, 
-      error: errorMessage
+  } catch (error) {
+    const errorMsg = `Export to sheets failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    console.error(errorMsg);
+    sendResponse({
+      success: false,
+      error: errorMsg
     });
   }
 }
