@@ -5,176 +5,70 @@
  * using Chrome Identity API
  */
 
+import { GMAIL_SCOPES, SHEETS_SCOPES } from '../../config/constants';
+
 // Default client ID loaded from environment at build time
 const DEFAULT_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 
-// Scopes for Gmail and Google Sheets access
-const SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/spreadsheets",
-  "https://www.googleapis.com/auth/userinfo.email",
-  "https://www.googleapis.com/auth/userinfo.profile"
-];
+// Scopes needed for this application
+const scopes = [...GMAIL_SCOPES, ...SHEETS_SCOPES];
 
 /**
- * Checks if the user is authenticated with Google
- * @returns Promise resolving to authentication status
+ * Check if the user is authenticated with Google
+ * @returns Promise that resolves to boolean indicating authentication status
  */
-export async function isAuthenticated(): Promise<boolean> {
-  try {
-    console.log('Checking if user is authenticated...');
-    
-    // Use the Chrome Identity API to check authentication status
-    return new Promise((resolve) => {
-      chrome.identity.getAuthToken({ interactive: false }, (token) => {
-        if (chrome.runtime.lastError) {
-          console.log("Auth check failed:", chrome.runtime.lastError.message);
-          resolve(false);
-          return;
-        }
-        
-        const isAuth = !!token;
-        console.log('Authentication status:', isAuth ? 'Authenticated' : 'Not authenticated');
-        resolve(isAuth);
-      });
+export const isAuthenticated = (): Promise<boolean> => {
+  return new Promise((resolve) => {
+    chrome.identity.getAuthToken({ interactive: false }, (token) => {
+      resolve(!!token);
     });
-  } catch (error) {
-    console.error("Error checking authentication status:", error);
-    return false;
-  }
-}
+  });
+};
 
 /**
- * Initiates the OAuth flow to authenticate with Google
- * @returns Promise resolving to the authentication result
+ * Authenticate with Google via OAuth
+ * @param interactive Whether to show the OAuth consent screen
+ * @returns Promise that resolves to the auth token
  */
-export async function authenticate(): Promise<{ success: boolean; error?: string; profile?: any }> {
-  try {
-    console.log('Starting Chrome extension Google authentication process for sign-in...');
-    
-    // Step 1: Get Google auth token from Chrome Identity API
-    const token = await new Promise<string | null>((resolve, reject) => {
-      // Use Chrome Identity to get token (automatically handles refresh and expiry)
-      chrome.identity.getAuthToken({ 
-        interactive: true, 
-        scopes: SCOPES 
-      }, (token) => {
-        if (chrome.runtime.lastError) {
-          console.error('Chrome identity error:', chrome.runtime.lastError.message);
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        
-        if (!token) {
-          reject(new Error('No auth token received from Chrome identity'));
-          return;
-        }
-        
-        console.log('Got Google auth token successfully');
+export const authenticate = (interactive = true): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    chrome.identity.getAuthToken({ interactive, scopes }, (token) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(error);
+      } else if (token) {
         resolve(token);
-      });
+      } else {
+        reject(new Error('Failed to get auth token'));
+      }
     });
-    
-    if (!token) {
-      console.error('Failed to get auth token from Chrome identity');
-      return { success: false, error: 'Failed to get authentication token' };
-    }
-    
-    // Step 2: Get user info from Google
-    let userInfo = await fetchGoogleUserInfo(token);
-    
-    if (!userInfo) {
-      console.error('Failed to get user info from Google');
-      return { success: false, error: 'Failed to get user info from Google' };
-    }
-    
-    console.log('User info fetched from Google: Success');
-    
-    // Ensure all required fields are present
-    if (!userInfo.id) {
-      console.error('Google user ID is missing from response');
-      
-      // Try re-fetching with extended fields to get ID
-      try {
-        const retryUserInfo = await fetchGoogleUserInfoExtended(token);
-        if (retryUserInfo && retryUserInfo.id) {
-          userInfo = retryUserInfo;
-        }
-      } catch (retryError) {
-        console.error('Error during extended profile fetch:', retryError);
-      }
-    }
-    
-    // Final check for valid user info
-    if (!userInfo || !userInfo.email) {
-      return { 
-        success: false, 
-        error: 'Could not retrieve sufficient user information from Google'
-      };
-    }
-    
-    // Store Google profile locally for reference
-    const profile = {
-      email: userInfo.email,
-      name: userInfo.name || null,
-      picture: userInfo.picture || null,
-      id: userInfo.id || null
-    };
-    
-    console.log('Complete Google profile:', profile);
-    console.log('Final Google ID to be stored:', profile.id);
-    
-    // Store Google user ID for future use
-    await chrome.storage.local.set({
-      'google_user_id': profile.id,
-      'google_user_info': profile
+  });
+};
+
+/**
+ * Remove the cached auth token
+ * @param token The token to remove
+ * @returns Promise that resolves when the token is removed
+ */
+export const removeToken = (token: string): Promise<void> => {
+  return new Promise((resolve) => {
+    chrome.identity.removeCachedAuthToken({ token }, () => {
+      resolve();
     });
-    
-    console.log('Successfully stored Google profile with ID:', profile.id);
-    
-    // Step 3: Link Google user with Supabase
-    try {
-      const { linkGoogleUserInSupabase, createLocalSession } = await import('../supabase/client');
-      
-      // Link the user in Supabase public.users
-      const linkResult = await linkGoogleUserInSupabase({
-        profile: profile,
-        token: { access_token: token }
-      });
-      
-      if (!linkResult.success) {
-        console.error('Failed to link Google account:', linkResult.error);
-        return { success: false, error: linkResult.error };
-      }
-      
-      console.log('Successfully linked Google account. User ID:', linkResult.user?.id);
-      
-      // Create a local session
-      if (linkResult.user?.id) {
-        const sessionResult = await createLocalSession(linkResult.user.id, profile);
-        if (!sessionResult.success) {
-          console.error('Failed to create local session:', sessionResult.error);
-        } else {
-          console.log('Local session created successfully');
-        }
-      }
-    } catch (e) {
-      console.error('Error in linking process:', e);
-      // Continue anyway since we already have the Google token and profile
-    }
-    
-    return {
-      success: true,
-      profile: profile
-    };
-  } catch (error) {
-    console.error('Google authentication failed:', error);
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error'
-    };
-  }
-}
+  });
+};
+
+/**
+ * Remove all cached auth tokens
+ * @returns Promise that resolves when all tokens are removed
+ */
+export const clearAllTokens = (): Promise<void> => {
+  return new Promise((resolve) => {
+    chrome.identity.clearAllCachedAuthTokens(() => {
+      resolve();
+    });
+  });
+};
 
 /**
  * Signs out the user from Google
@@ -240,6 +134,35 @@ export async function getAccessToken(): Promise<string | null> {
     });
   } catch (error) {
     console.error("Error getting access token:", error);
+    return null;
+  }
+}
+
+/**
+ * Get access token with refresh capability 
+ * Will try to get interactive token if non-interactive fails
+ */
+export async function getAccessTokenWithRefresh(): Promise<string | null> {
+  try {
+    // First try to get the existing token non-interactively
+    const token = await getAccessToken();
+    if (token) return token;
+    
+    // If not available, try to refresh by prompting for auth
+    console.log('No token available, attempting to get a new one interactively');
+    return new Promise((resolve, reject) => {
+      chrome.identity.getAuthToken({ interactive: true }, (token) => {
+        if (chrome.runtime.lastError || !token) {
+          console.warn('Failed to get interactive token:', chrome.runtime.lastError?.message);
+          resolve(null);
+        } else {
+          console.log('Successfully obtained new interactive token');
+          resolve(token);
+        }
+      });
+    });
+  } catch (error) {
+    console.error('Error refreshing token:', error);
     return null;
   }
 }

@@ -4,7 +4,7 @@
  * Provides methods to interact with Gmail API for fetching and processing emails
  */
 
-import { getAccessToken } from "../auth/googleAuth";
+import { getAccessToken, getAccessTokenWithRefresh } from "../auth/googleAuth";
 import { Bill } from "../../types/Bill";
 import { getSharedBillExtractor } from "../extraction/extractorFactory";
 
@@ -23,7 +23,7 @@ export async function searchEmails(
   maxResults: number = 20
 ): Promise<string[]> {
   try {
-    const accessToken = await getAccessToken();
+    const accessToken = await getAccessTokenWithRefresh();
     
     if (!accessToken) {
       throw new Error("Not authenticated");
@@ -61,7 +61,7 @@ export async function searchEmails(
  */
 export async function getEmailById(messageId: string): Promise<any> {
   try {
-    const accessToken = await getAccessToken();
+    const accessToken = await getAccessTokenWithRefresh();
     
     if (!accessToken) {
       throw new Error("Not authenticated");

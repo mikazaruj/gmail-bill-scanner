@@ -2117,3 +2117,42 @@ export async function updateUserProcessingStats(
     return false;
   }
 }
+
+/**
+ * Authenticate with Supabase directly using stored credentials
+ * Useful after cache clearing when Google token is lost but we have stored user data
+ */
+export async function authenticateWithSupabase(googleId: string, email: string, name?: string): Promise<{
+  success: boolean;
+  user?: any;
+  message?: string;
+  error?: string;
+}> {
+  try {
+    console.log('Authenticating directly with Supabase using stored credentials');
+    const user = await findUserByGoogleId(googleId);
+    
+    if (user && user.id) {
+      // Create a local session
+      await createLocalSession(user.id, {
+        id: googleId,
+        email: email,
+        name: name || email.split('@')[0]
+      });
+      
+      return { 
+        success: true, 
+        user,
+        message: 'Authenticated via stored credentials'
+      };
+    }
+    
+    return { success: false, error: 'User not found in database' };
+  } catch (error) {
+    console.error('Error authenticating with Supabase:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Authentication failed' 
+    };
+  }
+}

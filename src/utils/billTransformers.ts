@@ -16,7 +16,7 @@ import { BillData } from '../types/Message';
  */
 export function transformScannedBillToBill(scannedBill: ScannedBill): Bill {
   return {
-    id: scannedBill.id,
+    id: scannedBill.id || `bill-${Date.now()}`,
     vendor: scannedBill.merchant,
     amount: scannedBill.amount,
     currency: scannedBill.currency,
@@ -27,7 +27,7 @@ export function transformScannedBillToBill(scannedBill: ScannedBill): Bill {
     notes: scannedBill.notes,
     source: {
       type: 'email',
-      messageId: scannedBill.id, // In ScannedBill, id is the message ID
+      messageId: scannedBill.id.startsWith('msg-') ? scannedBill.id : `msg-${scannedBill.id}`,
     },
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -85,6 +85,7 @@ export function transformBillToBillData(bill: Bill): BillData {
     extractedFrom: bill.source?.type,
     language: bill.language,
     confidence: bill.extractionConfidence,
+    notes: bill.notes
   };
 }
 

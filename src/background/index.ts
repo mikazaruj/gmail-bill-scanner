@@ -212,47 +212,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           try {
             console.log('Background: Checking auth status');
             
-            // First, check if Google authentication is valid
-            const isGoogleAuthenticated = await new Promise<boolean>((resolve) => {
-              chrome.identity.getAuthToken({ interactive: false }, (token) => {
-                if (chrome.runtime.lastError || !token) {
-                  console.warn('Google token is not valid:', chrome.runtime.lastError?.message);
-                  resolve(false);
-                } else {
-                  resolve(true);
-                }
-              });
-            });
-            
-            if (!isGoogleAuthenticated) {
-              console.log('Background: Not authenticated with Google');
-              sendResponse({ 
-                success: true, 
-                isAuthenticated: false,
-                reason: 'No valid Google token'
-              });
-              return;
-            }
-            
             // Import the client module asynchronously
             import('../services/supabase/client').then(async (module) => {
               try {
                 // Get user data from storage
                 const userData = await module.getUserData();
                 const googleId = userData?.googleId;
+                const supabaseUserId = userData?.userId;
                 
-                if (!googleId) {
-                  console.log('Background: No Google ID found in storage');
-                  sendResponse({ 
-                    success: true, 
-                    isAuthenticated: false,
-                    reason: 'No Google ID found'
-                  });
-                  return;
+                // If we have a Supabase user ID, try to verify it directly
+                if (supabaseUserId) {
+                  try {
+                    const userStats = await module.getUserStats(supabaseUserId);
+                    if (userStats) {
+                      console.log('Background: User authenticated via stored Supabase ID');
+                      sendResponse({ 
+                        success: true, 
+                        isAuthenticated: true,
+                        profile: userStats
+                      });
+                      return;
+                    }
+                  } catch (statsError) {
+                    console.warn('Background: Error getting stats by Supabase ID:', statsError);
+                  }
                 }
                 
-                // Try to find user by Google ID and then get their stats
-                if (module.findUserByGoogleId) {
+                // If we have Google ID, try that next
+                if (googleId) {
                   try {
                     const user = await module.findUserByGoogleId(googleId);
                     
@@ -274,18 +261,72 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                   }
                 }
                 
+                // Only check Google token as last resort
+                const isGoogleAuthenticated = await new Promise<boolean>((resolve) => {
+                  chrome.identity.getAuthToken({ interactive: false }, (token) => {
+                    if (chrome.runtime.lastError || !token) {
+                      console.warn('Google token is not valid:', chrome.runtime.lastError?.message);
+                      resolve(false);
+                    } else {
+                      resolve(true);
+                    }
+                  });
+                });
+                
+                if (isGoogleAuthenticated) {
+                  // If Google token is valid but we have no user data, try to get user profile and authenticate
+                  try {
+                    const { fetchGoogleUserInfoExtended } = await import('../services/auth/googleAuth');
+                    const token = await new Promise<string | null>((resolve) => {
+                      chrome.identity.getAuthToken({ interactive: false }, (token) => {
+                        if (chrome.runtime.lastError || !token) {
+                          resolve(null);
+                        } else {
+                          resolve(token);
+                        }
+                      });
+                    });
+                    
+                    if (token) {
+                      const profile = await fetchGoogleUserInfoExtended(token);
+                      if (profile && profile.id) {
+                        // Try to find or create user with this Google ID
+                        const user = await module.findUserByGoogleId(profile.id);
+                        if (user && user.id) {
+                          const userStats = await module.getUserStats(user.id);
+                          if (userStats) {
+                            console.log('Background: User authenticated via Google token lookup');
+                            sendResponse({
+                              success: true,
+                              isAuthenticated: true,
+                              profile: userStats
+                            });
+                            return;
+                          }
+                        }
+                      }
+                    }
+                  } catch (googleError) {
+                    console.warn('Error trying to authenticate with Google token:', googleError);
+                  }
+                }
+                
                 // Fallback to basic profile if available
-                if (userData.profile) {
+                if (userData?.profile) {
+                  const profileData = typeof userData.profile === 'string' 
+                    ? JSON.parse(userData.profile) 
+                    : userData.profile;
+                    
                   console.log('Background: Using fallback profile data');
                   sendResponse({ 
                     success: true, 
                     isAuthenticated: true,
                     partial: true,
                     profile: {
-                      id: 'temp-' + googleId,
-                      email: userData.profile.email,
-                      name: userData.profile.name,
-                      picture: userData.profile.picture,
+                      id: supabaseUserId || ('temp-' + googleId),
+                      email: profileData.email,
+                      name: profileData.name,
+                      picture: profileData.picture,
                       google_user_id: googleId
                     },
                     reason: 'Using fallback profile data'
@@ -293,11 +334,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                   return;
                 }
                 
-                // No profile data available
+                // No authentication data found
                 sendResponse({ 
                   success: true, 
                   isAuthenticated: false,
-                  reason: 'No profile data found'
+                  reason: 'No authentication data found'
                 });
               } catch (error) {
                 console.error('Background: Error in auth verification:', error);

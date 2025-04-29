@@ -65,6 +65,22 @@ declare namespace chrome {
       },
       callback: (redirectUrl?: string) => void
     ): void;
+    export function getAuthToken(
+      options: {
+        interactive: boolean;
+        scopes?: string[];
+      },
+      callback: (token?: string) => void
+    ): void;
+    export function clearAllCachedAuthTokens(
+      callback?: () => void
+    ): void;
+    export function removeCachedAuthToken(
+      details: {
+        token: string;
+      },
+      callback?: () => void
+    ): void;
   }
   
   // Chrome Storage API
