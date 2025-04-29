@@ -319,23 +319,53 @@ async function setupSheetHeaders(spreadsheetId: string, sheetName: string, token
       'Category', 'Email ID', 'Attachment ID', 'Created At'
     ];
     
-    // Since we're in a service worker context, we can't use document-dependent code
-    // Just use default headers to allow the process to continue
-    console.log('Using default headers in service worker context');
-    
-    // Apply default headers
-    const lastColumnLetter = String.fromCharCode(64 + defaultHeaders.length);
-    await updateSheetValues(
-      spreadsheetId,
-      `${sheetName}!A1:${lastColumnLetter}1`,
-      [defaultHeaders],
-      token
-    );
-    
-    // Format the header row
-    await formatHeaderRow(spreadsheetId, sheetName, token);
-    console.log('Headers set up successfully with default values');
-    
+    // We can't reliably detect if we're in a service worker context,
+    // so we'll use a try-catch approach to get the user-configured field mappings
+    try {
+      // Try to get user ID from storage for custom mappings
+      const userData = await chrome.storage.local.get(['supabase_user_id', 'google_user_id']);
+      const userId = userData?.supabase_user_id || userData?.google_user_id;
+      
+      if (userId) {
+        console.log(`Got user ID for field mappings: ${userId}`);
+        
+        // Import field mapping service and get field mappings
+        const { getFieldMappings } = await import('../fieldMapping');
+        const fieldMappings = await getFieldMappings(userId);
+        
+        if (fieldMappings && fieldMappings.length > 0) {
+          // Get enabled field mappings sorted by display order
+          const enabledMappings = [...fieldMappings.filter((m: any) => m.is_enabled)]
+            .sort((a: any, b: any) => a.display_order - b.display_order);
+          
+          if (enabledMappings.length > 0) {
+            console.log(`Found ${enabledMappings.length} enabled field mappings, using custom headers`);
+            await setupCustomHeaders(spreadsheetId, sheetName, token, enabledMappings);
+            return;
+          }
+        }
+      }
+      
+      // If we get here, either no user ID or no enabled mappings
+      console.log('No enabled field mappings found, using default headers');
+      await setupDefaultHeaders(spreadsheetId, sheetName, token);
+      
+    } catch (error) {
+      console.warn('Error getting custom mappings, falling back to default headers:', error);
+      
+      // Apply default headers
+      const lastColumnLetter = String.fromCharCode(64 + defaultHeaders.length);
+      await updateSheetValues(
+        spreadsheetId,
+        `${sheetName}!A1:${lastColumnLetter}1`,
+        [defaultHeaders],
+        token
+      );
+      
+      // Format the header row
+      await formatHeaderRow(spreadsheetId, sheetName, token);
+      console.log('Headers set up successfully with default values');
+    }
   } catch (error) {
     console.error('Failed to set up sheet headers:', error);
     throw error;
