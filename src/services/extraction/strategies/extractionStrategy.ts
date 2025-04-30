@@ -1,41 +1,84 @@
 /**
- * Extraction Strategy Interface
+ * Extraction Strategy Interfaces
  * 
- * Defines the interface for bill extraction strategies
+ * These interfaces define the contract for all bill extraction strategies
  */
 
-import { Bill, BillExtractionResult } from "../../../types/Bill";
+import { BillExtractionResult } from "../../../types/Bill";
 
 /**
- * Email extraction context
+ * Basic context for all extraction operations
  */
-export interface EmailExtractionContext {
+export interface BaseExtractionContext {
+  /**
+   * Optional language code to use for extraction
+   * If not provided, the extractor should try to detect the language
+   */
+  language?: 'en' | 'hu' | 'de';
+}
+
+/**
+ * Context for email-based extraction
+ */
+export interface EmailExtractionContext extends BaseExtractionContext {
+  /**
+   * Unique identifier for the email message
+   */
   messageId: string;
-  from: string;
+  
+  /**
+   * Email subject line
+   */
   subject: string;
+  
+  /**
+   * Email body content
+   */
   body: string;
+  
+  /**
+   * Sender email address
+   */
+  from: string;
+  
+  /**
+   * Date the email was sent/received
+   */
   date: string;
-  language?: 'en' | 'hu';
-  isTrustedSource?: boolean; // Whether the email is from a trusted source
+  
+  /**
+   * Whether the email is from a trusted source
+   */
+  isTrustedSource?: boolean;
 }
 
 /**
- * PDF extraction context
+ * Context for PDF-based extraction
  */
-export interface PdfExtractionContext {
-  pdfData: string;
-  messageId: string;
-  attachmentId: string;
-  fileName: string;
-  language?: 'en' | 'hu';
+export interface PdfExtractionContext extends BaseExtractionContext {
+  /**
+   * Extracted text content from the PDF
+   */
+  text: string;
+  
+  /**
+   * Original filename of the PDF
+   */
+  filename: string;
+  
+  /**
+   * Whether the PDF is from a trusted source
+   */
+  isTrustedSource?: boolean;
 }
 
 /**
- * Interface for bill extraction strategies
+ * Base extraction strategy interface
+ * All extraction strategies must implement this interface
  */
 export interface ExtractionStrategy {
   /**
-   * Name of the strategy for identification
+   * Name of the extraction strategy
    */
   readonly name: string;
   
@@ -43,15 +86,15 @@ export interface ExtractionStrategy {
    * Extract bills from email content
    * 
    * @param context Email extraction context
-   * @returns Extraction result with extracted bills
+   * @returns Extraction result with detected bills
    */
   extractFromEmail(context: EmailExtractionContext): Promise<BillExtractionResult>;
   
   /**
-   * Extract bills from PDF content (optional)
+   * Extract bills from PDF content
    * 
    * @param context PDF extraction context
-   * @returns Extraction result with extracted bills
+   * @returns Extraction result with detected bills
    */
   extractFromPdf?(context: PdfExtractionContext): Promise<BillExtractionResult>;
 } 

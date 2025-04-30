@@ -1,86 +1,16 @@
 /**
- * Bill Pattern Definitions
+ * English Bill Patterns
  * 
- * This file defines the interfaces and types for bill patterns
+ * This file contains patterns for extracting bill information from English
+ * emails and documents.
  */
 
-import { Vendor } from "../../../types/Bill";
+import { BillPattern } from './index';
 
 /**
- * Content patterns for bill information extraction
+ * Utility bill patterns (English)
  */
-export interface ContentPatterns {
-  /**
-   * Amount patterns to extract bill amounts
-   */
-  amount: RegExp[];
-  
-  /**
-   * Due date patterns to extract payment due dates
-   */
-  dueDate?: RegExp[];
-  
-  /**
-   * Account number patterns to extract account identifiers
-   */
-  accountNumber?: RegExp[];
-  
-  /**
-   * Vendor patterns to extract vendor names if not in pattern definition
-   */
-  vendor?: RegExp[];
-}
-
-/**
- * Bill pattern definition
- */
-export interface BillPattern {
-  /**
-   * Unique pattern identifier
-   */
-  id: string;
-  
-  /**
-   * Human-readable pattern name
-   */
-  name: string;
-  
-  /**
-   * Language this pattern is designed for
-   */
-  language: 'en' | 'hu' | 'de';
-  
-  /**
-   * Vendor information
-   */
-  vendor?: Vendor;
-  
-  /**
-   * Subject patterns to match in email subjects
-   */
-  subjectPatterns: RegExp[];
-  
-  /**
-   * Content patterns to extract specific bill data
-   */
-  contentPatterns: ContentPatterns;
-  
-  /**
-   * Keywords to confirm this pattern type
-   */
-  confirmationKeywords?: string[];
-}
-
-// Import the enhanced Hungarian patterns
-import { 
-  allHungarianPatterns, 
-  cleanHungarianAmount, 
-  parseHungarianDate, 
-  detectHungarianBill 
-} from './hungarianPatterns';
-
-// Utility bill patterns
-const utilityBillPatterns: BillPattern[] = [
+export const utilityBillPatterns: BillPattern[] = [
   {
     id: 'utility-bill-en',
     name: 'Utility Bill (English)',
@@ -111,8 +41,10 @@ const utilityBillPatterns: BillPattern[] = [
   }
 ];
 
-// Subscription bill patterns
-const subscriptionBillPatterns: BillPattern[] = [
+/**
+ * Subscription bill patterns (English)
+ */
+export const subscriptionBillPatterns: BillPattern[] = [
   {
     id: 'netflix-bill',
     name: 'Netflix Subscription',
@@ -163,8 +95,10 @@ const subscriptionBillPatterns: BillPattern[] = [
   }
 ];
 
-// Telecom bill patterns
-const telecomBillPatterns: BillPattern[] = [
+/**
+ * Telecom bill patterns (English)
+ */
+export const telecomBillPatterns: BillPattern[] = [
   {
     id: 'telecom-bill-en',
     name: 'Telecommunications Bill (English)',
@@ -196,8 +130,10 @@ const telecomBillPatterns: BillPattern[] = [
   }
 ];
 
-// Insurance bill patterns
-const insuranceBillPatterns: BillPattern[] = [
+/**
+ * Insurance bill patterns (English)
+ */
+export const insuranceBillPatterns: BillPattern[] = [
   {
     id: 'insurance-bill-en',
     name: 'Insurance Bill (English)',
@@ -227,18 +163,12 @@ const insuranceBillPatterns: BillPattern[] = [
   }
 ];
 
-// Export all patterns for use in extraction
-export const allPatterns: BillPattern[] = [
+/**
+ * Combined English patterns
+ */
+export const allEnglishPatterns: BillPattern[] = [
   ...utilityBillPatterns,
   ...subscriptionBillPatterns,
   ...telecomBillPatterns,
-  ...insuranceBillPatterns,
-  ...allHungarianPatterns // Include our enhanced Hungarian patterns
-];
-
-// Export utility functions
-export {
-  cleanHungarianAmount,
-  parseHungarianDate,
-  detectHungarianBill
-}; 
+  ...insuranceBillPatterns
+]; 
