@@ -1632,6 +1632,34 @@ async function handleScanEmails(
         
         // Override with database settings if they exist
         if (dbSettings) {
+          // Ensure critical settings are properly mapped from database fields
+          const mappedSettings = {
+            // Map database fields to settings fields
+            trustedSourcesOnly: dbSettings.trusted_sources_only,
+            inputLanguage: dbSettings.input_language,
+            outputLanguage: dbSettings.output_language === 'english' ? 'en' : dbSettings.output_language,
+            // Include other fields that might need direct mapping
+            processAttachments: dbSettings.process_attachments,
+            captureImportantNotices: dbSettings.capture_important_notices,
+            scanDays: dbSettings.search_days,
+            notifyProcessed: dbSettings.notify_processed,
+            notifyHighAmount: dbSettings.notify_high_amount,
+            notifyErrors: dbSettings.notify_errors,
+            highAmountThreshold: dbSettings.high_amount_threshold,
+            autoExportToSheets: dbSettings.auto_export_to_sheets
+          };
+          
+          // Log the critical mapped settings
+          console.log('Explicitly mapped settings:', {
+            trustedSourcesOnly: mappedSettings.trustedSourcesOnly,
+            inputLanguage: mappedSettings.inputLanguage,
+            outputLanguage: mappedSettings.outputLanguage
+          });
+          
+          // Apply the explicitly mapped settings first
+          Object.assign(settings, mappedSettings);
+          
+          // Then apply any remaining settings from the database
           Object.assign(settings, dbSettings);
         }
       } catch (settingsError) {
@@ -1733,6 +1761,7 @@ async function handleScanEmails(
         );
         
         // Process with our unified bill extractor
+        console.log(`Processing email with language setting: ${settings.inputLanguage}`);
         const extractionResult = await billExtractor.extractFromEmail(email, {
           language: settings.inputLanguage as 'en' | 'hu' | undefined,
           isTrustedSource // Pass the trusted source flag to the extractor
@@ -1812,6 +1841,7 @@ async function handleScanEmails(
                   
                   if (attachment) {
                     console.log(`Processing PDF attachment: ${attachmentData.fileName}`);
+                    console.log(`Using language setting for PDF: ${settings.inputLanguage}`);
                     
                     // Process with our unified bill extractor
                     const pdfResult = await billExtractor.extractFromPdf(
