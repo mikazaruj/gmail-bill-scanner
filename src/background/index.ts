@@ -1824,6 +1824,11 @@ async function handleScanEmails(
         if (settings.processAttachments) {
           try {
             const headers = email.payload?.headers || [];
+            const fromHeader = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || '';
+            const fromEmail = extractEmailAddress(fromHeader);
+            const isTrustedSource = settings.trustedSourcesOnly && trustedSources.some(
+              source => source.email_address.toLowerCase() === fromEmail.toLowerCase()
+            );
             const attachmentIds = extractAttachmentIds(email);
             
             if (attachmentIds.length > 0) {
@@ -1842,6 +1847,7 @@ async function handleScanEmails(
                   if (attachment) {
                     console.log(`Processing PDF attachment: ${attachmentData.fileName}`);
                     console.log(`Using language setting for PDF: ${settings.inputLanguage}`);
+                    console.log(`Is from trusted source: ${isTrustedSource}`);
                     
                     // Process with our unified bill extractor
                     const pdfResult = await billExtractor.extractFromPdf(
@@ -1850,7 +1856,8 @@ async function handleScanEmails(
                       attachmentData.id,
                       attachmentData.fileName,
                       {
-                        language: settings.inputLanguage as 'en' | 'hu' | undefined
+                        language: settings.inputLanguage as 'en' | 'hu' | undefined,
+                        isTrustedSource: isTrustedSource // Pass the trusted source flag
                       }
                     );
                     

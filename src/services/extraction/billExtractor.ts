@@ -110,9 +110,44 @@ export class BillExtractor {
     messageId: string,
     attachmentId: string,
     fileName: string,
-    options: { language?: 'en' | 'hu' } = {}
+    options: { 
+      language?: 'en' | 'hu';
+      isTrustedSource?: boolean;
+    } = {}
   ): Promise<BillExtractionResult> {
     try {
+      // Try to extract text from PDF data first
+      let extractedText = '';
+      try {
+        // Use a basic extraction approach that works in all contexts
+        if (pdfData.startsWith('JVBERi') || pdfData.includes('JVBERi')) {
+          console.log('Detected PDF header, using PDF extraction');
+          
+          // If we're in a service worker context, use our basic extractor
+          if (typeof window === 'undefined' || 
+              typeof window.document === 'undefined') {
+            console.log('Using basic extraction in service worker context');
+            // Implement a simple version of text extraction directly
+            extractedText = this.extractBasicTextFromPdf(pdfData);
+          } else {
+            // In browser context, try to use PDF.js
+            const { extractTextFromBase64Pdf } = await import('../pdf/pdfService');
+            extractedText = await extractTextFromBase64Pdf(pdfData);
+          }
+        } else {
+          console.warn('PDF data does not appear to be valid, using basic text extraction');
+          // Even if it doesn't look like a PDF, try to extract some text
+          extractedText = pdfData
+            .replace(/[^A-Za-z0-9\s.,\-:;\/$%áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+        }
+        
+        console.log(`Extracted ${extractedText.length} characters from PDF`);
+      } catch (extractionError) {
+        console.error('Error in initial text extraction, proceeding with strategies anyway:', extractionError);
+      }
+      
       // Try each strategy in order
       const extractedBills: Bill[] = [];
       let highestConfidence = 0;
@@ -121,11 +156,13 @@ export class BillExtractor {
         if (!strategy.extractFromPdf) continue; // Skip strategies that don't support PDF
         
         const result = await strategy.extractFromPdf({
+          text: extractedText || '[No text extracted]', // Provide empty text if extraction failed
           pdfData,
           messageId,
           attachmentId,
-          fileName,
-          language: options.language
+          filename: fileName,
+          language: options.language,
+          isTrustedSource: options.isTrustedSource || false // Use the passed isTrustedSource flag
         });
         
         if (result.success && result.bills.length > 0) {
@@ -197,6 +234,91 @@ export class BillExtractor {
     } catch (error) {
       console.error('Error extracting email body:', error);
       return '';
+    }
+  }
+  
+  /**
+   * Basic text extraction from PDF base64 data
+   * This is a simplified version for use within this class
+   */
+  private extractBasicTextFromPdf(base64Data: string): string {
+    try {
+      console.log(`Performing basic text extraction on ${base64Data.length} characters`);
+      
+      // Extract readable ASCII characters directly from the base64 data
+      const rawTextExtraction = base64Data
+        .replace(/[^A-Za-z0-9\s.,\-:;\/$%áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      
+      // Look for text between PDF markers
+      const extractTextBetweenMarkers = (startMarker: string, endMarker: string) => {
+        const results: string[] = [];
+        let startIndex = base64Data.indexOf(startMarker);
+        
+        while (startIndex !== -1) {
+          const endIndex = base64Data.indexOf(endMarker, startIndex + startMarker.length);
+          if (endIndex === -1) break;
+          
+          const textBetween = base64Data.substring(startIndex + startMarker.length, endIndex);
+          const cleaned = textBetween
+            .replace(/[^A-Za-z0-9\s.,\-:;\/$%áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          
+          if (cleaned.length > 5) {
+            results.push(cleaned);
+          }
+          
+          startIndex = base64Data.indexOf(startMarker, endIndex + endMarker.length);
+        }
+        
+        return results;
+      };
+      
+      // Try to extract text from common PDF text markers
+      const btEtTexts = extractTextBetweenMarkers('BT', 'ET');
+      const tjTexts = extractTextBetweenMarkers('/TJ', ']TJ');
+      const streamTexts = extractTextBetweenMarkers('stream', 'endstream');
+      
+      // Look for common billing keywords
+      const hungarianKeywords = [
+        'számla', 'fizetés', 'fizetendő', 'összeg', 'határidő', 'fogyasztás',
+        'áram', 'gáz', 'víz', 'szolgáltató', 'MVM', 'EON', 'díj', 'Ft', 'HUF'
+      ];
+      
+      const keywordTexts: string[] = [];
+      for (const keyword of hungarianKeywords) {
+        const index = base64Data.toLowerCase().indexOf(keyword.toLowerCase());
+        if (index >= 0) {
+          const start = Math.max(0, index - 50);
+          const end = Math.min(base64Data.length, index + keyword.length + 50);
+          const chunk = base64Data.substring(start, end)
+            .replace(/[^A-Za-z0-9\s.,\-:;\/$%áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          
+          keywordTexts.push(chunk);
+        }
+      }
+      
+      // Combine all extraction methods
+      const allExtractedTexts = [
+        ...btEtTexts,
+        ...tjTexts,
+        ...streamTexts,
+        ...keywordTexts,
+        rawTextExtraction
+      ];
+      
+      // Return the combined text
+      return allExtractedTexts.join('\n');
+    } catch (error) {
+      console.error('Error in basic PDF text extraction:', error);
+      return base64Data
+        .replace(/[^A-Za-z0-9\s.,\-:;\/$%áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .substring(0, 1000);
     }
   }
 } 

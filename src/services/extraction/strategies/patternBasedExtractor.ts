@@ -21,7 +21,7 @@ export class PatternBasedExtractor implements ExtractionStrategy {
    */
   async extractFromEmail(context: EmailExtractionContext): Promise<BillExtractionResult> {
     try {
-      console.log(`Extracting from email with language: ${context.language}`);
+      console.log(`Extracting from email with language: ${context.language}, isTrustedSource: ${context.isTrustedSource}`);
       
       if (!context.language) {
         return {
@@ -56,12 +56,13 @@ export class PatternBasedExtractor implements ExtractionStrategy {
       let highestConfidence = 0;
       
       for (const pattern of patterns) {
-        // Check if subject matches any pattern
+        // Check if subject matches any pattern or if this is a trusted source
         const subjectMatches = pattern.subjectPatterns.some(regex => 
           regex.test(processedSubject)
         );
         
-        if (subjectMatches) {
+        // Process if subject matches OR this is from a trusted source
+        if (subjectMatches || context.isTrustedSource) {
           const bill = this.extractBillFromPattern(pattern, processedBody, processor);
           if (bill) {
             // Add email-specific metadata
@@ -73,10 +74,20 @@ export class PatternBasedExtractor implements ExtractionStrategy {
               subject: context.subject
             };
             
+            // Increase confidence for trusted sources
+            if (context.isTrustedSource) {
+              bill.confidence = Math.min(0.9, (bill.confidence || 0) + 0.2);
+            }
+            
             bills.push(bill);
             highestConfidence = Math.max(highestConfidence, bill.confidence || 0);
           }
         }
+      }
+      
+      // Adjust final confidence based on trusted source
+      if (context.isTrustedSource && bills.length > 0) {
+        highestConfidence = Math.min(0.9, highestConfidence + 0.1);
       }
       
       return {
@@ -103,7 +114,7 @@ export class PatternBasedExtractor implements ExtractionStrategy {
    */
   async extractFromPdf(context: PdfExtractionContext): Promise<BillExtractionResult> {
     try {
-      console.log(`Extracting from PDF with language: ${context.language}`);
+      console.log(`Extracting from PDF with language: ${context.language}, isTrustedSource: ${context.isTrustedSource}`);
       
       if (!context.language) {
         return {
@@ -140,7 +151,10 @@ export class PatternBasedExtractor implements ExtractionStrategy {
         // For PDFs, we don't have a subject, so we check patterns directly in content
         const keywordMatches = this.countKeywordMatches(pattern, processedText);
         
-        if (keywordMatches >= 2) { // Require at least 2 keyword matches for PDFs
+        // Lower threshold for trusted sources (1 instead of 2 keywords)
+        const requiredMatches = context.isTrustedSource ? 1 : 2;
+        
+        if (keywordMatches >= requiredMatches) {
           const bill = this.extractBillFromPattern(pattern, processedText, processor);
           if (bill) {
             // Add PDF-specific metadata
@@ -150,10 +164,20 @@ export class PatternBasedExtractor implements ExtractionStrategy {
               date: new Date().toISOString() // Use current date as fallback
             };
             
+            // Increase confidence for trusted sources
+            if (context.isTrustedSource) {
+              bill.confidence = Math.min(0.9, (bill.confidence || 0) + 0.2);
+            }
+            
             bills.push(bill);
             highestConfidence = Math.max(highestConfidence, bill.confidence || 0);
           }
         }
+      }
+      
+      // Adjust final confidence based on trusted source
+      if (context.isTrustedSource && bills.length > 0) {
+        highestConfidence = Math.min(0.9, highestConfidence + 0.1);
       }
       
       return {

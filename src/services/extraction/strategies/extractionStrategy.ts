@@ -70,6 +70,21 @@ export interface PdfExtractionContext extends BaseExtractionContext {
    * Whether the PDF is from a trusted source
    */
   isTrustedSource?: boolean;
+
+  /**
+   * Base64-encoded PDF data - used for direct extraction methods
+   */
+  pdfData?: string;
+
+  /**
+   * Message ID of the source email (if from an attachment)
+   */
+  messageId?: string;
+
+  /**
+   * Attachment ID from Gmail (if from an attachment)
+   */
+  attachmentId?: string;
 }
 
 /**
