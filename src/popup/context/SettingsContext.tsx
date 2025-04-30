@@ -158,6 +158,33 @@ export const SettingsProvider = ({ children }: SettingsProviderProps) => {
             notifyErrors: supabaseSettings.notify_errors,
             highAmountThreshold: supabaseSettings.high_amount_threshold
           };
+          
+          // If trustedSourcesOnly is enabled, preload trusted sources
+          if (supabaseSettings.trusted_sources_only) {
+            try {
+              const { preloadTrustedSources } = await import('../../services/trustedSources');
+              console.log('SettingsContext: Preloading trusted sources since trustedSourcesOnly is enabled');
+              
+              const result = await preloadTrustedSources(identity.supabaseId);
+              
+              if (result.success) {
+                console.log(`SettingsContext: Successfully preloaded ${result.sources.length} trusted sources: ${result.message}`);
+                
+                if (result.sources.length > 0) {
+                  console.log('SettingsContext: Sample of trusted sources:', 
+                    result.sources.slice(0, 3).map(s => s.email_address ? 
+                    `${s.email_address.substring(0, 3)}...${s.email_address.split('@')[1]}` : 
+                    'invalid email'));
+                } else {
+                  console.warn('SettingsContext: No trusted sources found, but trustedSourcesOnly is enabled!');
+                }
+              } else {
+                console.error('SettingsContext: Failed to preload trusted sources:', result.message);
+              }
+            } catch (error) {
+              console.error('SettingsContext: Error preloading trusted sources:', error);
+            }
+          }
         }
       } catch (err) {
         console.error('Error loading settings from Supabase:', err);

@@ -12,9 +12,18 @@ const REQUIRED_SCOPES = [
 
 /**
  * Initiates the Google OAuth flow
- * @returns Promise that resolves when authentication is complete
+ * @returns Promise that resolves to an authentication result
  */
-export async function authenticate(): Promise<void> {
+export async function authenticate(): Promise<{
+  success: boolean;
+  profile?: {
+    id: string;
+    email: string;
+    name?: string;
+    picture?: string;
+  };
+  error?: string;
+}> {
   try {
     // Chrome extension specific OAuth flow
     // This is a placeholder and will be implemented with actual Chrome OAuth
@@ -28,9 +37,23 @@ export async function authenticate(): Promise<void> {
     // Placeholder for demonstration
     await new Promise(resolve => setTimeout(resolve, 1000));
     console.log('Authentication successful');
+    
+    // Return a properly typed result
+    return {
+      success: true,
+      profile: {
+        id: 'mock-user-id', // Mock ID for demonstration
+        email: 'user@example.com', // Mock email for demonstration
+        name: 'Demo User',
+        picture: 'https://example.com/picture.jpg'
+      }
+    };
   } catch (error) {
     console.error('Authentication failed:', error);
-    throw error;
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Authentication failed'
+    };
   }
 }
 

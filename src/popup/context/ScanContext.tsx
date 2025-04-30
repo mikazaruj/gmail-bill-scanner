@@ -134,6 +134,58 @@ export const ScanProvider = ({ children }: ScanProviderProps) => {
     setDashboardStats(defaultDashboardStats);
 
     try {
+      // If trustedSourcesOnly is enabled, check if we have trusted sources
+      if (settings.trustedSourcesOnly) {
+        setScanProgressMessage('Verifying trusted sources...');
+        
+        try {
+          // First check if we already have trusted sources in storage
+          const storedSources = await chrome.storage.local.get('trusted_sources');
+          let trustedSources = storedSources.trusted_sources || [];
+          
+          // If we don't have any in storage, try to fetch them
+          if (!trustedSources || trustedSources.length === 0) {
+            console.log('No trusted sources in storage, fetching from database...');
+            const { resolveUserIdentity } = await import('../../services/identity/userIdentityService');
+            const { getTrustedSources } = await import('../../services/trustedSources');
+            
+            const identity = await resolveUserIdentity();
+            if (identity && identity.supabaseId) {
+              trustedSources = await getTrustedSources(identity.supabaseId);
+              
+              // Store them for future use
+              await chrome.storage.local.set({ 'trusted_sources': trustedSources });
+              
+              console.log(`ScanContext: Fetched ${trustedSources.length} trusted sources for scan`);
+            }
+          } else {
+            console.log(`ScanContext: Using ${trustedSources.length} trusted sources from storage`);
+          }
+          
+          // Show warning if no trusted sources found
+          if (!trustedSources || trustedSources.length === 0) {
+            console.warn('Trusted sources only is enabled but no trusted sources are configured.');
+            setScanProgressMessage('Warning: No trusted sources configured.');
+            
+            // Show a confirmation dialog
+            if (!confirm('You have "Trusted Sources Only" enabled but no sources configured. Scan may return no results. Continue anyway?')) {
+              setScanStatus('idle');
+              setError('Scan cancelled - No trusted sources configured.');
+              return;
+            }
+          } else {
+            // Log the sources we found
+            console.log('Using trusted sources:', 
+              trustedSources.map(s => s.email_address ? 
+              `${s.email_address.substring(0, 3)}...${s.email_address.split('@')[1]}` : 
+              'invalid email'));
+          }
+        } catch (error) {
+          console.error('Error checking trusted sources:', error);
+          // Continue anyway but log the error
+        }
+      }
+      
       // Simulate progress updates (this will be replaced with real progress updates)
       const messages = [
         'Fetching emails...',

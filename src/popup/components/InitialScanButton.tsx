@@ -105,6 +105,41 @@ const InitialScanButton = ({
       console.log('InitialScanButton: Setting initial_scan_date to', initialScanDate);
       await updateSetting('initial_scan_date', initialScanDate);
       
+      // Check trusted sources settings if enabled
+      if (settings.trustedSourcesOnly) {
+        console.log('InitialScanButton: trustedSourcesOnly is enabled, checking trusted sources...');
+        
+        try {
+          // Get trusted sources
+          const { getTrustedSources } = await import('../../services/trustedSources');
+          const { resolveUserIdentity } = await import('../../services/identity/userIdentityService');
+          
+          const identity = await resolveUserIdentity();
+          if (identity && identity.supabaseId) {
+            const trustedSources = await getTrustedSources(identity.supabaseId);
+            
+            console.log(`InitialScanButton: Found ${trustedSources.length} trusted sources`);
+            
+            // Show sources in console for debugging
+            if (trustedSources.length > 0) {
+              console.log('InitialScanButton: Trusted sources emails:', 
+                trustedSources.map(s => s.email_address ? 
+                `${s.email_address.substring(0, 3)}...${s.email_address.split('@')[1]}` : 
+                'invalid email'));
+            } else {
+              console.warn('InitialScanButton: trustedSourcesOnly is enabled but no trusted sources are configured.');
+            }
+            
+            // Store in local storage for quick access
+            await chrome.storage.local.set({
+              'trusted_sources': trustedSources
+            });
+          }
+        } catch (error) {
+          console.error('InitialScanButton: Error checking trusted sources:', error);
+        }
+      }
+      
       // 2. Create a Settings object that matches the expected type in Message.ts
       const scanSettings: MessageSettings = {
         automaticProcessing: true,

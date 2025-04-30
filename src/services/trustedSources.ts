@@ -1,5 +1,5 @@
 import { TrustedSource } from '../types/TrustedSource';
-import { getSupabaseClient } from './supabase/client';
+import { getSupabaseClient, supabase } from './supabase/client';
 import {
   addTrustedSource as addSource,
   getUserSettings as getSettings,
@@ -65,7 +65,7 @@ export async function getTrustedSourcesView(userId: string): Promise<TrustedSour
   try {
     console.log('Getting trusted sources view for user:', userId);
     
-    // Get a client with the proper headers
+    // Get a client with the proper headers - use singleton pattern
     const supabase = await getSupabaseClient();
     
     // Directly query the email_sources table
@@ -543,31 +543,6 @@ export async function reactivateTrustedSource(email: string, userId: string): Pr
   }
 }
 
-// Regular getTrustedSources function
-export async function getTrustedSources(userId: string): Promise<TrustedSource[]> {
-  try {
-    console.log('Getting trusted sources for user:', userId);
-    
-    const supabase = await getSupabaseClient();
-    const { data, error } = await supabase
-      .from('email_sources')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('deleted_at', null);
-
-    if (error) throw error;
-
-    // Normalize data format
-    const normalizedData = (data || []).map(normalizeTrustedSource);
-
-    return normalizedData;
-  } catch (error) {
-    console.error('Error fetching trusted sources:', error);
-    return [];
-  }
-}
-
 /**
  * Get user settings from Supabase
  * 
@@ -662,4 +637,160 @@ export async function checkDatabaseTables(): Promise<{
     console.error('Error checking database tables:', error);
     return { exists: false, tables: [] };
   }
-} 
+}
+
+/**
+ * Loads trusted sources from both trusted_sources_view and trusted_sources tables
+ * and stores them in Chrome local storage for future use
+ * 
+ * @param userId Supabase user ID
+ * @returns Object with success status, sources array, and message
+ */
+export const preloadTrustedSources = async (userId: string): Promise<{
+  success: boolean;
+  sources: TrustedSource[];
+  message: string;
+}> => {
+  console.log('trustedSources: Preloading trusted sources for user', userId);
+  
+  try {
+    if (!userId) {
+      return {
+        success: false,
+        sources: [],
+        message: 'No user ID provided'
+      };
+    }
+
+    const supabase = await getSupabaseClient();
+    console.log('trustedSources: Fetching trusted sources from Supabase');
+    
+    // First try to get from trusted_sources_view
+    let { data: viewSources, error: viewError } = await supabase
+      .from('trusted_sources_view')
+      .select('*')
+      .eq('user_id', userId);
+
+    if (viewError) {
+      console.warn('trustedSources: Error fetching from trusted_sources_view:', viewError.message);
+      
+      // Fallback to trusted_sources table
+      const { data: tableSources, error: tableError } = await supabase
+        .from('trusted_sources')
+        .select('*')
+        .eq('user_id', userId);
+      
+      if (tableError) {
+        console.error('trustedSources: Error fetching from trusted_sources table:', tableError.message);
+        return {
+          success: false,
+          sources: [],
+          message: `Failed to fetch trusted sources: ${tableError.message}`
+        };
+      }
+      
+      viewSources = tableSources;
+    }
+
+    if (!viewSources || viewSources.length === 0) {
+      console.warn('trustedSources: No trusted sources found for user', userId);
+      
+      // Still store empty array to indicate we've checked
+      await chrome.storage.local.set({ 'trusted_sources': [] });
+      
+      return {
+        success: true,
+        sources: [],
+        message: 'No trusted sources found'
+      };
+    }
+    
+    // Store in Chrome storage
+    console.log(`trustedSources: Storing ${viewSources.length} trusted sources in local storage`);
+    await chrome.storage.local.set({ 'trusted_sources': viewSources });
+    
+    return {
+      success: true,
+      sources: viewSources,
+      message: `Successfully loaded ${viewSources.length} trusted sources`
+    };
+  } catch (error) {
+    console.error('trustedSources: Error in preloadTrustedSources:', error);
+    return {
+      success: false,
+      sources: [],
+      message: `Error preloading trusted sources: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+};
+
+/**
+ * Retrieves trusted sources from Chrome local storage
+ * If none found, attempts to fetch from Supabase
+ * 
+ * @param userId Optional supabase user ID to fetch if not in storage
+ * @returns Array of trusted sources
+ */
+export const getTrustedSources = async (userId?: string): Promise<TrustedSource[]> => {
+  try {
+    // First try to get from storage
+    const result = await chrome.storage.local.get('trusted_sources');
+    
+    if (result.trusted_sources && Array.isArray(result.trusted_sources)) {
+      console.log(`trustedSources: Retrieved ${result.trusted_sources.length} trusted sources from storage`);
+      return result.trusted_sources;
+    }
+    
+    // If not in storage and we have userId, try to load from Supabase
+    if (userId) {
+      console.log('trustedSources: No trusted sources in storage, fetching from Supabase');
+      const preloadResult = await preloadTrustedSources(userId);
+      return preloadResult.sources;
+    }
+    
+    console.warn('trustedSources: No trusted sources in storage and no userId provided');
+    return [];
+  } catch (error) {
+    console.error('trustedSources: Error in getTrustedSources:', error);
+    return [];
+  }
+};
+
+/**
+ * Checks if an email address is in the list of trusted sources
+ * 
+ * @param emailAddress Email address to check
+ * @param trustedSources Optional array of trusted sources to check against
+ * @returns Boolean indicating if email is trusted
+ */
+export const isEmailTrusted = async (
+  emailAddress: string, 
+  trustedSources?: TrustedSource[]
+): Promise<boolean> => {
+  if (!emailAddress) return false;
+  
+  try {
+    // If trusted sources not provided, get from storage
+    const sources = trustedSources || await getTrustedSources();
+    
+    if (!sources || sources.length === 0) {
+      console.warn('trustedSources: No trusted sources available to check against');
+      return false;
+    }
+    
+    // Normalize email addresses for comparison
+    const normalizedEmail = emailAddress.toLowerCase().trim();
+    
+    // Check if email is in trusted sources
+    const isTrusted = sources.some(source => {
+      const sourceEmail = source.email_address?.toLowerCase().trim();
+      return sourceEmail === normalizedEmail;
+    });
+    
+    console.log(`trustedSources: Email ${normalizedEmail} is ${isTrusted ? 'trusted' : 'not trusted'}`);
+    return isTrusted;
+  } catch (error) {
+    console.error('trustedSources: Error checking if email is trusted:', error);
+    return false;
+  }
+}; 

@@ -4,7 +4,7 @@
  * Provides utility functions to transform between different bill data formats
  */
 
-import { Bill } from '../types/Bill';
+import { Bill, Vendor, BillSource } from '../types/Bill';
 import ScannedBill from '../types/ScannedBill';
 import { BillData } from '../types/Message';
 
@@ -15,22 +15,27 @@ import { BillData } from '../types/Message';
  * @returns Unified Bill object
  */
 export function transformScannedBillToBill(scannedBill: ScannedBill): Bill {
+  const vendor: Vendor = {
+    name: scannedBill.merchant,
+    category: scannedBill.category
+  };
+  
+  const source: BillSource = {
+    type: 'email',
+    messageId: scannedBill.id.startsWith('msg-') ? scannedBill.id : `msg-${scannedBill.id}`,
+    date: scannedBill.date.toISOString()
+  };
+  
   return {
     id: scannedBill.id || `bill-${Date.now()}`,
-    vendor: scannedBill.merchant,
+    vendor,
     amount: scannedBill.amount,
     currency: scannedBill.currency,
-    date: scannedBill.date,
-    category: scannedBill.category,
-    dueDate: scannedBill.dueDate,
-    isPaid: scannedBill.isPaid,
-    notes: scannedBill.notes,
-    source: {
-      type: 'email',
-      messageId: scannedBill.id.startsWith('msg-') ? scannedBill.id : `msg-${scannedBill.id}`,
-    },
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    dueDate: scannedBill.dueDate?.toISOString(),
+    source,
+    extractedAt: new Date().toISOString(),
+    extractionMethod: 'email-scan',
+    confidence: 0.8 // Default confidence value
   };
 }
 
@@ -41,25 +46,30 @@ export function transformScannedBillToBill(scannedBill: ScannedBill): Bill {
  * @returns Unified Bill object
  */
 export function transformBillDataToBill(billData: BillData): Bill {
+  const vendor: Vendor = {
+    name: billData.vendor,
+    category: billData.category
+  };
+  
+  const source: BillSource = {
+    type: 'email',
+    messageId: billData.emailId,
+    attachmentId: billData.attachmentId
+  };
+  
   return {
     id: billData.id || `bill-${Date.now()}`,
-    vendor: billData.vendor || 'Unknown Vendor',
+    vendor,
     amount: billData.amount || 0,
     currency: billData.currency || 'USD',
-    date: billData.date instanceof Date ? billData.date : new Date(billData.date || Date.now()),
-    category: billData.category || 'Other',
-    dueDate: billData.dueDate instanceof Date ? billData.dueDate : 
-      (billData.dueDate ? new Date(billData.dueDate) : undefined),
+    dueDate: billData.dueDate instanceof Date ? 
+      billData.dueDate.toISOString() : 
+      (billData.dueDate ? new Date(billData.dueDate).toISOString() : undefined),
     accountNumber: billData.accountNumber,
-    isPaid: billData.isPaid,
-    source: {
-      type: 'email',
-      messageId: billData.emailId,
-      attachmentId: billData.attachmentId,
-    },
-    language: billData.language as 'en' | 'hu' | undefined,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    source,
+    language: billData.language,
+    extractedAt: new Date().toISOString(),
+    confidence: billData.confidence
   };
 }
 
@@ -72,20 +82,17 @@ export function transformBillDataToBill(billData: BillData): Bill {
 export function transformBillToBillData(bill: Bill): BillData {
   return {
     id: bill.id,
-    vendor: bill.vendor,
+    vendor: bill.vendor?.name,
     amount: bill.amount,
-    date: bill.date,
     dueDate: bill.dueDate,
-    category: bill.category,
+    category: bill.vendor?.category,
     currency: bill.currency,
     accountNumber: bill.accountNumber,
-    isPaid: bill.isPaid,
     emailId: bill.source?.messageId,
     attachmentId: bill.source?.attachmentId,
     extractedFrom: bill.source?.type,
     language: bill.language,
-    confidence: bill.extractionConfidence,
-    notes: bill.notes
+    confidence: bill.confidence
   };
 }
 
@@ -96,25 +103,24 @@ export function transformBillToBillData(bill: Bill): BillData {
  * @returns Complete Bill object with defaults for missing values
  */
 export function createBill(partialBill: Partial<Bill>): Bill {
-  const now = new Date();
+  const now = new Date().toISOString();
+  
+  const vendor: Vendor = partialBill.vendor || {
+    name: 'Unknown Vendor',
+    category: 'Other'
+  };
   
   return {
     id: partialBill.id || `bill-${Date.now()}`,
-    vendor: partialBill.vendor || 'Unknown Vendor',
+    vendor,
     amount: partialBill.amount || 0,
     currency: partialBill.currency || 'USD',
-    date: partialBill.date || now,
-    category: partialBill.category || 'Other',
     dueDate: partialBill.dueDate,
     accountNumber: partialBill.accountNumber,
-    isPaid: partialBill.isPaid || false,
-    notes: partialBill.notes,
     source: partialBill.source || { type: 'manual' },
-    extractionConfidence: partialBill.extractionConfidence,
+    confidence: partialBill.confidence || 0,
     extractionMethod: partialBill.extractionMethod,
     language: partialBill.language,
-    createdAt: now,
-    updatedAt: now,
-    ...partialBill, // Allow override of defaults
+    extractedAt: partialBill.extractedAt || now
   };
 } 

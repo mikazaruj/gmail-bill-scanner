@@ -1,7 +1,7 @@
 // This is a simplified Supabase client that focuses on direct database operations
 // Rather than using Supabase Auth, we'll use Chrome's Identity API and manage sessions manually
 
-import { createClient, Session } from '@supabase/supabase-js';
+import { createClient, Session, SupabaseClient } from '@supabase/supabase-js';
 // We'll use the full interface definition below
 type Database = {
   public: {
@@ -236,123 +236,267 @@ type Database = {
 
 // Environment variables - loaded from .env.local
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://eipfspwyqzejhmybpofk.supabase.co';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTE0NzQ2MTAsImV4cCI6MjAyNzA1MDYxMH0.RKGuiOWMG1igzPYTbXJa1wRsaTiPxXy_9r5JCEZ5BNQ';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplaG15YnBvZmsiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTY5ODY5MTU3NSwiZXhwIjoyMDE0MjY3NTc1fQ.pY0yAcNTfGLz28cQAALp7TBFZyMiQoUYxRtOcnXw_so';
 // Service role key is no longer needed and removed for security
 // const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'your-service-role-key-here';
 
 // Chrome extension URL for OAuth redirects (no longer used but kept for reference)
 const EXTENSION_URL = chrome.runtime.getURL('');
 
-// Log config for debugging
-console.log('Supabase config:', { 
-  url: SUPABASE_URL.substring(0, 20) + '...',  // Only log part of URL for security
-  hasKey: !!SUPABASE_ANON_KEY,
-  extensionUrl: EXTENSION_URL
-});
+// Singleton instance
+let supabaseClientInstance: SupabaseClient<Database> | null = null;
+let isInitializing = false;
+let initializationPromise: Promise<SupabaseClient<Database>> | null = null;
 
-// Create a custom storage adapter for Chrome
-const chromeStorageAdapter = {
-  getItem: (key: string) => {
-    return new Promise<string | null>((resolve) => {
-      // Use sync storage for better persistence across devices
-      chrome.storage.sync.get([key], (result) => {
-        console.log(`Getting storage item ${key}:`, result[key] ? 'exists' : 'null');
+/**
+ * Gets the Supabase client singleton.
+ * Ensures only one instance is created and reused.
+ */
+export async function getSupabaseClient(): Promise<SupabaseClient<Database>> {
+  // Return existing instance if available
+  if (supabaseClientInstance) {
+    return supabaseClientInstance;
+  }
+
+  // If already initializing, return the existing promise to prevent duplicate initialization
+  if (isInitializing && initializationPromise) {
+    return initializationPromise;
+  }
+
+  // Set initializing flag
+  isInitializing = true;
+
+  // Create a promise for initialization
+  initializationPromise = (async () => {
+    try {
+      console.log('Initializing Supabase client singleton');
+      
+      // Get environment variables
+      const supabaseUrl = process.env.REACT_APP_SUPABASE_URL || 'https://eipfspwyqzejhmybpofk.supabase.co';
+      const supabaseAnonKey = process.env.REACT_APP_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplaG15YnBvZmsiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTY5ODY5MTU3NSwiZXhwIjoyMDE0MjY3NTc1fQ.pY0yAcNTfGLz28cQAALp7TBFZyMiQoUYxRtOcnXw_so';
+      
+      // Look up Google ID to add to headers if available
+      let googleId = null;
+      
+      try {
+        // Try to get Google ID from storage
+        const result = await chrome.storage.local.get(['google_user_id']);
         
-        // If not found in sync, try local as fallback
-        if (!result[key]) {
-          chrome.storage.local.get([key], (localResult) => {
-            // If found in local, migrate it to sync for future use
-            if (localResult[key]) {
-              chrome.storage.sync.set({ [key]: localResult[key] });
-              console.log(`Migrated ${key} from local to sync storage`);
-            }
-            resolve(localResult[key] || null);
-          });
+        if (result && result.google_user_id) {
+          googleId = result.google_user_id;
+          console.log('Creating Supabase client with Google ID: ID available');
         } else {
-          resolve(result[key]);
+          console.log('Creating Supabase client without Google ID');
         }
-      });
-    });
-  },
-  setItem: (key: string, value: string) => {
-    return new Promise<void>((resolve) => {
-      console.log(`Setting storage item ${key}:`, value ? 'value exists' : 'null');
-      // Store in both sync and local for redundancy
-      chrome.storage.sync.set({ [key]: value }, () => {
-        chrome.storage.local.set({ [key]: value }, () => {
-          resolve();
-        });
-      });
-    });
-  },
-  removeItem: (key: string) => {
-    return new Promise<void>((resolve) => {
-      console.log(`Removing storage item ${key}`);
-      // Remove from both storages
-      chrome.storage.sync.remove(key, () => {
-        chrome.storage.local.remove(key, () => {
-          resolve();
-        });
-      });
-    });
-  },
-};
-
-// Create and export the Supabase client - we only need database operations
-export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: true,
-    detectSessionInUrl: false,
-    storage: chromeStorageAdapter,
-    storageKey: 'gmail-bill-scanner-auth'
-  },
-  global: {
-    headers: {
-      'x-application-name': 'gmail-bill-scanner'
+      } catch (error) {
+        console.error('Error getting Google ID from storage:', error);
+      }
+      
+      // Create Supabase client with headers
+      const { createClient } = await import('@supabase/supabase-js');
+      
+      const options = {
+        auth: {
+          autoRefreshToken: true,
+          persistSession: true,
+          detectSessionInUrl: false
+        },
+        global: {
+          headers: {
+            'x-google-id': googleId || '',
+          },
+        },
+      };
+      
+      // Create the client instance
+      supabaseClientInstance = createClient<Database>(supabaseUrl, supabaseAnonKey, options);
+      
+      return supabaseClientInstance;
+    } catch (error) {
+      console.error('Error initializing Supabase client:', error);
+      isInitializing = false;
+      initializationPromise = null;
+      throw error;
     }
-  }
-});
+  })();
 
-// Export the function to get the client
-export async function getSupabaseClient() {
-  // Get Google user ID from Chrome storage
-  const { google_user_id } = await chrome.storage.local.get('google_user_id');
-  
-  console.log('Retrieved from storage - google_user_id:', google_user_id);
-  
-  // Set up headers including Google user ID if available
-  const headers: Record<string, string> = {
-    'x-application-name': 'gmail-bill-scanner'
-  };
-  
-  // Add Google ID to headers for RLS policies if available
-  // IMPORTANT: Use the exact header name that matches your RLS policy
-  if (google_user_id) {
-    // This must match exactly with what's in your RLS policy:
-    // current_setting('request.headers.google_user_id', true)::text
-    headers['google_user_id'] = google_user_id;
-    console.log('Setting Supabase headers with Google ID:', headers);
-  } else {
-    console.log('No Google user ID available for Supabase headers - RLS policies will not work');
+  try {
+    const instance = await initializationPromise;
+    isInitializing = false;
+    return instance;
+  } catch (error) {
+    isInitializing = false;
+    initializationPromise = null;
+    throw error;
   }
-  
-  // Create a fresh client each time to avoid auth issues
-  const freshClient = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: true,
-      detectSessionInUrl: false,
-      storage: chromeStorageAdapter,
-      storageKey: 'gmail-bill-scanner-auth'
-    },
-    global: {
-      headers: headers
-    }
-  });
-  
-  return freshClient;
 }
+
+// Create a type for our supabase object with the instance property
+interface SupabaseProxy {
+  from: (table: string) => {
+    select: (columns?: string) => {
+      eq: (column: string, value: any) => any;
+      is: (column: string, value: any) => any;
+      limit: (count: number) => any;
+      single: () => any;
+      maybeSingle: () => any;
+    };
+    insert: (data: any) => {
+      select: () => any;
+      single: () => any;
+    };
+    update: (data: any) => {
+      eq: (column: string, value: any) => any;
+    };
+    delete: () => {
+      eq: (column: string, value: any) => any;
+    };
+  };
+  auth: {
+    signOut: () => Promise<any>;
+    setSession: (sessionData: any) => Promise<any>;
+    signUp: (credentials: { email: string; password: string; options?: any }) => Promise<any>;
+    signInWithPassword: (credentials: { email: string; password: string }) => Promise<any>;
+    signInWithOAuth: (options: any) => Promise<any>;
+    getUser: (token?: string) => Promise<any>;
+    getSession: () => Promise<any>;
+    onAuthStateChange: (callback: (event: string, session: any) => void) => { data: { subscription: any } };
+    refreshSession: () => Promise<any>;
+    admin: {
+      deleteUser: (userId: string) => Promise<any>;
+    };
+  };
+  rpc: (functionName: string, params?: any) => Promise<any>;
+  instance: {
+    [key: string]: (...args: any[]) => Promise<any>;
+  }
+}
+
+// Export the singleton instance for direct usage when needed
+export const supabase: SupabaseProxy = {
+  get instance() {
+    // Return a proxy that will wait for the real instance
+    return new Proxy({}, {
+      get(_target, prop: string) {
+        // Return a function that will get the client and call the method
+        return async (...args: any[]) => {
+          const client = await getSupabaseClient();
+          if (typeof client[prop as keyof typeof client] === 'function') {
+            return (client[prop as keyof typeof client] as Function)(...args);
+          }
+          return client[prop as keyof typeof client];
+        };
+      }
+    });
+  },
+  
+  // Implement the auth property
+  get auth() {
+    return new Proxy({}, {
+      get(_target, prop: string) {
+        return async (...args: any[]) => {
+          const client = await getSupabaseClient();
+          if (typeof client.auth[prop as keyof typeof client.auth] === 'function') {
+            return (client.auth[prop as keyof typeof client.auth] as Function)(...args);
+          }
+          return client.auth[prop as keyof typeof client.auth];
+        };
+      }
+    }) as any;
+  },
+  
+  // Implement from method
+  from(table: string) {
+    const getQuery = async () => {
+      const client = await getSupabaseClient();
+      return client.from(table);
+    };
+    
+    return {
+      select(columns?: string) {
+        const getSelectQuery = async () => {
+          const query = await getQuery();
+          return columns ? query.select(columns) : query.select();
+        };
+        
+        return {
+          eq: async (column: string, value: any) => {
+            const query = await getSelectQuery();
+            return query.eq(column, value);
+          },
+          is: async (column: string, value: any) => {
+            const query = await getSelectQuery();
+            return query.is(column, value);
+          },
+          limit: async (count: number) => {
+            const query = await getSelectQuery();
+            return query.limit(count);
+          },
+          single: async () => {
+            const query = await getSelectQuery();
+            return query.single();
+          },
+          maybeSingle: async () => {
+            const query = await getSelectQuery();
+            return query.maybeSingle();
+          }
+        };
+      },
+      
+      insert(data: any) {
+        const insertAsync = async () => {
+          const query = await getQuery();
+          return query.insert(data);
+        };
+        
+        return {
+          select: async () => {
+            const insertQuery = await insertAsync();
+            return insertQuery.select();
+          },
+          single: async () => {
+            const insertQuery = await insertAsync();
+            return insertQuery.select().single();
+          }
+        };
+      },
+      
+      update(data: any) {
+        const updateAsync = async () => {
+          const query = await getQuery();
+          return query.update(data);
+        };
+        
+        return {
+          eq: async (column: string, value: any) => {
+            const updateQuery = await updateAsync();
+            return updateQuery.eq(column, value);
+          }
+        };
+      },
+      
+      delete() {
+        const deleteAsync = async () => {
+          const query = await getQuery();
+          return query.delete();
+        };
+        
+        return {
+          eq: async (column: string, value: any) => {
+            const deleteQuery = await deleteAsync();
+            return deleteQuery.eq(column, value);
+          }
+        };
+      }
+    };
+  },
+  
+  // Implement rpc method
+  async rpc(functionName: string, params?: any) {
+    const client = await getSupabaseClient();
+    return client.rpc(functionName, params);
+  }
+};
 
 /**
  * Gets the stored session from Chrome storage
@@ -644,38 +788,57 @@ export async function getGoogleCredentials(userId: string) {
 }
 
 /**
- * Get trusted sources for the current user
- * Uses service role to bypass RLS policies
+ * Get trusted email sources for a user
+ * 
+ * @param userId The user ID
+ * @returns Array of trusted email sources
  */
-export async function getTrustedSources() {
+export async function getTrustedEmailSources(userId: string): Promise<any[]> {
   try {
-    console.log('Getting trusted sources using service role client');
+    const supabase = await getSupabaseClient();
     
-    // Get current user ID from storage
-    const { supabase_user_id } = await chrome.storage.local.get('supabase_user_id');
-    
-    if (!supabase_user_id) {
-      console.error('No Supabase user ID available');
-      return [];
-    }
-    
-    // Use supabaseAdmin (service role client) instead of regular client
-    const { data, error } = await supabase
-      .from('email_sources')
+    // Query trusted_sources_view to get all active trusted sources
+    const { data: viewData, error: viewError } = await supabase
+      .from('trusted_sources_view')
       .select('*')
-      .eq('user_id', supabase_user_id)
-      .eq('is_active', true)
-      .is('deleted_at', null);
+      .eq('user_id', userId)
+      .eq('is_active', true);
     
-    if (error) {
-      console.error('Error getting trusted sources:', error);
-      return [];
+    if (viewError) {
+      console.error('Error fetching from trusted_sources_view:', viewError);
+      
+      // Fallback to direct table query if view query fails
+      const { data, error } = await supabase
+        .from('email_sources')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .is('deleted_at', null);
+      
+      if (error) {
+        console.error('Error fetching trusted sources from table:', error);
+        return [];
+      }
+      
+      return data || [];
     }
     
-    console.log('Successfully retrieved trusted sources:', data?.length || 0);
-    return data || [];
+    console.log(`Retrieved ${viewData?.length || 0} trusted sources from trusted_sources_view`);
+    
+    // Additional logging
+    if (viewData && viewData.length > 0) {
+      console.log('Trusted sources found (first few chars of emails):', 
+        viewData.map(s => s.email_address ? 
+          `${s.email_address.substring(0, 3)}...${s.email_address.split('@')[1]}` : 
+          'invalid email'
+        ));
+    } else {
+      console.warn('No trusted sources found for user in trusted_sources_view:', userId);
+    }
+    
+    return viewData || [];
   } catch (error) {
-    console.error('Failed to get trusted sources:', error);
+    console.error('Error in getTrustedEmailSources:', error);
     return [];
   }
 }
@@ -2037,35 +2200,6 @@ export const verifySupabaseConnection = async (): Promise<boolean> => {
     return false;
   }
 };
-
-/**
- * Get trusted email sources for a user
- * 
- * @param userId The user ID
- * @returns Array of trusted email sources
- */
-export async function getTrustedEmailSources(userId: string): Promise<any[]> {
-  try {
-    const supabase = await getSupabaseClient();
-    
-    const { data, error } = await supabase
-      .from('email_sources')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('deleted_at', null);
-    
-    if (error) {
-      console.error('Error fetching trusted sources:', error);
-      return [];
-    }
-    
-    return data || [];
-  } catch (error) {
-    console.error('Error in getTrustedEmailSources:', error);
-    return [];
-  }
-}
 
 /**
  * Update user processing statistics

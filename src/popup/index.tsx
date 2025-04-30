@@ -1,4 +1,4 @@
-import React, { useState, useEffect, ReactNode } from 'react';
+import React, { useState, useEffect, ReactNode, useRef } from 'react';
 import * as ReactDOM from 'react-dom/client';
 import '../globals.css';
 import { BillData, BillFieldConfig } from '../types/Message';
@@ -10,6 +10,9 @@ import {
 
 // Import Debug Tools
 import '../debug-tools';
+
+// Initialize Supabase singleton client
+import { getSupabaseClient } from '../services/supabase/client';
 
 // Context Providers
 import { ScanProvider } from './context/ScanContext';
@@ -24,6 +27,9 @@ import Profile from './pages/Profile';
 import { useAuth } from './hooks/useAuth';
 // We'll use the ScanContext directly but provide fallback hardcoded values
 import { ScanContext } from './context/ScanContext';
+
+// Initialize the singleton Supabase client only once at module level
+getSupabaseClient().catch(err => console.error('Failed to initialize Supabase client in popup:', err));
 
 interface CollapsibleSectionProps {
   title: string;
@@ -90,6 +96,9 @@ export const PopupContent = () => {
   const [authError, setAuthError] = useState<string | null>(null);
   const [isReturningUser, setIsReturningUser] = useState<boolean>(false);
   
+  // Add a ref to track if user status check has been done
+  const userStatusChecked = useRef(false);
+  
   const { isAuthenticated, isLoading, userProfile, refreshProfile } = useAuth();
   
   // Hardcoded default scan values until we fix the import issues
@@ -125,35 +134,87 @@ export const PopupContent = () => {
 
   // When component mounts, check if this is a returning user
   useEffect(() => {
+    // Only run once using the ref
+    if (userStatusChecked.current) return;
+    userStatusChecked.current = true;
+    
+    console.log('Checking user status for auto-login (ONCE ONLY)');
+    
     const checkUserStatus = async () => {
       try {
-        console.log('Checking user status for auto-login');
+        // Check if we already have authentication data stored
+        const storageData = await chrome.storage.local.get([
+          'google_profile',
+          'supabase_user_id',
+          'google_user_id',
+          'auth_state'
+        ]);
         
-        // Check if we have email in local storage first
-        const storedData = await chrome.storage.sync.get(['gmail-bill-scanner-auth', 'is_returning_user']);
-        console.log('Stored data found:', !!storedData['gmail-bill-scanner-auth']);
+        console.log('Stored data found:', !!storageData.google_profile);
         
-        if (storedData && storedData['gmail-bill-scanner-auth']) {
-          // User has previously authenticated
-          setIsReturningUser(true);
+        if (storageData.google_profile && storageData.supabase_user_id) {
+          // Instead of setUser (which doesn't exist), store data directly
+          console.log('Found authentication data, setting up auto-login');
           
-          // Always try to auto-login for better UX
-          console.log('Auto-logging in returning user');
-          try {
-            // We'll try to refresh the auth status first
-            await refreshProfile();
-            
-            // If that didn't work, explicitly login
-            if (!isAuthenticated) {
-              console.log('Auth status refresh didn\'t authenticate, triggering explicit login');
-              await handleLogin();
+          // Set auth state directly in storage
+          await chrome.storage.local.set({
+            'auth_state': {
+              isAuthenticated: true,
+              userId: storageData.supabase_user_id,
+              email: storageData.google_profile.email,
+              lastSynced: new Date().toISOString()
             }
-          } catch (loginError) {
-            console.error('Auto-login failed:', loginError);
-            // Don't show error to user, just fall back to manual login
+          });
+          
+          // Preload trusted sources if user is authenticated
+          try {
+            const { preloadTrustedSources } = await import('../services/trustedSources');
+            const { getUserSettingsWithDefaults } = await import('../services/settings');
+            
+            // First check if trustedSourcesOnly is enabled
+            const settings = await getUserSettingsWithDefaults(storageData.supabase_user_id);
+            
+            if (settings && settings.trusted_sources_only) {
+              console.log('Preloading trusted sources on startup (trustedSourcesOnly is enabled)');
+              const result = await preloadTrustedSources(storageData.supabase_user_id);
+              
+              if (result.success) {
+                console.log(`Successfully preloaded ${result.sources.length} trusted sources: ${result.message}`);
+                
+                if (result.sources.length > 0) {
+                  // Log a sample of the sources
+                  console.log('Sample of trusted sources:', 
+                    result.sources.slice(0, 3).map(s => s.email_address ? 
+                    `${s.email_address.substring(0, 3)}...${s.email_address.split('@')[1]}` : 
+                    'invalid email'));
+                } else {
+                  console.warn('No trusted sources found during preload, but trustedSourcesOnly is enabled');
+                }
+              } else {
+                console.error('Failed to preload trusted sources:', result.message);
+              }
+            }
+          } catch (error) {
+            console.error('Error preloading trusted sources:', error);
+          }
+          
+          // Update the local state for authentication if needed
+          if (refreshProfile) {
+            try {
+              await refreshProfile();
+            } catch (refreshError) {
+              console.error('Error refreshing profile:', refreshError);
+            }
           }
         } else {
           console.log('No stored auth data found, user will need to authenticate');
+          // Reset auth state in storage instead of using setAuthenticated
+          await chrome.storage.local.set({
+            'auth_state': {
+              isAuthenticated: false,
+              lastSynced: new Date().toISOString()
+            }
+          });
         }
       } catch (error) {
         console.error('Error checking returning user status:', error);
@@ -161,7 +222,8 @@ export const PopupContent = () => {
     };
     
     checkUserStatus();
-  }, []);
+    // Empty dependency array ensures this effect runs only once
+  }, [refreshProfile]);
 
   // Check if background script is ready
   useEffect(() => {

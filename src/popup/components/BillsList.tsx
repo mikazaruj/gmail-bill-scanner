@@ -1,12 +1,12 @@
 import React from 'react';
-import { ExtractedBill } from '../../services/billExtractor';
+import { Bill } from '../../types/Bill';
 
 interface BillsListProps {
   bills: {
     emailId: string;
     emailDate: Date;
     emailSubject: string;
-    bill: ExtractedBill;
+    bill: Bill;
   }[];
   loading: boolean;
 }

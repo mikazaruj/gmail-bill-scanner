@@ -13,17 +13,19 @@ import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../typ
 import { 
   isAuthenticated,
   getAccessToken,
-  authenticate,
   fetchGoogleUserInfo,
   fetchGoogleUserInfoExtended,
   signOut as googleSignOut
 } from '../services/auth/googleAuth';
-import { signInWithGoogle, syncAuthState } from '../services/supabase/client';
+import { authenticate } from '../services/api/auth';
+import { signInWithGoogle, syncAuthState, getSupabaseClient } from '../services/supabase/client';
 import { searchEmails } from '../services/gmail/gmailService';
 import { ensureUserRecord } from '../services/identity/userIdentityService';
 import { handleError } from '../services/error/errorService';
 import { buildBillSearchQuery } from '../services/gmailSearchBuilder';
 import { Bill } from '../types/Bill';
+import { getTrustedSources } from '../services/trustedSources';
+import { getTrustedEmailSources } from '../services/supabase/client';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -32,6 +34,9 @@ const SCOPES = [
   "https://www.googleapis.com/auth/userinfo.email",
   "https://www.googleapis.com/auth/userinfo.profile"
 ];
+
+// Initialize Supabase singleton on startup to avoid multiple instances
+getSupabaseClient().catch(err => console.error('Failed to initialize Supabase client in background:', err));
 
 // At the very top of the file
 console.log('=== DEBUG: Background script with trusted sources handlers loaded ===');
@@ -375,7 +380,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             console.log('Authentication mode:', isSignUp ? 'sign-up' : 'sign-in');
             
             // Call the authentication function to get Google token and profile
-            const { authenticate } = await import('../services/auth/googleAuth');
+            const { authenticate } = await import('../services/api/auth');
             const authResult = await authenticate();
             
             console.log('Background: Google authentication completed with result:', 
@@ -1542,6 +1547,7 @@ async function handleScanEmails(
     let supabaseClient;
     let getUserSettings;
     let getTrustedSources;
+    let getTrustedEmailSources;
     let updateUserStats;
     let resolveUserIdentity;
     let getSharedBillExtractor;
@@ -1550,17 +1556,19 @@ async function handleScanEmails(
       const { 
         getSupabaseClient, 
         getUserSettings: getSettings, 
-        getTrustedEmailSources,
+        getTrustedEmailSources: getEmailSources,
         updateUserProcessingStats
       } = await import('../services/supabase/client');
       
       const { resolveUserIdentity: resolveIdentity } = await import('../services/identity/userIdentityService');
       const { getSharedBillExtractor: getExtractor } = await import('../services/extraction/extractorFactory');
+      const { getTrustedSources: getSources } = await import('../services/trustedSources');
       
       resolveUserIdentity = resolveIdentity;
       supabaseClient = await getSupabaseClient();
       getUserSettings = getSettings;
-      getTrustedSources = getTrustedEmailSources;
+      getTrustedSources = getSources;
+      getTrustedEmailSources = getEmailSources;
       updateUserStats = updateUserProcessingStats;
       getSharedBillExtractor = getExtractor;
     } catch (error) {
@@ -1671,11 +1679,11 @@ async function handleScanEmails(
     
     // Get trusted email sources if the setting is enabled
     let trustedSources: { email_address: string; id?: string; description?: string }[] = [];
-    if (settings.trustedSourcesOnly && userId && getTrustedSources) {
+    if (settings.trustedSourcesOnly && userId) {
       try {
         console.log('Trusted sources only is enabled, retrieving trusted sources from database...');
         trustedSources = await getTrustedSources(userId);
-        console.log(`Retrieved ${trustedSources.length} trusted sources from database:`);
+        console.log(`Retrieved ${trustedSources.length} trusted sources from database`);
         
         // Log trusted sources for debugging (without revealing personal info)
         if (trustedSources.length > 0) {
@@ -1683,14 +1691,34 @@ async function handleScanEmails(
             id: source.id,
             email: source.email_address 
               ? `${source.email_address.substring(0, 3)}...${source.email_address.split('@')[1]}`
-              : 'invalid email'
+              : 'invalid email',
+            description: source.description
           })));
         } else {
           console.warn('No trusted sources found, but trusted_sources_only is enabled. Scan may return no results.');
+          // Send a notification to the user
+          console.log('Sending notification about missing trusted sources...');
+          chrome.notifications.create({
+            type: 'basic',
+            iconUrl: '/assets/icon-128.png',
+            title: 'Gmail Bill Scanner',
+            message: 'You have "Trusted Sources Only" enabled but no trusted sources configured. Please add trusted email sources in Settings.',
+            priority: 2
+          });
         }
       } catch (sourcesError) {
         console.error('Error fetching trusted sources:', sourcesError);
+        // Fallback: Try to get trusted sources from getTrustedEmailSources as well
+        try {
+          console.log('Attempting fallback to getTrustedEmailSources...');
+          trustedSources = await getTrustedEmailSources(userId);
+          console.log(`Fallback retrieved ${trustedSources.length} trusted sources`);
+        } catch (fallbackError) {
+          console.error('Fallback also failed:', fallbackError);
+        }
       }
+    } else if (!settings.trustedSourcesOnly) {
+      console.log('Trusted sources only is disabled, scanning all emails.');
     }
 
     // Build Gmail search query using the improved builder
@@ -2437,14 +2465,11 @@ async function storeTokenDirectly(userId: string, token: string): Promise<{ succ
 function transformBillToBillData(bill: Bill): BillData {
   return {
     id: bill.id,
-    vendor: bill.vendor,
+    vendor: bill.vendor?.name,
     amount: bill.amount,
-    date: bill.date,
     currency: bill.currency,
-    category: bill.category,
+    category: bill.vendor?.category,
     dueDate: bill.dueDate,
-    isPaid: bill.isPaid,
-    notes: bill.notes,
     accountNumber: bill.accountNumber,
     emailId: bill.source?.messageId,
     // Include any attachment ID from the source if available
