@@ -376,7 +376,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             
             // Call the authentication function to get Google token and profile
             const { authenticate } = await import('../services/auth/googleAuth');
-            const authResult = await authenticate();
+            const authResult = await authenticateWithProfile();
             
             console.log('Background: Google authentication completed with result:', 
               authResult.success ? 'Success' : 'Failed',
@@ -743,7 +743,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         
         // Now authenticate with user interaction
-        const authResult = await authenticate();
+        const authResult = await authenticateWithProfile();
         
         // If successful, update the connection
         if (authResult.success && authResult.profile) {
@@ -2560,4 +2560,45 @@ function extractEmailAddress(fromHeader: string): string {
   }
   
   return fromHeader; // Return original string if no email pattern found
+}
+
+// Add this after the import section
+/**
+ * Enhanced authenticate function that returns a complete auth result object
+ * @returns Authentication result with profile information
+ */
+async function authenticateWithProfile(): Promise<{ success: boolean; profile?: any; error?: string }> {
+  try {
+    // Import the functions only when needed instead of at function definition time
+    const authModule = await import('../services/auth/googleAuth');
+    const token = await authModule.authenticate();
+    
+    if (!token) {
+      return { 
+        success: false, 
+        error: 'Failed to get authentication token' 
+      };
+    }
+    
+    // Fetch user profile with the token
+    const profile = await authModule.fetchGoogleUserInfoExtended(token);
+    
+    if (!profile) {
+      return { 
+        success: false, 
+        error: 'Failed to get user info from Google' 
+      };
+    }
+    
+    return {
+      success: true,
+      profile
+    };
+  } catch (error) {
+    console.error('Authentication error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown authentication error'
+    };
+  }
 }

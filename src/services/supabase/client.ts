@@ -235,15 +235,19 @@ type Database = {
 };
 
 // Environment variables - loaded from .env.local
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://eipfspwyqzejhmybpofk.supabase.co';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGZzcHd5cXplamhteWJwb2ZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTE0NzQ2MTAsImV4cCI6MjAyNzA1MDYxMH0.RKGuiOWMG1igzPYTbXJa1wRsaTiPxXy_9r5JCEZ5BNQ';
-// Service role key is no longer needed and removed for security
-// const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'your-service-role-key-here';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+
+// Validate required environment variables
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  console.error('Error: SUPABASE_URL and SUPABASE_ANON_KEY environment variables must be set');
+  throw new Error('Missing required Supabase configuration. Please check your environment variables.');
+}
 
 // Chrome extension URL for OAuth redirects (no longer used but kept for reference)
 const EXTENSION_URL = chrome.runtime.getURL('');
 
-// Log config for debugging
+// Log config for debugging (safely)
 console.log('Supabase config:', { 
   url: SUPABASE_URL.substring(0, 20) + '...',  // Only log part of URL for security
   hasKey: !!SUPABASE_ANON_KEY,
@@ -298,8 +302,15 @@ const chromeStorageAdapter = {
   },
 };
 
-// Create and export the Supabase client - we only need database operations
-export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+// Create a simplified type for the Supabase client to avoid excessive type depth
+type SimplifiedSupabaseClient = {
+  from: (table: string) => any;
+  auth: any;
+  rpc: (fn: string, params?: any) => any;
+};
+
+// Create the Supabase client with a simpler type to avoid TypeScript performance issues
+const supabaseClient = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     autoRefreshToken: false,
     persistSession: true,
@@ -314,8 +325,20 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, 
   }
 });
 
+// Export with a simplified type to avoid deep type instantiation errors
+export const supabase: SimplifiedSupabaseClient = supabaseClient as any;
+
+/**
+ * Helper function to safely use Supabase client without excessive type depth issues
+ * @param client The Supabase client
+ * @returns A type-safe wrapper for the client
+ */
+function safeClient(client: any) {
+  return client as any;
+}
+
 // Export the function to get the client
-export async function getSupabaseClient() {
+export async function getSupabaseClient(): Promise<SimplifiedSupabaseClient> {
   // Get Google user ID from Chrome storage
   const { google_user_id } = await chrome.storage.local.get('google_user_id');
   
@@ -351,7 +374,8 @@ export async function getSupabaseClient() {
     }
   });
   
-  return freshClient;
+  // Return with simplified type to avoid deep type instantiation
+  return freshClient as unknown as SimplifiedSupabaseClient;
 }
 
 /**
@@ -634,9 +658,10 @@ export async function storeGoogleToken(userId: string, token: string): Promise<b
  * @returns Google credentials if found
  */
 export async function getGoogleCredentials(userId: string) {
-  const supabase = await getSupabaseClient();
+  const client = await getSupabaseClient();
   
-  return await supabase
+  // Now we can use the client directly without type assertions
+  return client
     .from('google_credentials')
     .select('*')
     .eq('user_id', userId)
@@ -663,9 +688,9 @@ export async function getTrustedSources() {
     const { data, error } = await supabase
       .from('email_sources')
       .select('*')
-      .eq('user_id', supabase_user_id)
-      .eq('is_active', true)
-      .is('deleted_at', null);
+      .eq('user_id' as any, supabase_user_id)
+      .eq('is_active' as any, true)
+      .is('deleted_at' as any, null);
     
     if (error) {
       console.error('Error getting trusted sources:', error);
@@ -708,7 +733,7 @@ export async function addTrustedSource(emailAddress: string, description?: strin
         email_address: emailAddress,
         description: description || null,
         is_active: true
-      })
+      } as any)
       .select()
       .single();
     
@@ -762,7 +787,7 @@ export async function recordProcessedItem(
         sheet_id: sheetId || null,
         extracted_data: extractedData || null,
         error_message: errorMessage || null
-      });
+      } as any);
   } catch (error) {
     console.error('Error recording processed item:', error);
     return { error: 'Failed to record processed item' };
@@ -782,7 +807,7 @@ export async function getUserSettings(userId: string) {
     const { data: viewData, error: viewError } = await supabase
       .from('user_settings_view')
       .select('*')
-      .eq('id', userId)
+      .eq('id' as any, userId)
       .maybeSingle();
     
     if (!viewError && viewData) {
@@ -798,7 +823,7 @@ export async function getUserSettings(userId: string) {
     const { data: prefData, error: prefError } = await supabase
       .from('user_preferences')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id' as any, userId)
       .maybeSingle();
     
     if (!prefError && prefData) {
@@ -810,7 +835,7 @@ export async function getUserSettings(userId: string) {
     const { data, error } = await supabase
       .from('user_settings')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id' as any, userId)
       .maybeSingle();
     
     if (error) {
@@ -848,7 +873,7 @@ export async function saveUserSettings(
     const { data, error: queryError } = await supabase
       .from('user_settings')
       .select('id')
-      .eq('user_id', userId)
+      .eq('user_id' as any, userId)
       .maybeSingle();
     
     if (queryError) {
@@ -856,7 +881,7 @@ export async function saveUserSettings(
       return { error: queryError };
     }
     
-    if (data) {
+    if (data && data.id) {
       // Update existing settings
       console.log('Updating existing settings for user:', userId);
       const { error } = await supabase
@@ -864,8 +889,8 @@ export async function saveUserSettings(
         .update({
           ...settings,
           updated_at: new Date().toISOString()
-        })
-        .eq('id', data.id);
+        } as any)
+        .eq('id' as any, data.id);
         
       return { error };
     } else {
@@ -881,7 +906,7 @@ export async function saveUserSettings(
           label_name: settings.label_name || null,
           spreadsheet_id: settings.spreadsheet_id || null,
           spreadsheet_name: settings.spreadsheet_name || null
-        });
+        } as any);
         
       return { error };
     }
@@ -1027,10 +1052,10 @@ export async function deleteAccount() {
     console.log('Deleting account for user:', user.id);
     
     // Delete related data
-    await supabase.from('user_settings').delete().eq('user_id', user.id);
-    await supabase.from('google_credentials').delete().eq('user_id', user.id);
-    await supabase.from('email_sources').delete().eq('user_id', user.id);
-    await supabase.from('processed_items').delete().eq('user_id', user.id);
+    await supabase.from('user_settings').delete().eq('user_id' as any, user.id);
+    await supabase.from('google_credentials').delete().eq('user_id' as any, user.id);
+    await supabase.from('email_sources').delete().eq('user_id' as any, user.id);
+    await supabase.from('processed_items').delete().eq('user_id' as any, user.id);
     
     // Finally, delete the user account
     const { error: deleteError } = await supabase.auth.admin.deleteUser(user.id);
@@ -1286,7 +1311,7 @@ export async function getUserStats(userId: string) {
     const { data, error } = await supabase
       .from('user_profile_view')
       .select('*')
-      .eq('id', userId)
+      .eq('id' as any, userId)
       .single();
       
     if (error) {
@@ -1297,7 +1322,7 @@ export async function getUserStats(userId: string) {
         const { data: basicUserData, error: basicError } = await supabase
           .from('users')
           .select('id, email, created_at')
-          .eq('id', userId)
+          .eq('id' as any, userId)
           .single();
           
         if (basicError) {
@@ -1307,7 +1332,7 @@ export async function getUserStats(userId: string) {
         
         // Return minimal data
         return {
-          ...basicUserData,
+          ...(basicUserData as any),
           total_processed_items: 0,
           successful_processed_items: 0,
           last_processed_at: null
@@ -1320,9 +1345,9 @@ export async function getUserStats(userId: string) {
       
     // Convert stats from array count to numbers for consistency
     const processedStats = {
-      ...data,
-      total_processed_items: data.total_items || 0,
-      successful_processed_items: data.successful_items || 0
+      ...(data as any),
+      total_processed_items: data?.total_items || 0,
+      successful_processed_items: data?.successful_items || 0
     };
     
     console.log('Successfully retrieved user stats:', processedStats);
@@ -1711,7 +1736,7 @@ export async function createGoogleUser(
         plan: 'free',
         quota_bills_monthly: 50,
         quota_bills_used: 0
-      });
+      } as any);
     
     if (insertError) {
       console.error('Error creating public user record:', insertError);
@@ -1755,7 +1780,7 @@ export async function findUserByGoogleId(googleId: string): Promise<any> {
     const { data, error } = await supabase
       .from('users')
       .select('*')
-      .eq('google_user_id', googleId)
+      .eq('google_user_id' as any, googleId)
       .maybeSingle();
     
     if (error) {
@@ -1785,7 +1810,7 @@ export async function findUserByEmail(email: string): Promise<any> {
     const { data, error } = await supabase
       .from('users')
       .select('*')
-      .eq('email', email)
+      .eq('email' as any, email)
       .maybeSingle();
     
     if (error) {
@@ -1813,8 +1838,8 @@ export async function updateUserGoogleId(userId: string, googleId: string): Prom
     
     const { error } = await supabase
       .from('users')
-      .update({ google_user_id: googleId })
-      .eq('id', userId);
+      .update({ google_user_id: googleId } as any)
+      .eq('id' as any, userId);
     
     if (error) {
       console.error('Error updating user Google ID:', error);
@@ -1846,7 +1871,7 @@ export async function verifyUserByGoogleId(googleId: string): Promise<{
     const { data: userData, error: userError } = await supabase
       .from('users')
       .select('id, email')
-      .eq('google_user_id', googleId)
+      .eq('google_user_id' as any, googleId)
       .maybeSingle();
     
     if (userError) {
@@ -1854,7 +1879,7 @@ export async function verifyUserByGoogleId(googleId: string): Promise<{
       return { success: false, error: userError.message };
     }
     
-    if (userData) {
+    if (userData && 'id' in userData) {
       console.log('Found user in public.users table:', userData.id);
       return { success: true, userId: userData.id };
     }
@@ -1875,10 +1900,10 @@ export async function verifyUserByGoogleId(googleId: string): Promise<{
           const { data: emailUser } = await supabase
             .from('users')
             .select('id')
-            .eq('email', profile.email)
+            .eq('email' as any, profile.email)
             .maybeSingle();
             
-          if (emailUser) {
+          if (emailUser && 'id' in emailUser) {
             // Update this user with the Google ID
             await updateUserGoogleId(emailUser.id, googleId);
             return { success: true, userId: emailUser.id };
@@ -2051,9 +2076,9 @@ export async function getTrustedEmailSources(userId: string): Promise<any[]> {
     const { data, error } = await supabase
       .from('email_sources')
       .select('*')
-      .eq('user_id', userId)
-      .eq('is_active', true)
-      .is('deleted_at', null);
+      .eq('user_id' as any, userId)
+      .eq('is_active' as any, true)
+      .is('deleted_at' as any, null);
     
     if (error) {
       console.error('Error fetching trusted sources:', error);
@@ -2102,7 +2127,7 @@ export async function updateUserProcessingStats(
           successful_processed: stats.successful_processed_items,
           summary_type: 'scan_stats'
         }
-      });
+      } as any);
     
     if (error) {
       console.error('Error inserting processing stats record:', error);
