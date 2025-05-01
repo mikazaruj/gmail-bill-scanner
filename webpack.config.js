@@ -99,20 +99,16 @@ module.exports = {
     }),
     new CopyPlugin({
       patterns: [
-        { 
-          from: 'public/manifest.json',
-          transform: (content) => {
-            const manifest = JSON.parse(content.toString());
-            if (manifest.oauth2 && manifest.oauth2.client_id) {
-              manifest.oauth2.client_id = process.env.GOOGLE_CLIENT_ID || 'YOUR_CLIENT_ID';
-            }
-            return JSON.stringify(manifest, null, 2);
-          }
-        },
+        { from: 'public/popup.html', to: 'popup.html' },
+        { from: 'public/options.html', to: 'options.html' },
         { from: 'public/icon.svg', to: 'icon.svg' },
-        { from: 'public/icon128.png', to: 'icon128.png' }
+        { from: 'public/icon128.png', to: 'icon128.png' },
+        { from: 'public/manifest.json', to: '' },
+        { from: './src/services/pdf/pdfWorker.js', to: 'pdfWorker.js' },
       ],
     }),
+    // Comment out the HTML plugins since we're using the CopyPlugin
+    /*
     new HtmlWebpackPlugin({
       template: './public/popup.html',
       filename: 'popup.html',
@@ -125,6 +121,7 @@ module.exports = {
       chunks: ['options'],
       cache: false
     }),
+    */
   ],
   resolve: {
     extensions: ['.js', '.jsx', '.ts', '.tsx', '.css'],

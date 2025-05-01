@@ -17,23 +17,17 @@ let manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
 console.log('Original CSP:', manifest.content_security_policy?.extension_pages);
 
-// Update the CSP to be strict without external dependencies
-if (manifest.content_security_policy && manifest.content_security_policy.extension_pages) {
-  // Use a safe CSP that doesn't require unsafe-eval and doesn't load external fonts
-  manifest.content_security_policy.extension_pages = 
-    "script-src 'self'; " +
-    "object-src 'self'; " +
-    "style-src 'self' 'unsafe-inline'; " +
-    "font-src 'self';";
-  
-  // Write the fixed manifest back to the file
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-  
-  console.log('✅ CSP updated successfully!');
-  console.log('New CSP:', manifest.content_security_policy.extension_pages);
-} else {
-  console.log('⚠️ No CSP found in manifest.json or manifest structure is unexpected');
-}
+// Use a secure CSP that doesn't require unsafe-eval and doesn't load external scripts
+const newCSP = "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self';";
+
+// Update the manifest's CSP
+manifest.content_security_policy.extension_pages = newCSP;
+
+// Write the fixed manifest back to the file
+fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+console.log('✅ CSP updated successfully!');
+console.log('New CSP:', newCSP);
 
 // Also ensure we have the proper content_security_policy in popup.html and options.html
 const popupPath = path.join(__dirname, 'dist', 'popup.html');
@@ -63,6 +57,9 @@ const embeddedFontCSS = `
     // Remove Google Fonts links
     html = html.replace(/<link[^>]*fonts.googleapis.com[^>]*>/gi, '');
     html = html.replace(/<link[^>]*fonts.gstatic.com[^>]*>/gi, '');
+    
+    // Remove CDN script references
+    html = html.replace(/<script[^>]*cdn.jsdelivr.net[^>]*>[^<]*<\/script>/gi, '');
     
     // Remove CSP meta tags if present
     html = html.replace(/<meta\s+http-equiv="Content-Security-Policy"[^>]*>/gi, '');

@@ -12,7 +12,8 @@
   ],
   "host_permissions": [
     "https://mail.google.com/*",
-    "https://www.googleapis.com/*"
+    "https://www.googleapis.com/*",
+    "https://cdn.jsdelivr.net/*"
   ],
   "oauth2": {
     "client_id": "${process.env.GOOGLE_CLIENT_ID}",
@@ -48,11 +49,13 @@
         "pdfWorker.js"
       ],
       "matches": [
-        "https://mail.google.com/*"
+        "https://mail.google.com/*",
+        "https://*/*",
+        "http://*/*"
       ]
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; object-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com"
   }
 } 

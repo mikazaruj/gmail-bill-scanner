@@ -113,7 +113,7 @@ export class PatternBasedExtractor implements ExtractionStrategy {
       
       // Parse dates safely
       // Ensure date is actually a Date object for typescript compatibility
-      const emailDate = date instanceof Date ? date : new Date(date);
+      const emailDate = typeof date === 'string' ? new Date(date) : date;
       
       let billingDate: Date = emailDate;
       let dueDate: Date | undefined = undefined;

@@ -2,11 +2,8 @@
  * PDF Service
  * 
  * Provides utilities for working with PDF files
- * Properly integrates PDF.js library
+ * Internal implementation without external dependencies
  */
-
-// Dynamically load PDF.js if it's not already available
-let pdfjsLibPromise: Promise<any> | null = null;
 
 /**
  * Helper function to detect if we're running in a service worker context
@@ -14,121 +11,21 @@ let pdfjsLibPromise: Promise<any> | null = null;
  */
 export function isServiceWorkerContext(): boolean {
   return (
-    typeof window === 'undefined' || 
-    typeof window.document === 'undefined' ||
-    typeof window.document.createElement === 'undefined'
+    typeof self !== 'undefined' &&
+    typeof window === 'undefined' &&
+    typeof importScripts === 'function'
   );
 }
 
 /**
- * Ensures PDF.js is loaded and available
- * @returns PDF.js library instance
- */
-async function ensurePdfjsLoaded(): Promise<any> {
-  // Check if we're in a service worker context
-  if (isServiceWorkerContext()) {
-    console.log('Running in service worker context, using PDF extraction fallback');
-    // Return a mock PDF.js implementation for service worker contexts
-    return {
-      getDocument: () => ({
-        promise: Promise.resolve({
-          numPages: 1,
-          getPage: () => Promise.resolve({
-            getTextContent: () => Promise.resolve({
-              items: [{ str: '[PDF text extraction in service worker - using fallback]' }]
-            })
-          })
-        })
-      })
-    };
-  }
-  
-  // If already available in global scope, use it
-  if (typeof window !== 'undefined' && (window as any).pdfjsLib) {
-    console.log('Using PDF.js from global scope');
-    return (window as any).pdfjsLib;
-  }
-  
-  // If we've already started loading, return the promise
-  if (pdfjsLibPromise) {
-    return pdfjsLibPromise;
-  }
-  
-  console.log('PDF.js not found in global scope, attempting to load dynamically');
-  
-  // Try to load PDF.js dynamically (this would need to be implemented properly)
-  pdfjsLibPromise = new Promise((resolve, reject) => {
-    if (typeof window === 'undefined') {
-      reject(new Error('Cannot load PDF.js in non-browser environment'));
-      return;
-    }
-    
-    // In a real implementation, you would dynamically load the script
-    // For now, we'll just provide instructions and return a mock
-    console.warn('PDF.js dynamic loading not implemented.');
-    console.warn('Please include PDF.js in your HTML:');
-    console.warn('<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/build/pdf.min.js"></script>');
-    console.warn('<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.4.120/build/pdf.worker.min.js"></script>');
-    
-    // Resolve with a mock implementation for development
-    resolve({
-      getDocument: () => ({
-        promise: Promise.resolve({
-          numPages: 1,
-          getPage: () => Promise.resolve({
-            getTextContent: () => Promise.resolve({
-              items: [{ str: '[PDF.js not available - text extraction fallback]' }]
-            })
-          })
-        })
-      })
-    });
-  });
-  
-  return pdfjsLibPromise;
-}
-
-/**
- * Extracts text from a PDF file
+ * Extracts text from a PDF file - simplified version that doesn't rely on PDF.js
  * @param pdfData PDF file data as Uint8Array
  * @returns Extracted text content
  */
 export async function extractTextFromPdf(pdfData: Uint8Array): Promise<string> {
   try {
-    // In service worker context, use fallback immediately
-    if (isServiceWorkerContext()) {
-      console.log('Using service worker compatible PDF extraction method');
-      return extractTextFallback(pdfData);
-    }
-    
-    // Get PDF.js library instance
-    const pdfjsLib = await ensurePdfjsLoaded();
-    
-    try {
-      // Load the PDF document
-      const pdfDocument = await pdfjsLib.getDocument({ data: pdfData }).promise;
-      let extractedText = '';
-      
-      // Process each page
-      for (let i = 1; i <= pdfDocument.numPages; i++) {
-        const page = await pdfDocument.getPage(i);
-        const content = await page.getTextContent();
-        
-        // Concatenate the text items
-        const pageText = content.items
-          .map((item: any) => item.str)
-          .join(' ');
-          
-        extractedText += pageText + '\n';
-      }
-      
-      return extractedText;
-    } catch (error) {
-      console.error('Error processing PDF with PDF.js:', error);
-      
-      // Basic extraction fallback if PDF.js fails
-      return extractTextFallback(pdfData);
-    }
+    console.log('Using simplified PDF text extraction');
+    return extractTextFallback(pdfData);
   } catch (error) {
     console.error('Error extracting text from PDF:', error);
     return '[PDF extraction error: ' + (error instanceof Error ? error.message : 'Unknown error') + ']';
@@ -143,7 +40,7 @@ export async function extractTextFromPdf(pdfData: Uint8Array): Promise<string> {
  */
 function extractTextFallback(pdfData: Uint8Array): string {
   try {
-    console.log('Attempting basic character extraction as fallback');
+    console.log('Attempting basic character extraction');
     
     // Get printable ASCII characters
     const text = Array.from(pdfData)
@@ -199,82 +96,6 @@ function extractBillInfoFromRawText(text: string): string {
 }
 
 /**
- * Extracts text content from base64-encoded PDF data
- * @param base64Data Base64-encoded PDF data
- * @returns Extracted text content
- */
-export async function extractTextFromBase64Pdf(base64Data: string): Promise<string> {
-  try {
-    // Fix base64 encoding by replacing URL-safe characters and adding padding
-    let fixedBase64 = base64Data.replace(/-/g, '+').replace(/_/g, '/');
-    
-    // Add padding if needed
-    const padding = fixedBase64.length % 4;
-    if (padding) {
-      fixedBase64 += '='.repeat(4 - padding);
-    }
-    
-    // Convert base64 to binary - use custom implementation for service workers
-    let bytes: Uint8Array;
-    
-    if (isServiceWorkerContext() || typeof atob === 'undefined') {
-      // Service worker compatible base64 decoding
-      bytes = base64ToUint8Array(fixedBase64);
-    } else {
-      // Browser context with atob available
-      const binaryString = atob(fixedBase64);
-      bytes = new Uint8Array(binaryString.length);
-      
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-    }
-    
-    // Extract text from the binary data
-    return await extractTextFromPdf(bytes);
-  } catch (error) {
-    console.error('Error extracting text from base64 PDF:', error);
-    
-    // Last-ditch effort to extract some content
-    try {
-      console.log('Using emergency text extraction for base64 data');
-      // Include Hungarian-specific characters in the character set
-      const readableChars = base64Data
-        .replace(/[^A-Za-z0-9\s.,\-:;\/$%áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/g, ' ')
-        .replace(/\s+/g, ' ');
-      
-      // Try to find some invoice/bill related text, including Hungarian terms
-      const invoiceMatch = readableChars.match(/invoice|bill|receipt|payment|amount|total|due|számla|fizetés|összeg|határidő|szolgáltató|mvm|eon/i);
-      
-      if (invoiceMatch) {
-        console.log(`Emergency extraction found bill-related content: ${invoiceMatch[0]}`);
-        return `[Emergency extraction found bill-related content: ${invoiceMatch[0]}] ${readableChars.substring(0, 3000)}`;
-      }
-      
-      return readableChars.substring(0, 3000) || '[PDF extraction failed completely]';
-    } catch {
-      return '[PDF extraction failed completely]';
-    }
-  }
-}
-
-/**
- * Service worker compatible base64 decoding function
- * @param base64 Base64 string to decode
- * @returns Decoded data as Uint8Array
- */
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binaryString = base64Decode(base64);
-  const bytes = new Uint8Array(binaryString.length);
-  
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  
-  return bytes;
-}
-
-/**
  * Pure JavaScript implementation of base64 decoding
  * Works in service workers where atob is unavailable
  * @param base64 Base64 string to decode
@@ -290,25 +111,311 @@ function base64Decode(base64: string): string {
   let output = '';
   let i = 0;
   
-  while (i < cleanedInput.length) {
-    const enc1 = chars.indexOf(cleanedInput.charAt(i++));
-    const enc2 = chars.indexOf(cleanedInput.charAt(i++));
-    const enc3 = chars.indexOf(cleanedInput.charAt(i++));
-    const enc4 = chars.indexOf(cleanedInput.charAt(i++));
-    
-    const chr1 = (enc1 << 2) | (enc2 >> 4);
-    const chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
-    const chr3 = ((enc3 & 3) << 6) | enc4;
-    
-    output += String.fromCharCode(chr1);
-    
-    if (enc3 !== 64) {
-      output += String.fromCharCode(chr2);
+  try {
+    while (i < cleanedInput.length) {
+      const enc1 = chars.indexOf(cleanedInput.charAt(i++));
+      const enc2 = i < cleanedInput.length ? chars.indexOf(cleanedInput.charAt(i++)) : 64;
+      const enc3 = i < cleanedInput.length ? chars.indexOf(cleanedInput.charAt(i++)) : 64;
+      const enc4 = i < cleanedInput.length ? chars.indexOf(cleanedInput.charAt(i++)) : 64;
+      
+      if (enc1 === -1 || enc2 === -1 || enc3 === -1 || enc4 === -1) {
+        continue; // Skip invalid characters
+      }
+      
+      const chr1 = (enc1 << 2) | (enc2 >> 4);
+      const chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
+      const chr3 = ((enc3 & 3) << 6) | enc4;
+      
+      output += String.fromCharCode(chr1);
+      
+      if (enc3 !== 64) {
+        output += String.fromCharCode(chr2);
+      }
+      if (enc4 !== 64) {
+        output += String.fromCharCode(chr3);
+      }
     }
-    if (enc4 !== 64) {
-      output += String.fromCharCode(chr3);
-    }
+  } catch (error) {
+    console.error('Error in base64Decode:', error);
   }
   
   return output;
+}
+
+/**
+ * Alternative PDF text extraction that looks for text markers in the raw PDF
+ * This can work when more sophisticated methods fail
+ * 
+ * @param pdfData Base64 or binary PDF data
+ * @returns Extracted text or empty string if failed
+ */
+function extractTextWithAlternativeMethod(pdfData: string | Uint8Array): string {
+  try {
+    console.log("Trying alternative PDF text extraction method");
+    
+    // Convert to string if we have binary data
+    const pdfString = typeof pdfData === 'string' 
+      ? pdfData 
+      : Array.from(pdfData).map(byte => String.fromCharCode(byte)).join('');
+    
+    // Extract potential text chunks from PDF (text is often enclosed in () in PDFs)
+    const textChunks: string[] = [];
+    const textMarkerPattern = /\(([\w\d\s.,\-:;\/\u00A0-\u00FF\u0100-\u017F\u0180-\u024F]+)\)/g;
+    
+    let match;
+    while ((match = textMarkerPattern.exec(pdfString)) !== null) {
+      if (match[1] && match[1].length > 3) {
+        // Filter out binary garbage
+        const text = match[1].replace(/[^\w\d\s.,\-:;\/\u00A0-\u00FF\u0100-\u017F\u0180-\u024F]+/g, ' ');
+        if (text.length > 3) {
+          textChunks.push(text);
+        }
+      }
+    }
+    
+    // Another approach: look for TJ array markers which often contain text
+    const tjMarkerPattern = /\[([^\]]+)\]TJ/g;
+    while ((match = tjMarkerPattern.exec(pdfString)) !== null) {
+      if (match[1]) {
+        // TJ arrays contain strings in () and positioning numbers
+        const stringMatches = match[1].match(/\(([^)]+)\)/g);
+        if (stringMatches) {
+          stringMatches.forEach(str => {
+            const text = str.replace(/[()]/g, '');
+            if (text.length > 2) {
+              textChunks.push(text);
+            }
+          });
+        }
+      }
+    }
+    
+    // Check if we have Hungarian characters in any chunks
+    const hungarianChars = /[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/;
+    const hasHungarianText = textChunks.some(chunk => hungarianChars.test(chunk));
+    
+    if (hasHungarianText) {
+      console.log("Alternative extraction found Hungarian characters in PDF");
+    }
+    
+    // Check for Hungarian invoice keywords
+    const hungarianBillTerms = [
+      "számla", "fizetés", "összeg", "határidő", "szolgáltató", 
+      "áfa", "forint", "Ft", "dátum", "fizetendő", "bruttó", "nettó",
+      "mvm", "eon", "díj", "telekom"
+    ];
+    
+    // Check if we found any invoice keywords
+    let foundKeywords: string[] = [];
+    
+    for (const chunk of textChunks) {
+      for (const term of hungarianBillTerms) {
+        if (chunk.toLowerCase().includes(term.toLowerCase())) {
+          foundKeywords.push(term);
+          break;
+        }
+      }
+    }
+    
+    if (foundKeywords.length > 0) {
+      console.log(`Alternative extraction found Hungarian bill keywords: ${foundKeywords.join(', ')}`);
+    }
+    
+    // Join all chunks and limit length
+    const extractedText = textChunks.join(' ');
+    console.log(`Alternative extraction found ${textChunks.length} text chunks with total length ${extractedText.length}`);
+    
+    return extractedText.substring(0, 5000);
+  } catch (error) {
+    console.error("Alternative text extraction failed:", error);
+    return "";
+  }
+}
+
+/**
+ * Extracts text content from base64-encoded PDF data
+ * @param base64Data Base64-encoded PDF data
+ * @returns Extracted text content
+ */
+export async function extractTextFromBase64Pdf(base64Data: string): Promise<string> {
+  try {
+    console.log(`Extracting text from base64 PDF data of length ${base64Data.length}`);
+    return await extractWithBuiltInMethod(base64Data);
+  } catch (error) {
+    console.error('Error in PDF extraction:', error);
+    return '[PDF extraction failed completely]';
+  }
+}
+
+/**
+ * Extract PDF text using built-in methods
+ * @param base64Data Base64-encoded PDF data
+ * @returns Extracted text
+ */
+async function extractWithBuiltInMethod(base64Data: string): Promise<string> {
+  try {
+    console.log('Using built-in PDF extraction methods');
+    
+    // Fix base64 encoding by replacing URL-safe characters and adding padding
+    let fixedBase64 = base64Data.replace(/-/g, '+').replace(/_/g, '/');
+    
+    // Add padding if needed
+    const padding = fixedBase64.length % 4;
+    if (padding) {
+      fixedBase64 += '='.repeat(4 - padding);
+    }
+    
+    // Check for Hungarian keywords
+    const hungarianKeywords = ['számla', 'fizetés', 'határidő', 'összeg', 'mvm', 'eon', 'díj', 'áfa'];
+    let detectedKeywords: string[] = [];
+    
+    for (const keyword of hungarianKeywords) {
+      // Check if the keyword appears in the data (even in encoded form)
+      if (base64Data.toLowerCase().includes(keyword.toLowerCase())) {
+        detectedKeywords.push(keyword);
+      }
+    }
+    
+    if (detectedKeywords.length > 0) {
+      console.log(`Found Hungarian keywords in PDF: ${detectedKeywords.join(', ')}`);
+    }
+    
+    // Try to convert base64 to Uint8Array for PDF processing
+    let pdfBytes: Uint8Array;
+    
+    try {
+      // For browser context
+      if (!isServiceWorkerContext() && typeof atob === 'function') {
+        const binary = atob(fixedBase64);
+        pdfBytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          pdfBytes[i] = binary.charCodeAt(i);
+        }
+        console.log(`Successfully decoded base64 data to ${pdfBytes.length} bytes`);
+      } else {
+        // For service worker context
+        pdfBytes = base64ToUint8Array(fixedBase64);
+        console.log(`Decoded base64 in service worker context to ${pdfBytes.length} bytes`);
+      }
+      
+      // Sanity check - verify this looks like a PDF (starts with %PDF-)
+      const pdfHeader = String.fromCharCode.apply(null, Array.from(pdfBytes.slice(0, 5)));
+      if (pdfHeader !== '%PDF-') {
+        console.warn(`PDF header validation failed: ${pdfHeader}`);
+      } else {
+        console.log('PDF header validation passed');
+      }
+      
+      // Try alternative method first in case the standard extraction fails
+      const alternativeText = extractTextWithAlternativeMethod(pdfBytes);
+      if (alternativeText && alternativeText.length > 100) {
+        console.log(`Alternative method extracted ${alternativeText.length} characters`);
+        
+        // Check if we have enough text to confidently return it
+        if (alternativeText.length > 500) {
+          return alternativeText;
+        }
+      }
+      
+      // Process PDF data with the standard method
+      const extractedText = await extractTextFromPdf(pdfBytes);
+      
+      // If we got meaningful text, return it
+      if (extractedText && extractedText.length > 100 && 
+         !extractedText.includes('[PDF extraction failed]')) {
+        console.log(`Successfully extracted ${extractedText.length} characters from PDF`);
+        return extractedText;
+      }
+      
+      // If the extraction didn't return usable text, return the alternative text if we have it
+      if (alternativeText && alternativeText.length > 0) {
+        console.log('Standard extraction failed, using alternative extraction result');
+        return alternativeText;
+      }
+      
+      // If we have no text at all, try emergency extraction
+      console.log('PDF extraction returned insufficient text, using emergency extraction');
+      throw new Error('Insufficient text extracted');
+      
+    } catch (decodingError) {
+      console.error('Error decoding PDF data:', decodingError);
+      throw decodingError; // Let the emergency extraction handle it
+    }
+  } catch (error) {
+    console.error('Error in builtin PDF extraction, trying emergency extraction:', error);
+    
+    // Emergency text extraction for cases where normal extraction fails
+    try {
+      console.log('Using emergency text extraction for base64 data');
+      
+      // Try alternative extraction method directly on the base64 data
+      const alternativeText = extractTextWithAlternativeMethod(base64Data);
+      if (alternativeText && alternativeText.length > 100) {
+        console.log(`Emergency: Alternative method extracted ${alternativeText.length} characters directly from base64`);
+        return alternativeText;
+      }
+      
+      // Hungarian-specific extraction improvements
+      // Include more Hungarian characters and invoice-related terms
+      const hungarianInvoiceTerms = [
+        'számla', 'fizetés', 'összeg', 'határidő', 'díj', 'szolgáltató', 
+        'áram', 'gáz', 'víz', 'áfa', 'bruttó', 'nettó', 'fizetendő', 
+        'vevő', 'eladó', 'végösszeg', 'elszámolás', 'fogyasztás', 
+        'mvm', 'eon', 'nkm', 'elmű', 'telekom', 'digi', 'tigáz', 'főgáz'
+      ];
+      
+      // Search for Hungarian invoice terms in the raw base64 data
+      const hungarianTermFound = hungarianInvoiceTerms.some(term => 
+        base64Data.toLowerCase().includes(term.toLowerCase())
+      );
+      
+      if (hungarianTermFound) {
+        console.log('Found Hungarian invoice terms in raw base64 data');
+      }
+      
+      // Include Hungarian-specific characters in the character set for broader matching
+      const readableChars = base64Data
+        .replace(/[^A-Za-z0-9\s.,\-:;\/$%áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/g, ' ')
+        .replace(/\s+/g, ' ');
+      
+      // Enhanced invoice pattern matching - including Hungarian terms
+      const invoiceMatch = readableChars.match(
+        /invoice|bill|receipt|payment|amount|total|due|fizetés|számla|összeg|határidő|szolgáltató|áfa|bruttó|nettó|fizetendő|mvm|eon/i
+      );
+      
+      if (invoiceMatch) {
+        console.log(`Emergency extraction found bill-related content: ${invoiceMatch[0]}`);
+        // Return much more context to give extraction algorithms more to work with
+        return `[Emergency extraction found bill-related content: ${invoiceMatch[0]}] ${readableChars.substring(0, 5000)}`;
+      }
+      
+      // Return a larger chunk of text for pattern matching algorithms
+      return readableChars.substring(0, 5000) || '[PDF extraction failed completely]';
+    } catch (emergencyError) {
+      console.error('Emergency extraction also failed:', emergencyError);
+      return '[PDF extraction failed completely]';
+    }
+  }
+}
+
+/**
+ * Service worker compatible base64 decoding function
+ * @param base64 Base64 string to decode
+ * @returns Decoded data as Uint8Array
+ */
+function base64ToUint8Array(base64: string): Uint8Array {
+  try {
+    const binaryString = base64Decode(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    
+    return bytes;
+  } catch (error) {
+    console.error('Error in base64ToUint8Array:', error);
+    // Return empty array rather than throwing
+    return new Uint8Array(0);
+  }
 } 

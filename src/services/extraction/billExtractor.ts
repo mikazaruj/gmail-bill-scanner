@@ -1,47 +1,61 @@
 /**
- * Unified Bill Extractor Service
+ * Bill Extractor Service
  * 
- * Handles extracting bill information from emails and PDFs using multiple strategies
+ * Handles bill extraction from emails and PDFs
  */
 
+import { 
+  Bill, 
+  BillExtractionResult 
+} from "../../types/Bill";
 import { GmailMessage } from "../../types";
-import { Bill, BillExtractionResult } from "../../types/Bill";
-import { createBill } from "../../utils/billTransformers";
-import { ExtractionStrategy } from "./strategies/extractionStrategy";
+import { 
+  ExtractionStrategy,
+  EmailExtractionContext,
+  PdfExtractionContext
+} from "./strategies/extractionStrategy";
 import { RegexBasedExtractor } from "./strategies/regexBasedExtractor";
 import { PatternBasedExtractor } from "./strategies/patternBasedExtractor";
 import { getLanguagePatterns } from "./patterns/patternLoader";
+
+// Gmail message header interface
+interface GmailMessageHeader {
+  name: string;
+  value: string;
+}
 
 /**
  * Unified Bill Extractor Service
  */
 export class BillExtractor {
   private strategies: ExtractionStrategy[] = [];
+  private initialized = false;
   
   constructor() {
     this.initializeStrategies();
+    // Initialize language patterns
+    this.initializePatternLoader();
   }
   
   /**
    * Initialize the extraction strategies to be used
    */
   private initializeStrategies(): void {
-    // Add strategies in order of preference
-    this.strategies = [
-      new PatternBasedExtractor(),  // Pattern-based extractor with predefined patterns
-      new RegexBasedExtractor()     // Regex-based extractor for fallback
-    ];
-    
-    // Pre-load language pattern files to ensure they're available
     try {
-      // Preload English patterns
-      const enPatterns = getLanguagePatterns('en');
-      // Preload Hungarian patterns
-      const huPatterns = getLanguagePatterns('hu');
+      console.log('Initializing extraction strategies');
       
-      console.log(`Initialized language patterns for: ${enPatterns.language}, ${huPatterns.language}`);
+      // Pattern-based extractor (preferred)
+      const patternStrategy = new PatternBasedExtractor();
+      this.registerStrategy(patternStrategy);
+      
+      // Regex-based extractor (fallback)
+      const regexStrategy = new RegexBasedExtractor();
+      this.registerStrategy(regexStrategy);
+      
+      this.initialized = true;
     } catch (error) {
-      console.error('Error loading language patterns:', error);
+      console.error('Error initializing extraction strategies:', error);
+      this.initialized = false;
     }
   }
   
@@ -69,62 +83,87 @@ export class BillExtractor {
     } = {}
   ): Promise<BillExtractionResult> {
     try {
-      // Extract email metadata
-      const headers = message.payload?.headers || [];
-      const from = headers.find(h => h.name.toLowerCase() === 'from')?.value || '';
-      const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value || '';
-      const date = headers.find(h => h.name.toLowerCase() === 'date')?.value || '';
+      if (!this.initialized) {
+        this.initializeStrategies();
+      }
       
-      // Extract email body
-      const body = this.extractEmailBody(message);
+      // Extract message details
+      const { id: messageId, payload, internalDate } = message;
       
-      if (!body) {
+      // Add null checks for payload
+      if (!payload) {
         return {
           success: false,
           bills: [],
-          error: 'Could not extract email body',
-          confidence: 0
+          error: 'Invalid message payload'
         };
       }
       
-      // Try each strategy in order
-      const extractedBills: Bill[] = [];
+      const from = this.getHeaderValue(payload.headers, 'From') || '';
+      const subject = this.getHeaderValue(payload.headers, 'Subject') || '';
+      
+      // The EmailExtractionContext expects date as string, not Date object
+      // Convert internalDate to ISO string format for compatibility
+      const dateStr = internalDate 
+        ? new Date(parseInt(internalDate)).toISOString() 
+        : new Date().toISOString();
+        
+      const body = this.extractEmailBody(message);
+      
+      console.log(`Processing email with language setting: ${options.language || 'en'}`);
+      
+      // Try each strategy in order, stopping when we find bills
       let highestConfidence = 0;
+      let bestResult: BillExtractionResult = {
+        success: false,
+        bills: [],
+        error: 'No extraction strategy succeeded'
+      };
       
       for (const strategy of this.strategies) {
-        const result = await strategy.extractFromEmail({
-          messageId: message.id,
+        const context: EmailExtractionContext = {
+          messageId,
           from,
           subject,
           body,
-          date,
+          date: dateStr, // Use string date for compatibility with interface
           language: options.language,
           isTrustedSource: options.isTrustedSource
-        });
+        };
         
-        if (result.success && result.bills.length > 0) {
-          extractedBills.push(...result.bills);
+        try {
+          console.log(`${strategy.name} extractor using language: ${options.language || 'en'}`);
+          const result = await strategy.extractFromEmail(context);
           
-          // Track highest confidence among all strategies
-          if (result.confidence && result.confidence > highestConfidence) {
-            highestConfidence = result.confidence;
+          // Log confidence for tracking
+          if (result.confidence) {
+            console.log(`Email pattern confidence: ${result.confidence}`);
           }
+          
+          // Keep track of best result by confidence
+          if (result.success && result.bills.length > 0) {
+            if (!result.confidence || result.confidence > highestConfidence) {
+              highestConfidence = result.confidence || 0;
+              bestResult = result;
+            }
+          }
+          
+          // If we found bills, no need to try other strategies
+          if (result.success && result.bills.length > 0) {
+            return result;
+          }
+        } catch (strategyError) {
+          console.error(`Error in ${strategy.name} email extraction:`, strategyError);
         }
       }
       
-      // Return extracted bills
-      return {
-        success: true,
-        bills: extractedBills,
-        confidence: highestConfidence
-      };
+      return bestResult;
     } catch (error) {
       console.error('Error extracting bills from email:', error);
       return {
         success: false,
         bills: [],
-        error: error instanceof Error ? error.message : 'Unknown error',
-        confidence: 0
+        error: error instanceof Error ? error.message : 'Unknown error'
       };
     }
   }
@@ -135,17 +174,21 @@ export class BillExtractor {
    */
   initializePatternLoader(): void {
     try {
-      console.log('Initializing language pattern files...');
-      // Import the pattern loader utilities
-      import('./patterns/patternLoader').then(patternLoader => {
-        // Pre-load both language patterns to ensure they're available
-        const enPatterns = patternLoader.getLanguagePatterns('en');
-        const huPatterns = patternLoader.getLanguagePatterns('hu');
-        
-        console.log(`Successfully loaded patterns for languages: ${enPatterns.language}, ${huPatterns.language}`);
-      }).catch(error => {
-        console.error('Error pre-loading pattern files:', error);
-      });
+      // Preload language patterns
+      const languages: Array<'en' | 'hu'> = ['en', 'hu'];
+      
+      // Load patterns for each language
+      const loadedPatterns = languages.map(lang => {
+        try {
+          const patterns = getLanguagePatterns(lang);
+          return patterns ? lang : null;
+        } catch (e) {
+          console.error(`Error loading patterns for ${lang}:`, e);
+          return null;
+        }
+      }).filter(Boolean);
+      
+      console.log(`Initialized language patterns for: ${loadedPatterns.join(', ')}`);
     } catch (error) {
       console.error('Error initializing pattern loader:', error);
     }
@@ -160,13 +203,40 @@ export class BillExtractor {
    * @returns Processed data
    */
   preprocessPdfData(pdfData: string, language?: 'en' | 'hu'): string {
-    // Add special preprocessing for Hungarian PDFs if needed
+    // Apply language-specific preprocessing
     if (language === 'hu') {
       console.log('Applying Hungarian-specific PDF preprocessing');
       
-      // Add any Hungarian-specific preprocessing here if needed in the future
-      
-      return pdfData;
+      try {
+        // For Hungarian PDFs, convert common encoding issues
+        // Replace incorrectly encoded characters
+        let processedData = pdfData;
+        
+        // Check if this is a genuine PDF (starts with JVBERi which is %PDF- in base64)
+        if (processedData.startsWith('JVBERi')) {
+          console.log('Valid PDF header detected in base64 data');
+          
+          // If we have raw base64 data, check if it contains any Hungarian keywords
+          // that might be easier to detect before full decoding
+          const hungarianKeywords = ['számla', 'fizetés', 'összeg', 'díj', 'áram', 'gáz', 'víz', 'mvm', 'eon'];
+          
+          for (const keyword of hungarianKeywords) {
+            if (processedData.toLowerCase().includes(keyword.toLowerCase())) {
+              console.log(`Found Hungarian keyword in raw PDF data: ${keyword}`);
+              // Mark this as a Hungarian bill to improve extraction confidence
+              processedData += `[HungarianBillMarker:${keyword}]`;
+              break;
+            }
+          }
+        } else {
+          console.warn('PDF does not have valid header, preprocessing may not be effective');
+        }
+        
+        return processedData;
+      } catch (error) {
+        console.error('Error in Hungarian PDF preprocessing:', error);
+        return pdfData; // Return original if preprocessing fails
+      }
     }
     
     return pdfData;
@@ -174,12 +244,6 @@ export class BillExtractor {
   
   /**
    * Extract bills from a PDF document
-   * 
-   * @param pdfData PDF content as base64 string
-   * @param messageId Related Gmail message ID
-   * @param attachmentId Attachment ID
-   * @param options Extraction options
-   * @returns Extraction result with bills or error
    */
   async extractFromPdf(
     pdfData: string,
@@ -189,108 +253,210 @@ export class BillExtractor {
     options: { language?: 'en' | 'hu' } = {}
   ): Promise<BillExtractionResult> {
     try {
-      console.log(`Extracting bills from PDF with language: ${options.language || 'default (en)'}`);
+      if (!this.initialized) {
+        this.initializeStrategies();
+      }
       
-      // Preprocess the PDF data for better text extraction based on language
-      const processedData = this.preprocessPdfData(pdfData, options.language);
+      // Set the correct language based on file name pattern if not specified
+      let language = options.language;
       
-      // Try each strategy in order
-      const extractedBills: Bill[] = [];
+      // If the language is not specified, try to detect it from the file name
+      if (!language) {
+        const hungarianIndicators = ['szamla', 'számla', 'mvm', 'eon', 'dij', 'díj', '.hu'];
+        const isLikelyHungarian = hungarianIndicators.some(term => 
+          fileName.toLowerCase().includes(term.toLowerCase())
+        );
+        
+        language = isLikelyHungarian ? 'hu' : 'en';
+        console.log(`Auto-detected bill language from filename: ${language}`);
+      }
+      
+      console.log(`Extracting bills from PDF with language: ${language || 'en'}`);
+      
+      // Preprocess PDF data based on language
+      const processedPdfData = this.preprocessPdfData(pdfData, language);
+      
+      // Try each strategy in order, stopping when we find bills
       let highestConfidence = 0;
+      let bestResult: BillExtractionResult = {
+        success: false,
+        bills: [],
+        error: 'No extraction strategy succeeded'
+      };
       
       for (const strategy of this.strategies) {
-        if (!strategy.extractFromPdf) continue; // Skip strategies that don't support PDF
+        // Note: extractFromPdf is an optional method in the strategy interface,
+        // so we need to check if it exists before calling it
+        if (!strategy.extractFromPdf) {
+          console.log(`Strategy ${strategy.name} does not support PDF extraction, skipping`);
+          continue;
+        }
         
-        const result = await strategy.extractFromPdf({
-          pdfData: processedData,
+        const context: PdfExtractionContext = {
+          pdfData: processedPdfData,
           messageId,
           attachmentId,
           fileName,
-          language: options.language
-        });
+          language
+        };
         
-        if (result.success && result.bills.length > 0) {
-          console.log(`Strategy ${strategy.name} found ${result.bills.length} bills with confidence ${result.confidence}`);
+        try {
+          // Process with current strategy - we've verified extractFromPdf exists
+          const result = await strategy.extractFromPdf(context);
           
-          // Add diagnostic info for Hungarian bills
-          if (options.language === 'hu') {
-            console.log(`Hungarian bill extraction details: vendor=${result.bills[0].vendor}, amount=${result.bills[0].amount}, currency=${result.bills[0].currency}`);
+          // Special logging for Hungarian bills to help diagnose extraction issues
+          if (language === 'hu' && result.success && result.bills.length > 0) {
+            const bill = result.bills[0];
+            console.log(`Strategy ${strategy.name} found ${result.bills.length} bills with confidence ${result.confidence}`);
+            console.log(`Hungarian bill extraction details: vendor=${bill.vendor}, amount=${bill.amount}, currency=${bill.currency}`);
+            
+            // Save processing metrics for diagnostics
+            const metrics = {
+              strategy: strategy.name,
+              confidence: result.confidence || 0,
+              fileName,
+              language,
+              vendor: bill.vendor,
+              amount: bill.amount,
+              timestamp: new Date().toISOString()
+            };
+            
+            console.log('Hungarian bill extraction metrics:', metrics);
           }
           
-          extractedBills.push(...result.bills);
-          
-          // Track highest confidence among all strategies
-          if (result.confidence && result.confidence > highestConfidence) {
-            highestConfidence = result.confidence;
+          // Keep track of best result by confidence
+          if (result.success && result.bills.length > 0) {
+            if (!result.confidence || result.confidence > highestConfidence) {
+              highestConfidence = result.confidence || 0;
+              bestResult = result;
+              
+              // If we have a result with good confidence, no need to try other strategies
+              if (highestConfidence >= 0.6) {
+                console.log(`Found bills with high confidence (${highestConfidence}), using this result`);
+                return result;
+              }
+            }
           }
+        } catch (strategyError) {
+          console.error(`Error in ${strategy.name} PDF extraction:`, strategyError);
         }
       }
       
-      // Add logging for Hungarian PDFs that weren't recognized
-      if (options.language === 'hu' && extractedBills.length === 0) {
-        console.log('Hungarian PDF bill extraction failed - no bills found');
-        console.log(`PDF details: fileName=${fileName}`);
+      // If we didn't find any bills with the strategies, log details for diagnostics
+      if (!bestResult.success || bestResult.bills.length === 0) {
+        // Special logging for Hungarian bills
+        if (language === 'hu') {
+          console.log(`Hungarian PDF bill extraction failed - no bills found`);
+          console.log(`PDF details: fileName=${fileName}`);
+        }
+      } else {
+        console.log(`Best extraction result had confidence: ${highestConfidence}`);
       }
       
-      // Return extracted bills
-      return {
-        success: extractedBills.length > 0,
-        bills: extractedBills,
-        confidence: highestConfidence
-      };
+      return bestResult;
     } catch (error) {
       console.error('Error extracting bills from PDF:', error);
       return {
         success: false,
         bills: [],
-        error: error instanceof Error ? error.message : 'Unknown error',
-        confidence: 0
+        error: error instanceof Error ? error.message : 'Unknown error'
       };
     }
   }
   
   /**
-   * Helper method to extract plain text body from Gmail message
-   * 
-   * @param message Gmail message
-   * @returns Plain text body or empty string
+   * Extract the body text from a Gmail message
    */
   private extractEmailBody(message: GmailMessage): string {
     try {
-      // Check if we have a plain text part
-      if (message.payload?.body?.data) {
-        // Decode base64
-        return atob(message.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+      const { payload } = message;
+      
+      // Check if payload exists
+      if (!payload) {
+        console.warn('Email has no payload');
+        return '';
       }
       
-      // Check for multipart
-      if (message.payload?.parts) {
+      let bodyText = '';
+      
+      // Browser-compatible base64 decoding function
+      const decodeBase64 = (base64Data: string): string => {
+        try {
+          // Replace URL-safe characters and add padding if needed
+          const fixedBase64 = base64Data.replace(/-/g, '+').replace(/_/g, '/');
+          
+          // Use atob for browser environments
+          const rawString = atob(fixedBase64);
+          
+          // Handle UTF-8 encoding
+          const utf8Decoder = new TextDecoder('utf-8');
+          const bytes = new Uint8Array(rawString.length);
+          
+          for (let i = 0; i < rawString.length; i++) {
+            bytes[i] = rawString.charCodeAt(i);
+          }
+          
+          return utf8Decoder.decode(bytes);
+        } catch (error) {
+          console.error('Error decoding base64 data:', error);
+          return '';
+        }
+      };
+      
+      // Handle multipart messages
+      if (payload.mimeType === 'multipart/alternative' || 
+          payload.mimeType === 'multipart/mixed' ||
+          payload.mimeType === 'multipart/related') {
+        
+        // Extract part body helper
         const extractPartBody = (part: any): string => {
-          if (part.mimeType === "text/plain" && part.body && part.body.data) {
-            // Decode base64
-            return atob(part.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+          if (part.body && part.body.data) {
+            return decodeBase64(part.body.data);
           }
           
-          if (part.parts && Array.isArray(part.parts)) {
-            for (const subPart of part.parts) {
-              const body = extractPartBody(subPart);
-              if (body) return body;
-            }
+          if (part.parts && part.parts.length) {
+            return part.parts.map(extractPartBody).join('\n');
           }
           
-          return "";
+          return '';
         };
         
-        for (const part of message.payload.parts) {
-          const body = extractPartBody(part);
-          if (body) return body;
+        // Check if parts exist
+        if (!payload.parts || payload.parts.length === 0) {
+          console.warn('Multipart message has no parts');
+          return '';
         }
+        
+        // Try to get HTML part first, then fallback to plain text
+        const htmlPart = payload.parts.find(part => part.mimeType === 'text/html');
+        const textPart = payload.parts.find(part => part.mimeType === 'text/plain');
+        
+        if (htmlPart) {
+          bodyText = extractPartBody(htmlPart);
+        } else if (textPart) {
+          bodyText = extractPartBody(textPart);
+        } else {
+          // Try all parts
+          bodyText = payload.parts.map(extractPartBody).join('\n');
+        }
+      } else if (payload.body && payload.body.data) {
+        // Simple body
+        bodyText = decodeBase64(payload.body.data);
       }
       
-      return '';
+      return bodyText;
     } catch (error) {
       console.error('Error extracting email body:', error);
       return '';
     }
+  }
+  
+  /**
+   * Get a header value from Gmail headers array
+   */
+  private getHeaderValue(headers: GmailMessageHeader[] | undefined, name: string): string | null {
+    if (!headers || !Array.isArray(headers)) return null;
+    const header = headers.find(h => h.name.toLowerCase() === name.toLowerCase());
+    return header ? header.value : null;
   }
 } 
