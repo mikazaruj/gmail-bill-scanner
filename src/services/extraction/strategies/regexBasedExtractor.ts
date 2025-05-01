@@ -7,6 +7,13 @@
 import { Bill, BillExtractionResult } from "../../../types/Bill";
 import { createBill } from "../../../utils/billTransformers";
 import { EmailExtractionContext, ExtractionStrategy, PdfExtractionContext } from "./extractionStrategy";
+import { 
+  getLanguagePatterns, 
+  matchesDocumentIdentifiers, 
+  extractBillField, 
+  detectServiceType,
+  calculateConfidence
+} from "../patterns/patternLoader";
 
 // Common bill-related keywords
 const BILL_KEYWORDS = [
@@ -269,7 +276,18 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         };
       }
       
-      // Check if this is likely a bill using a more flexible approach
+      // Use language-specific patterns to detect and extract bill data
+      const inputLanguage = language || 'en';
+      console.log(`Using language-specific patterns for language: ${inputLanguage}`);
+      
+      // Check for bill indicators using language-specific patterns
+      const isLikelyBill = matchesDocumentIdentifiers(extractedText, inputLanguage as 'en' | 'hu');
+      
+      // Get confidence score using language patterns
+      const patternConfidence = calculateConfidence(extractedText, inputLanguage as 'en' | 'hu');
+      console.log(`Language pattern confidence: ${patternConfidence}`);
+      
+      // Fallback to original keyword check
       const keywordsInText = BILL_KEYWORDS.filter(keyword => 
         extractedText.toLowerCase().includes(keyword.toLowerCase())
       );
@@ -303,8 +321,8 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         context.messageId.toLowerCase().includes('fizetés')
       );
       
-      // Skip keyword check if we have strong bill indicators or the message appears to be from a billing source
-      if (keywordsInText.length < 2 && !hasBillIndicators && !isFromBillingSource) {
+      // Skip keyword check if we have strong bill indicators from language patterns
+      if (!isLikelyBill && patternConfidence < 0.4 && keywordsInText.length < 2 && !hasBillIndicators && !isFromBillingSource) {
         console.log('Not enough bill indicators found in PDF content');
         return {
           success: false,
@@ -314,70 +332,35 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         };
       }
       
-      // If we got here, we'll try to extract bill information using all available patterns
+      // If we got here, we'll try to extract bill information using language-specific patterns
       
-      // Extract date
-      const dateMatch = extractedText.match(/Date:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i) ||
-                       // Hungarian date formats
-                       extractedText.match(/Dátum:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i) ||
-                       extractedText.match(/Kelt:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i) ||
-                       extractedText.match(/Kiállítás\s+dátum:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i);
-      const date = dateMatch ? new Date(dateMatch[1]) : new Date();
+      // Extract required fields using language patterns
+      const amountStr = extractBillField(extractedText, 'amount', inputLanguage as 'en' | 'hu');
+      const dueDateStr = extractBillField(extractedText, 'dueDate', inputLanguage as 'en' | 'hu');
+      const billingDateStr = extractBillField(extractedText, 'billingDate', inputLanguage as 'en' | 'hu');
+      const vendorStr = extractBillField(extractedText, 'vendor', inputLanguage as 'en' | 'hu');
+      const accountNumberStr = extractBillField(extractedText, 'accountNumber', inputLanguage as 'en' | 'hu');
       
-      // Extract due date
-      const dueDateMatch = extractedText.match(/(?:Payment|Due)\s+(?:date|by):?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i) ||
-                          // Hungarian due date formats
-                          extractedText.match(/Fizetési\s+határidő:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i) ||
-                          extractedText.match(/Esedékesség:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i) ||
-                          extractedText.match(/Befizetési\s+határidő:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i);
-      const dueDate = dueDateMatch ? new Date(dueDateMatch[1]) : undefined;
+      console.log(`Extracted amount: ${amountStr}`);
+      console.log(`Extracted due date: ${dueDateStr}`);
+      console.log(`Extracted vendor: ${vendorStr}`);
       
-      // Extract merchant
-      const merchantMatch = extractedText.match(/From:?\s*([^\n]+)/i) || 
-                            extractedText.match(/Company:?\s*([^\n]+)/i) ||
-                            extractedText.match(/Billed\s+By:?\s*([^\n]+)/i) ||
-                            // Hungarian merchant patterns
-                            extractedText.match(/Szolgáltató:?\s*([^\n]+)/i) ||
-                            extractedText.match(/Kibocsátó:?\s*([^\n]+)/i) ||
-                            extractedText.match(/Eladó:?\s*([^\n]+)/i);
-      const merchantLine = merchantMatch ? merchantMatch[1].trim() : "";
-      const vendor = merchantLine.split("\n")[0].trim() || 
-                    (extractedText.toLowerCase().includes('mvm') ? 'MVM' : this.extractVendorFromFileName(fileName));
+      // Service type detection
+      const serviceTypeInfo = detectServiceType(extractedText, inputLanguage as 'en' | 'hu');
+      console.log(`Detected service type: ${serviceTypeInfo?.type || 'unknown'}`);
       
-      // Extract total amount with enhanced patterns
-      const totalMatch = 
-        // Hungarian amount patterns - try these first for better accuracy with Hungarian bills
-        extractedText.match(/(?:Fizetendő|Összesen)(?:\s+(?:összeg|összesen))?:?\s*(?:Ft\.?|HUF)?\s*(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i) ||
-        extractedText.match(/(?:Számla\s+összege|Végösszeg):?\s*(?:Ft\.?|HUF)?\s*(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i) ||
-        // Find amounts followed by currency
-        extractedText.match(/(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)(?:\s*|-)[Ff][Tt]\.?/i) ||
-        extractedText.match(/(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)(?:\s*)[Hh][Uu][Ff]/i) ||
-        // Find bare amounts near key terms
-        (extractedText.match(/(?:fizetend[őo]|összesen).{1,30}?(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i)) ||
-
-        // English amount patterns - these should match standard billing formats
-        extractedText.match(/Total[\s\w]*:?\s*\$?(\d{1,3}(?:[.,]\d{3})*(?:\.\d{1,2})?)/i) ||
-        extractedText.match(/Amount\s+Due:?\s*\$?(\d{1,3}(?:[.,]\d{3})*(?:\.\d{1,2})?)/i) ||
-        extractedText.match(/Payment\s+Due:?\s*\$?(\d{1,3}(?:[.,]\d{3})*(?:\.\d{1,2})?)/i) ||
-
-        // Generic currency patterns
-        extractedText.match(/\$\s*(\d{1,3}(?:[.,]\d{3})*(?:\.\d{1,2})?)/i) ||
-        extractedText.match(/(\d{1,3}(?:[.,]\d{3})*(?:\.\d{1,2})?)\s*(?:USD|EUR|GBP)/i) ||
-        extractedText.match(/(?:€|£)\s*(\d{1,3}(?:[.,]\d{3})*(?:\.\d{1,2})?)/i);
-      
-      // Enhanced amount parsing with better handling of international formats
+      // Fallback to generic extraction if language patterns didn't find amount
       let amount = 0;
-      if (totalMatch && totalMatch[1]) {
+      if (amountStr) {
         try {
-          // Clean the amount string: remove spaces, ensure proper decimal format
-          const amountStr = totalMatch[1]
+          // Clean the amount string
+          const cleanedAmount = amountStr
             .replace(/\s/g, '')        // Remove spaces
             .replace(/\.(?=\d{3})/g, '') // Remove thousand separators if dots
             .replace(/,(?=\d{3})/g, '') // Remove thousand separators if commas
             .replace(/,(\d{1,2})$/, '.$1'); // Convert final comma to dot for decimals
           
-          amount = parseFloat(amountStr);
-          console.log(`Extracted amount: ${amount} from match: ${totalMatch[0]}`);
+          amount = parseFloat(cleanedAmount);
         } catch (e) {
           console.error('Error parsing amount:', e);
         }
@@ -396,7 +379,8 @@ export class RegexBasedExtractor implements ExtractionStrategy {
       let currency = "USD"; // Default currency
       
       // Check for specific currency indicators in the text
-      if (extractedText.toLowerCase().includes('huf') || 
+      if (inputLanguage === 'hu' || 
+          extractedText.toLowerCase().includes('huf') || 
           extractedText.toLowerCase().includes('ft') || 
           extractedText.toLowerCase().includes('forint') ||
           // MVM is a Hungarian utility company, likely using HUF
@@ -409,6 +393,20 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         currency = "GBP";
       }
       
+      // Parse dates - use the extracted ones from patterns if available
+      const date = billingDateStr ? new Date(billingDateStr) : new Date();
+      const dueDate = dueDateStr ? new Date(dueDateStr) : undefined;
+      
+      // Determine vendor
+      const vendor = vendorStr || 
+                    (extractedText.toLowerCase().includes('mvm') ? 'MVM' : this.extractVendorFromFileName(fileName));
+      
+      // Determine category - use service type if available
+      const category = serviceTypeInfo?.category || this.categorize(vendor, fileName, extractedText);
+      
+      // Get account number
+      const accountNumber = accountNumberStr || this.extractAccountNumber(extractedText);
+      
       // Special handling for MVM bills
       if (
         (vendor === 'MVM' || fileName.toLowerCase().includes('mvm') || extractedText.toLowerCase().includes('mvm')) && 
@@ -419,19 +417,6 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         // Set currency to HUF for MVM bills
         currency = "HUF";
         
-        // Set category for MVM bills
-        const category = "Utilities";
-        
-        // Extract account number with Hungarian patterns for MVM
-        const accountNumber = this.extractAccountNumber(extractedText) || 
-                             (() => {
-                               // Additional MVM-specific account patterns
-                               const felhasznaloiMatch = extractedText.match(/felhasználói\s+azonosító:?\s*([A-Za-z0-9\-]+)/i);
-                               const ugyfelMatch = extractedText.match(/ügyfél\s+azonosító:?\s*([A-Za-z0-9\-]+)/i);
-                               const szerzMatch = extractedText.match(/szerz[.őÖ]\s*szám:?\s*([A-Za-z0-9\-]+)/i);
-                               return felhasznaloiMatch?.[1] || ugyfelMatch?.[1] || szerzMatch?.[1] || '';
-                             })();
-        
         // Create the bill with MVM-specific settings
         const bill = createBill({
           id: `pdf-${messageId}-${attachmentId}`,
@@ -439,7 +424,7 @@ export class RegexBasedExtractor implements ExtractionStrategy {
           amount,
           currency,
           date,
-          category,
+          category: "Utilities",
           dueDate,
           accountNumber,
           source: {
@@ -450,23 +435,17 @@ export class RegexBasedExtractor implements ExtractionStrategy {
           },
           extractionMethod: this.name,
           language: 'hu',
-          extractionConfidence: 0.7
+          extractionConfidence: Math.max(0.7, patternConfidence)
         });
         
         return {
           success: true,
           bills: [bill],
-          confidence: 0.7
+          confidence: Math.max(0.7, patternConfidence)
         };
       }
       
-      // Detect category based on keywords
-      const category = this.categorize(vendor, fileName, extractedText);
-      
-      // Extract account number
-      const accountNumber = this.extractAccountNumber(extractedText);
-      
-      // Create the bill
+      // Create the bill using extracted data
       const bill = createBill({
         id: `pdf-${messageId}-${attachmentId}`,
         vendor,
@@ -483,14 +462,14 @@ export class RegexBasedExtractor implements ExtractionStrategy {
           fileName
         },
         extractionMethod: this.name,
-        language: language || 'en',
-        extractionConfidence: 0.6
+        language: inputLanguage,
+        extractionConfidence: patternConfidence > 0.4 ? patternConfidence : 0.6
       });
       
       return {
         success: true,
         bills: [bill],
-        confidence: 0.6
+        confidence: patternConfidence > 0.4 ? patternConfidence : 0.6
       };
     } catch (error) {
       console.error('Error in regex-based PDF extraction:', error);
@@ -847,15 +826,10 @@ export class RegexBasedExtractor implements ExtractionStrategy {
       
       console.log(`Combined text extraction yielded ${extractedText.length} characters`);
       
-      // Identify and log keywords found in extracted text (without affecting extraction)
-      const allKeywords = [
-        ...BILL_KEYWORDS,
-        'áramszámla', 'gázszámla', 'közüzemi díj', 'szolgáltató', 'vízdíj',
-        'mvm', 'eon', 'nkm', 'elmű', 'émász', 'tigáz', 'főgáz'
-      ];
-      
-      const foundKeywords = allKeywords.filter(keyword => 
-        extractedText.toLowerCase().includes(keyword.toLowerCase())
+      // Check if we found bill keywords and log them for debugging
+      const keywords = ['invoice', 'bill', 'due', 'payment', 'számla', 'fizetés', 'eon', 'mvm', 'fizetendő'];
+      const foundKeywords = keywords.filter(keyword => 
+        extractedText.toLowerCase().includes(keyword)
       );
       
       if (foundKeywords.length > 0) {
@@ -864,12 +838,8 @@ export class RegexBasedExtractor implements ExtractionStrategy {
       
       return extractedText;
     } catch (error) {
-      console.error('Error in text extraction:', error);
-      // Fallback to simplest extraction if everything else fails
-      return base64Data
-        .replace(/[^A-Za-z0-9\s.,\-:;\/\$%]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .substring(0, 2000);
+      console.error('Error in basic text extraction:', error);
+      return '';
     }
   }
 } 

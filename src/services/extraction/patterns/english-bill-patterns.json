@@ -1,0 +1,123 @@
+{
+  "language": "en",
+  "documentIdentifiers": [
+    {
+      "name": "utilityBill",
+      "patterns": [
+        "utility bill", "electric bill", "gas bill", "water bill", "energy bill",
+        "payment notice", "statement", "invoice"
+      ]
+    },
+    {
+      "name": "telecomBill",
+      "patterns": [
+        "phone bill", "mobile bill", "cell phone bill", "internet bill", "tv subscription"
+      ]
+    }
+  ],
+  "fieldExtractors": [
+    {
+      "fieldName": "amount",
+      "label": "Amount Due",
+      "patterns": [
+        "Total(?:\\s+(?:amount\\s+)?due):?\\s*\\$?\\s*(\\d{1,3}(?:[.,]\\d{3})*(?:\\.)\\d{1,2})",
+        "Amount\\s+due:?\\s*\\$?\\s*(\\d{1,3}(?:[.,]\\d{3})*(?:\\.)\\d{1,2})",
+        "Payment\\s+due:?\\s*\\$?\\s*(\\d{1,3}(?:[.,]\\d{3})*(?:\\.)\\d{1,2})",
+        "Total:?\\s*\\$?\\s*(\\d{1,3}(?:[.,]\\d{3})*(?:\\.)\\d{1,2})",
+        "\\$\\s*(\\d{1,3}(?:[.,]\\d{3})*(?:\\.)\\d{1,2})",
+        "(\\d{1,3}(?:[.,]\\d{3})*(?:\\.)\\d{1,2})\\s*(?:USD|EUR|GBP)"
+      ],
+      "postProcessing": "removeSpaces"
+    },
+    {
+      "fieldName": "dueDate",
+      "label": "Due Date",
+      "patterns": [
+        "Due\\s+(?:date|by):?\\s*(\\w+\\s+\\d{1,2},?\\s*\\d{4}|\\d{1,2}\\/\\d{1,2}\\/\\d{4}|\\d{1,2}-\\d{1,2}-\\d{4})",
+        "Pay(?:ment)?\\s+by:?\\s*(\\w+\\s+\\d{1,2},?\\s*\\d{4}|\\d{1,2}\\/\\d{1,2}\\/\\d{4}|\\d{1,2}-\\d{1,2}-\\d{4})",
+        "Payment\\s+due:?\\s*(\\w+\\s+\\d{1,2},?\\s*\\d{4}|\\d{1,2}\\/\\d{1,2}\\/\\d{4}|\\d{1,2}-\\d{1,2}-\\d{4})"
+      ]
+    },
+    {
+      "fieldName": "billingDate",
+      "label": "Billing Date",
+      "patterns": [
+        "Bill(?:ing)?\\s+date:?\\s*(\\w+\\s+\\d{1,2},?\\s*\\d{4}|\\d{1,2}\\/\\d{1,2}\\/\\d{4}|\\d{1,2}-\\d{1,2}-\\d{4})",
+        "Date:?\\s*(\\w+\\s+\\d{1,2},?\\s*\\d{4}|\\d{1,2}\\/\\d{1,2}\\/\\d{4}|\\d{1,2}-\\d{1,2}-\\d{4})",
+        "Invoice\\s+date:?\\s*(\\w+\\s+\\d{1,2},?\\s*\\d{4}|\\d{1,2}\\/\\d{1,2}\\/\\d{4}|\\d{1,2}-\\d{1,2}-\\d{4})",
+        "Statement\\s+date:?\\s*(\\w+\\s+\\d{1,2},?\\s*\\d{4}|\\d{1,2}\\/\\d{1,2}\\/\\d{4}|\\d{1,2}-\\d{1,2}-\\d{4})"
+      ]
+    },
+    {
+      "fieldName": "accountNumber",
+      "label": "Account Number",
+      "patterns": [
+        "Account\\s*(?:number|#):?\\s*([A-Z0-9\\-]+)",
+        "Customer\\s*(?:number|#):?\\s*([A-Z0-9\\-]+)",
+        "Client\\s*(?:number|ID):?\\s*([A-Z0-9\\-]+)",
+        "(?:Service|Billing)\\s+account:?\\s*([A-Z0-9\\-]+)"
+      ]
+    },
+    {
+      "fieldName": "vendor",
+      "label": "Vendor",
+      "patterns": [
+        "From:?\\s*([^\\n]+)",
+        "Company:?\\s*([^\\n]+)",
+        "Billed\\s+By:?\\s*([^\\n]+)",
+        "Provided\\s+by:?\\s*([^\\n]+)"
+      ]
+    }
+  ],
+  "serviceTypes": {
+    "electricity": {
+      "category": "Utilities",
+      "identifiers": [
+        "electric bill", "electricity", "power bill", "energy", "kilowatt", "kWh", "electric service"
+      ]
+    },
+    "gas": {
+      "category": "Utilities",
+      "identifiers": [
+        "gas bill", "natural gas", "gas service", "therm", "gas utility"
+      ]
+    },
+    "water": {
+      "category": "Utilities",
+      "identifiers": [
+        "water bill", "water service", "water utility", "water usage", "sewage", "waste water"
+      ]
+    },
+    "telecom": {
+      "category": "Telecommunications",
+      "identifiers": [
+        "phone bill", "mobile", "wireless", "telephone", "cellular", "internet", "broadband", "data plan", "AT&T", "Verizon", "T-Mobile", "Comcast", "Xfinity"
+      ]
+    },
+    "heating": {
+      "category": "Utilities",
+      "identifiers": [
+        "heating bill", "district heating", "heat service"
+      ]
+    },
+    "waste": {
+      "category": "Utilities",
+      "identifiers": [
+        "waste", "garbage", "trash", "collection", "recycling", "disposal"
+      ]
+    }
+  },
+  "commonWords": [
+    "bill", "payment", "due", "amount", "total", "service", "usage", "account", "statement", "invoice",
+    "balance", "pay", "charge", "fee", "credit", "customer", "utility", "monthly", "period", "consumption",
+    "meter", "reading", "previous", "current", "bank", "check", "transfer"
+  ],
+  "billIndicatorThreshold": 1,
+  "confidence": {
+    "minimumRequired": 0.3,
+    "keywordMatch": 0.1,
+    "patternMatch": 0.2,
+    "vendorMatch": 0.3,
+    "fullExtraction": 0.8
+  }
+} 

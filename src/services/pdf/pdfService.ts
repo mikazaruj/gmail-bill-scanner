@@ -238,18 +238,20 @@ export async function extractTextFromBase64Pdf(base64Data: string): Promise<stri
     // Last-ditch effort to extract some content
     try {
       console.log('Using emergency text extraction for base64 data');
+      // Include Hungarian-specific characters in the character set
       const readableChars = base64Data
-        .replace(/[^A-Za-z0-9\s.,\-:;\/$%]/g, ' ')
+        .replace(/[^A-Za-z0-9\s.,\-:;\/$%áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/g, ' ')
         .replace(/\s+/g, ' ');
       
-      // Try to find some invoice/bill related text
-      const invoiceMatch = readableChars.match(/invoice|bill|receipt|payment|amount|total|due/i);
+      // Try to find some invoice/bill related text, including Hungarian terms
+      const invoiceMatch = readableChars.match(/invoice|bill|receipt|payment|amount|total|due|számla|fizetés|összeg|határidő|szolgáltató|mvm|eon/i);
       
       if (invoiceMatch) {
-        return `[Emergency extraction found bill-related content: ${invoiceMatch[0]}] ${readableChars.substring(0, 200)}...`;
+        console.log(`Emergency extraction found bill-related content: ${invoiceMatch[0]}`);
+        return `[Emergency extraction found bill-related content: ${invoiceMatch[0]}] ${readableChars.substring(0, 3000)}`;
       }
       
-      return readableChars.substring(0, 200) + '...' || '[PDF extraction failed completely]';
+      return readableChars.substring(0, 3000) || '[PDF extraction failed completely]';
     } catch {
       return '[PDF extraction failed completely]';
     }

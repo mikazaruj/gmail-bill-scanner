@@ -1,0 +1,122 @@
+{
+  "language": "hu",
+  "documentIdentifiers": [
+    {
+      "name": "utilityBill",
+      "patterns": [
+        "számla", "áramszámla", "gázszámla", "vízdíj", "közüzemi számla", "távhőszámla",
+        "díjbekérő", "fizetési értesítő", "elszámolás"
+      ]
+    },
+    {
+      "name": "telecomBill",
+      "patterns": [
+        "telefonszámla", "mobilszámla", "internet számla", "tv előfizetés"
+      ]
+    }
+  ],
+  "fieldExtractors": [
+    {
+      "fieldName": "amount",
+      "label": "Fizetendő összeg",
+      "patterns": [
+        "(?:Fizetendő|Összesen)(?:\\s+(?:összeg|összesen))?:?\\s*(?:Ft\\.?|HUF)?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+        "(?:Számla\\s+összege|Végösszeg):?\\s*(?:Ft\\.?|HUF)?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+        "(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)(?:\\s*|-)[Ff][Tt]\\.?",
+        "(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)(?:\\s*)[Hh][Uu][Ff]",
+        "(?:fizetend[őo]|összesen).{1,30}?(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)"
+      ],
+      "postProcessing": "removeSpaces"
+    },
+    {
+      "fieldName": "dueDate",
+      "label": "Fizetési határidő",
+      "patterns": [
+        "Fizetési\\s+határidő:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
+        "Esedékesség:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
+        "Befizetési\\s+határidő:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})"
+      ]
+    },
+    {
+      "fieldName": "billingDate",
+      "label": "Számla kiállítás dátuma",
+      "patterns": [
+        "Dátum:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
+        "Kelt:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
+        "Kiállítás\\s+dátum:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
+        "Számla\\s+kelte:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})"
+      ]
+    },
+    {
+      "fieldName": "accountNumber",
+      "label": "Ügyfél azonosító",
+      "patterns": [
+        "(?:ügyfél|fogyasztó)?\\s*(?:azonosító|szám):?\\s*([A-Z0-9\\-]+)",
+        "felhasználói\\s+azonosító:?\\s*([A-Za-z0-9\\-]+)",
+        "ügyfél\\s+azonosító:?\\s*([A-Za-z0-9\\-]+)",
+        "szerz[.őÖ]\\s*szám:?\\s*([A-Za-z0-9\\-]+)",
+        "(?:fogyasztási|felhasználási)\\s+hely\\s+(?:azonosító|szám):?\\s*([A-Z0-9\\-]+)"
+      ]
+    },
+    {
+      "fieldName": "vendor",
+      "label": "Szolgáltató",
+      "patterns": [
+        "Szolgáltató:?\\s*([^\\n]+)",
+        "Kibocsátó:?\\s*([^\\n]+)",
+        "Eladó:?\\s*([^\\n]+)"
+      ]
+    }
+  ],
+  "serviceTypes": {
+    "electricity": {
+      "category": "Utilities",
+      "identifiers": [
+        "áramszámla", "villanyáram", "MVM", "E.ON", "ELMŰ", "ÉMÁSZ", "villamosenergia"
+      ]
+    },
+    "gas": {
+      "category": "Utilities",
+      "identifiers": [
+        "gázszámla", "földgáz", "Főgáz", "Tigáz", "gázszolgáltató", "NKM"
+      ]
+    },
+    "water": {
+      "category": "Utilities",
+      "identifiers": [
+        "vízszámla", "vízdíj", "vízmű", "vízművek", "csatornadíj", "szennyvíz"
+      ]
+    },
+    "telecom": {
+      "category": "Telecommunications",
+      "identifiers": [
+        "telefonszámla", "mobilszámla", "internet", "Telekom", "Telenor", "Vodafone", "Yettel", "Digi", "UPC"
+      ]
+    },
+    "district_heating": {
+      "category": "Utilities",
+      "identifiers": [
+        "távhőszámla", "távfűtés", "Főtáv", "távhőszolgáltatás"
+      ]
+    },
+    "waste": {
+      "category": "Utilities",
+      "identifiers": [
+        "hulladék", "szemét", "szemétszállítás", "FKF", "NHKV"
+      ]
+    }
+  },
+  "commonWords": [
+    "számla", "fizetési", "határidő", "összeg", "fogyasztás", "szolgáltató", "díj", "értesítő",
+    "egyenleg", "befizetés", "kiegyenlítés", "tartozás", "hátralék", "áram", "gáz", "víz",
+    "fogyasztási", "mérőállás", "előírás", "banki", "csekk", "átutalás"
+  ],
+  "billIndicatorThreshold": 1,
+  "confidence": {
+    "minimumRequired": 0.3,
+    "keywordMatch": 0.1,
+    "patternMatch": 0.2,
+    "vendorMatch": 0.3,
+    "fullExtraction": 0.8
+  }
+} 
