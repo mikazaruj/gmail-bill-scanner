@@ -20,10 +20,11 @@ envKeys['process.env.NODE_ENV'] = JSON.stringify(process.env.NODE_ENV || 'develo
 module.exports = {
   mode: process.env.NODE_ENV === 'production' ? 'production' : 'development',
   entry: {
-    popup: './src/index.js',
-    options: './src/options/index.tsx',
-    background: './src/background/index.ts',
-    content: './src/content/index.ts'
+    popup: path.join(__dirname, "src/popup/index.tsx"),
+    options: path.join(__dirname, "src/options/index.tsx"),
+    background: path.join(__dirname, "src/background/index.ts"),
+    content: path.join(__dirname, "src/content/index.ts"),
+    pdfWorker: path.join(__dirname, "src/worker/pdfWorker.ts"),
   },
   output: {
     path: path.resolve(__dirname, 'dist'),

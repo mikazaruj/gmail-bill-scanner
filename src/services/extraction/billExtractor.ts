@@ -17,6 +17,8 @@ import {
 import { RegexBasedExtractor } from "./strategies/regexBasedExtractor";
 import { PatternBasedExtractor } from "./strategies/patternBasedExtractor";
 import { getLanguagePatterns } from "./patterns/patternLoader";
+import { extractTextFromBase64Pdf, initializePdfWorker } from '../pdf/pdfService';
+import { ExtractionResult } from "../../types";
 
 // Gmail message header interface
 interface GmailMessageHeader {
@@ -459,4 +461,92 @@ export class BillExtractor {
     const header = headers.find(h => h.name.toLowerCase() === name.toLowerCase());
     return header ? header.value : null;
   }
-} 
+}
+
+/**
+ * Preprocess PDF data based on language
+ */
+function preprocessPdfData(base64Pdf: string, language: string): string {
+  console.log(`Preprocessing PDF data for language: ${language}`);
+  
+  // For Hungarian language, apply special preprocessing
+  if (language.toLowerCase() === 'hu') {
+    console.log('Applying Hungarian-specific PDF preprocessing');
+    // Currently just pass through, but we could add specific preprocessing here
+  }
+  
+  return base64Pdf;
+}
+
+/**
+ * Extract bill data from a PDF document
+ */
+export const extractFromPdf = async (
+  base64Pdf: string, 
+  language: string = 'en',
+  options: { verbose?: boolean } = {}
+): Promise<ExtractionResult> => {
+  console.log(`Extracting bill data from PDF (language: ${language})`);
+  
+  try {
+    // First, ensure the PDF worker is initialized if we're in a browser context
+    if (typeof window !== 'undefined' && !window.pdfWorker && !window.pdfWorkerInitializing) {
+      console.log('Initializing PDF worker before extraction...');
+      
+      // Try to initialize the worker in our current context
+      await initializePdfWorker();
+      
+      // Also request the background script to initialize it (as a backup)
+      try {
+        chrome.runtime.sendMessage({ type: 'INIT_PDF_WORKER' });
+      } catch (error) {
+        console.warn('Failed to send worker init message to background:', error);
+      }
+    }
+    
+    // Preprocess the PDF data if needed based on language
+    const preprocessedData = preprocessPdfData(base64Pdf, language);
+    
+    // Extract text from PDF
+    const extractedText = await extractTextFromBase64Pdf(preprocessedData, language);
+    
+    if (!extractedText || extractedText.length < 10) {
+      console.warn('PDF extraction returned insufficient text');
+      return {
+        success: false,
+        confidence: 0,
+        error: 'Failed to extract text from PDF',
+        source: 'pdf'
+      };
+    }
+    
+    // Log successful extraction with length
+    console.log(`Successfully extracted ${extractedText.length} characters from PDF`);
+    
+    // TODO: Implement full extraction logic using extracted text
+    // For now, return a placeholder result
+    return {
+      success: true,
+      confidence: 0.3,
+      source: 'pdf',
+      // We'll fill this with real data later
+      billData: {
+        id: `pdf-${Date.now()}`,
+        vendor: 'Unknown',
+        amount: 0,
+        dueDate: new Date(),
+        isPaid: false,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      }
+    };
+  } catch (error) {
+    console.error('Error extracting from PDF:', error);
+    return {
+      success: false,
+      confidence: 0,
+      error: error instanceof Error ? error.message : String(error),
+      source: 'pdf'
+    };
+  }
+}; 

@@ -27,6 +27,42 @@ window.addEventListener('error', (event) => {
   }
 });
 
+// Initialize and register the PDF worker
+try {
+  console.log('Initializing PDF Worker...');
+  
+  // Create dedicated worker for PDF processing
+  if (typeof Worker !== 'undefined') {
+    // Create blob URL for the worker script
+    const workerBlob = new Blob([
+      `importScripts('${chrome.runtime.getURL('pdfWorker.js')}');`
+    ], { type: 'application/javascript' });
+    
+    const workerUrl = URL.createObjectURL(workerBlob);
+    
+    // Store worker reference in window for global access
+    window.pdfWorker = new Worker(workerUrl);
+    
+    // Set up worker message handling
+    window.pdfWorker.onmessage = function(e) {
+      const { type, message, data } = e.data;
+      console.log('PDF Worker message:', type);
+      
+      // Dispatch worker events to document for components to listen to
+      const workerEvent = new CustomEvent('pdfworker', { 
+        detail: { type, message, data } 
+      });
+      document.dispatchEvent(workerEvent);
+    };
+    
+    console.log('PDF Worker initialized successfully');
+  } else {
+    console.error('Web Workers are not supported in this browser');
+  }
+} catch (workerError) {
+  console.error('Failed to initialize PDF Worker:', workerError);
+}
+
 // Determine which page to render based on the HTML
 const currentPage = window.location.pathname.includes('options.html') 
   ? 'options' 

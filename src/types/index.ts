@@ -99,4 +99,24 @@ export interface AuthToken {
   refreshToken?: string;
   expiresAt: number;
   scope: string;
-} 
+}
+
+export interface UserProfile {
+  email: string;
+  name?: string;
+  subscriptionTier: 'free' | 'premium';
+  subscriptionStatus: 'active' | 'inactive' | 'trialing' | 'cancelled';
+  limitRemaining: number;
+  limitTotal: number;
+  limitResetDate?: Date;
+}
+
+export interface PdfWorkerEventDetail {
+  type: 'ready' | 'status' | 'error' | 'result';
+  message?: string;
+  error?: Error;
+  result?: any;
+}
+
+// Types for pattern-based extractor
+// ... existing code ... 

@@ -45,10 +45,11 @@
   "web_accessible_resources": [
     {
       "resources": [
+        "popup.html",
         "pdfWorker.js"
       ],
       "matches": [
-        "https://mail.google.com/*"
+        "<all_urls>"
       ]
     }
   ],

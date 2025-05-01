@@ -25,6 +25,15 @@ import { useAuth } from './hooks/useAuth';
 // We'll use the ScanContext directly but provide fallback hardcoded values
 import { ScanContext } from './context/ScanContext';
 
+import { UserProfile, PdfWorkerEventDetail } from '../types';
+
+// Add PDF worker property to Window interface
+declare global {
+  interface Window {
+    pdfWorker?: Worker;
+  }
+}
+
 interface CollapsibleSectionProps {
   title: string;
   children: JSX.Element | JSX.Element[];
@@ -70,12 +79,6 @@ interface Settings {
   searchDays: number;
 }
 
-interface UserProfile {
-  name: string;
-  email: string;
-  avatar: string;
-}
-
 interface DashboardStats {
   processed: number;
   billsFound: number;
@@ -86,9 +89,11 @@ export const PopupContent = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [showUpgradeBanner, setShowUpgradeBanner] = useState(true);
   const [backgroundReady, setBackgroundReady] = useState<boolean>(false);
+  const [pdfWorkerReady, setPdfWorkerReady] = useState<boolean>(false);
   const [isSigningUp, setIsSigningUp] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [isReturningUser, setIsReturningUser] = useState<boolean>(false);
+  const [initStage, setInitStage] = useState<string>('starting');
   
   const { isAuthenticated, isLoading, userProfile, refreshProfile } = useAuth();
   
@@ -165,33 +170,91 @@ export const PopupContent = () => {
 
   // Check if background script is ready
   useEffect(() => {
+    setInitStage('connecting');
+    
     const checkBackgroundReady = () => {
       try {
         chrome.runtime.sendMessage({ type: 'PING' }, (response) => {
           if (chrome.runtime.lastError) {
+            setInitStage('retrying_connection');
             setTimeout(checkBackgroundReady, 1000);
             return;
           }
           
           if (response?.success) {
             setBackgroundReady(true);
+            setInitStage('initializing_services');
           } else {
+            setInitStage('retrying_connection');
             setTimeout(checkBackgroundReady, 1000);
           }
         });
       } catch (error) {
+        console.error('Error connecting to background:', error);
+        setInitStage('connection_error');
         setTimeout(checkBackgroundReady, 1000);
       }
     };
 
     checkBackgroundReady();
     
-    // Fallback timer
+    // Fallback timer to prevent indefinite loading
     const fallbackTimer = setTimeout(() => {
-      setBackgroundReady(true);
-    }, 10000);
+      if (!backgroundReady) {
+        console.warn('Background connection timed out, continuing anyway');
+        setBackgroundReady(true);
+        setInitStage('forced_continue');
+      }
+    }, 5000);
     
     return () => clearTimeout(fallbackTimer);
+  }, []);
+  
+  // Listen for PDF worker events - we don't initialize it here, only listen for status
+  useEffect(() => {
+    const handlePdfWorkerEvent = (event: CustomEvent<PdfWorkerEventDetail>) => {
+      const { type, message } = event.detail;
+      
+      if (type === 'ready' || type === 'status') {
+        console.log('PDF Worker event received:', type, message);
+        setPdfWorkerReady(true);
+        
+        // Mark the appropriate initialization stage
+        if (message && message.includes('fallback')) {
+          console.log('Using fallback PDF extraction mode:', message);
+          setInitStage('using_fallback_extraction');
+        } else if (message && message.includes('direct')) {
+          console.log('Using direct PDF extraction mode:', message);
+          setInitStage('using_direct_extraction');
+        } else {
+          setInitStage('services_ready');
+        }
+      }
+    };
+    
+    // Add event listener for PDF worker
+    document.addEventListener('pdfworker', handlePdfWorkerEvent as EventListener);
+    
+    // Fallback in case worker events are never received
+    const workerTimeout = setTimeout(() => {
+      console.log('PDF Service status timeout - continuing without waiting');
+      setPdfWorkerReady(true);
+      setInitStage('continuing_without_worker');
+    }, 3000);
+    
+    // Trigger a status check - this will notify us of the current PDF service state
+    try {
+      // Dispatch a request for PDF service status
+      const statusEvent = new CustomEvent('pdf-service-status-request');
+      document.dispatchEvent(statusEvent);
+    } catch (e) {
+      console.warn('Could not request PDF service status');
+    }
+    
+    return () => {
+      document.removeEventListener('pdfworker', handlePdfWorkerEvent as EventListener);
+      clearTimeout(workerTimeout);
+    };
   }, []);
 
   const handleLogin = async () => {
@@ -290,13 +353,28 @@ export const PopupContent = () => {
     }
   };
 
-  if (!backgroundReady || isLoading) {
+  if (!backgroundReady || !pdfWorkerReady || isLoading) {
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
         <div className="loading-indicator">
           <div className="spinner"></div>
-          <p>{!backgroundReady ? 'Connecting to background service...' : 'Loading...'}</p>
+          <p>
+            {!backgroundReady ? 'Connecting to background service...' : 
+             !pdfWorkerReady ? 'Preparing services...' : 'Loading your account...'}
+          </p>
+          <p className="loading-details">
+            {initStage === 'starting' && 'Starting extension...'}
+            {initStage === 'connecting' && 'Connecting to background service...'}
+            {initStage === 'retrying_connection' && 'Retrying connection...'}
+            {initStage === 'initializing_services' && 'Initializing services...'}
+            {initStage === 'services_ready' && 'Services ready, loading UI...'}
+            {initStage === 'using_fallback_extraction' && 'Using fallback PDF extraction mode...'}
+            {initStage === 'using_direct_extraction' && 'Using direct PDF extraction mode...'}
+            {initStage === 'connection_error' && 'Connection error, retrying...'}
+            {initStage === 'forced_continue' && 'Proceeding with limited functionality...'}
+            {initStage === 'continuing_without_worker' && 'Continuing with direct extraction...'}
+          </p>
         </div>
       </div>
     );

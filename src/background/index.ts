@@ -122,11 +122,11 @@ async function logout(): Promise<{ success: boolean; error?: string }> {
 
 // Message handlers
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.warn(`Background received message: ${message?.type}`);
+  console.log('Background received message:', message.type);
   
-  if (message?.type === 'PING') {
-    console.warn('Received PING from popup, sending PONG response');
-    sendResponse({ type: 'PONG', success: true });
+  // Handle PING message for checking if background script is active
+  if (message.type === 'PING') {
+    sendResponse({ success: true });
     return true;
   }
   
@@ -1496,6 +1496,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       break;
 
+    case 'INIT_PDF_WORKER':
+      console.log('Received request to initialize PDF worker');
+      
+      // Don't block the response
+      sendResponse({ success: true });
+      
+      // Initialize in the background
+      initializePdfWorker().then(worker => {
+        console.log('PDF worker initialization complete:', !!worker);
+      }).catch(error => {
+        console.error('Failed to initialize PDF worker:', error);
+      });
+      
+      return true;
+
     default:
       console.warn(`Unknown message type: ${message.type}`);
       sendResponse({ success: false, error: `Unknown message type: ${message.type}` });
@@ -2602,3 +2617,103 @@ async function authenticateWithProfile(): Promise<{ success: boolean; profile?: 
     };
   }
 }
+
+// Initialize PDF worker for extraction
+const initializePdfWorker = async () => {
+  try {
+    // Create the worker if supported in this context
+    console.log("Attempting to initialize PDF worker...");
+    
+    // Check if we're in a context that supports Workers
+    if (typeof Worker !== 'undefined') {
+      try {
+        // Create a new worker
+        const workerScript = chrome.runtime.getURL('pdfWorker.js');
+        console.log("Creating worker with script:", workerScript);
+        
+        // Try-catch for worker creation
+        try {
+          const worker = new Worker(workerScript);
+          
+          // Listen for messages from the worker
+          worker.onmessage = (event) => {
+            console.log('Received message from PDF worker:', event.data.type);
+            
+            // Store the worker instance in a global variable if needed
+            // @ts-ignore - adding custom property to window
+            self.pdfWorker = worker;
+            
+            // Dispatch custom event that can be listened for in popup
+            const customEvent = new CustomEvent('pdfworker', {
+              detail: event.data
+            });
+            document.dispatchEvent(customEvent);
+          };
+          
+          // Listen for errors
+          worker.onerror = (error) => {
+            console.error('PDF worker error:', error);
+            const errorEvent = new CustomEvent('pdfworker', {
+              detail: {
+                type: 'error',
+                error
+              }
+            });
+            document.dispatchEvent(errorEvent);
+          };
+          
+          // Post initial message to the worker
+          worker.postMessage({ 
+            type: 'init'
+          });
+          
+          console.log('PDF worker initialized successfully');
+          return worker;
+        } catch (workerError) {
+          console.error('Error creating worker instance:', workerError);
+          // Dispatch a fallback event to let popup know we'll use fallback extraction
+          const fallbackEvent = new CustomEvent('pdfworker', {
+            detail: {
+              type: 'ready',
+              message: 'Using fallback PDF extraction (worker creation failed)'
+            }
+          });
+          document.dispatchEvent(fallbackEvent);
+        }
+      } catch (scriptError) {
+        console.error('Error loading worker script:', scriptError);
+        notifyPdfWorkerFallback('script loading failed');
+      }
+    } else {
+      console.warn('Web Workers are not supported in this environment');
+      notifyPdfWorkerFallback('not supported');
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Failed to initialize PDF worker:', error);
+    notifyPdfWorkerFallback('initialization error');
+    return null;
+  }
+};
+
+// Helper to dispatch fallback event
+function notifyPdfWorkerFallback(reason: string) {
+  if (typeof document !== 'undefined') {
+    const fallbackEvent = new CustomEvent('pdfworker', {
+      detail: {
+        type: 'ready',
+        message: `Using fallback PDF extraction (${reason})`
+      }
+    });
+    document.dispatchEvent(fallbackEvent);
+  }
+}
+
+// Run initialization in a safe way
+setTimeout(() => {
+  initializePdfWorker().catch(error => {
+    console.error('Error during PDF worker initialization:', error);
+    notifyPdfWorkerFallback('async initialization error');
+  });
+}, 1000);
