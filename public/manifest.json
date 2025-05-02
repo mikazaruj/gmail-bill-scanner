@@ -46,7 +46,8 @@
     {
       "resources": [
         "popup.html",
-        "pdfWorker.js"
+        "pdfWorker.js",
+        "pdf.worker.min.js"
       ],
       "matches": [
         "<all_urls>"
@@ -54,6 +55,6 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com"
+    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; worker-src 'self'"
   }
 } 

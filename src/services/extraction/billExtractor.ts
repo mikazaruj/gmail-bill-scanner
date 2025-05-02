@@ -17,7 +17,7 @@ import {
 import { RegexBasedExtractor } from "./strategies/regexBasedExtractor";
 import { PatternBasedExtractor } from "./strategies/patternBasedExtractor";
 import { getLanguagePatterns } from "./patterns/patternLoader";
-import { extractTextFromBase64Pdf, initializePdfWorker } from '../pdf/pdfService';
+import { extractTextFromBase64Pdf } from '../pdf/pdfService';
 import { ExtractionResult } from "../../types";
 
 // Gmail message header interface
@@ -486,22 +486,18 @@ export const extractFromPdf = async (
   language: string = 'en',
   options: { verbose?: boolean } = {}
 ): Promise<ExtractionResult> => {
-  console.log(`Extracting bill data from PDF (language: ${language})`);
   
   try {
-    // First, ensure the PDF worker is initialized if we're in a browser context
-    if (typeof window !== 'undefined' && !window.pdfWorker && !window.pdfWorkerInitializing) {
-      console.log('Initializing PDF worker before extraction...');
-      
-      // Try to initialize the worker in our current context
-      await initializePdfWorker();
-      
-      // Also request the background script to initialize it (as a backup)
-      try {
+    // No need to initialize worker anymore, as we're using direct PDF.js approach
+    console.log('Using direct PDF.js extraction...');
+    
+    // Also notify background script for backward compatibility
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime) {
         chrome.runtime.sendMessage({ type: 'INIT_PDF_WORKER' });
-      } catch (error) {
-        console.warn('Failed to send worker init message to background:', error);
       }
+    } catch (error) {
+      console.warn('Failed to send worker init message to background:', error);
     }
     
     // Preprocess the PDF data if needed based on language

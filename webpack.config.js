@@ -106,6 +106,7 @@ module.exports = {
         { from: 'public/icon128.png', to: 'icon128.png' },
         { from: 'public/manifest.json', to: '' },
         { from: './src/services/pdf/pdfWorker.js', to: 'pdfWorker.js' },
+        { from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', to: 'pdf.worker.min.js' }
       ],
     }),
     // Comment out the HTML plugins since we're using the CopyPlugin
