@@ -24,7 +24,6 @@ module.exports = {
     options: path.join(__dirname, "src/options/index.tsx"),
     background: path.join(__dirname, "src/background/index.ts"),
     content: path.join(__dirname, "src/content/index.ts"),
-    pdfWorker: path.join(__dirname, "src/worker/pdfWorker.ts"),
   },
   output: {
     path: path.resolve(__dirname, 'dist'),
@@ -100,30 +99,37 @@ module.exports = {
     }),
     new CopyPlugin({
       patterns: [
-        { from: 'public/popup.html', to: 'popup.html' },
-        { from: 'public/options.html', to: 'options.html' },
+        { 
+          from: 'public/manifest.json',
+          transform: (content) => {
+            const manifest = JSON.parse(content.toString());
+            if (manifest.oauth2 && manifest.oauth2.client_id) {
+              manifest.oauth2.client_id = process.env.GOOGLE_CLIENT_ID || 'YOUR_CLIENT_ID';
+            }
+            return JSON.stringify(manifest, null, 2);
+          }
+        },
         { from: 'public/icon.svg', to: 'icon.svg' },
         { from: 'public/icon128.png', to: 'icon128.png' },
-        { from: 'public/manifest.json', to: '' },
-        { from: './src/services/pdf/pdfWorker.js', to: 'pdfWorker.js' },
+        // Important: Include the PDF.js worker file directly from node_modules
         { from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', to: 'pdf.worker.min.js' }
       ],
     }),
-    // Comment out the HTML plugins since we're using the CopyPlugin
-    /*
+    // Use HtmlWebpackPlugin to generate HTML files - use different names to avoid conflicts
     new HtmlWebpackPlugin({
       template: './public/popup.html',
       filename: 'popup.html',
       chunks: ['popup'],
-      cache: false
+      cache: false,
+      inject: true
     }),
     new HtmlWebpackPlugin({
       template: './public/options.html',
       filename: 'options.html',
       chunks: ['options'],
-      cache: false
+      cache: false,
+      inject: true
     }),
-    */
   ],
   resolve: {
     extensions: ['.js', '.jsx', '.ts', '.tsx', '.css'],

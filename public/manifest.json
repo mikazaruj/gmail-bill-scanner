@@ -46,15 +46,16 @@
     {
       "resources": [
         "popup.html",
-        "pdfWorker.js",
         "pdf.worker.min.js"
       ],
       "matches": [
-        "<all_urls>"
+        "https://mail.google.com/*",
+        "https://*/*",
+        "http://*/*"
       ]
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; worker-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; worker-src blob: 'self'"
   }
 } 

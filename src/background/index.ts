@@ -43,6 +43,7 @@ console.warn('Background worker started - this log should be visible');
 // Add global flag to track PDF initialization
 let pdfWorkerInitialized = false;
 let pdfWorkerInitializationAttempted = false;
+let authInitializationComplete = false; // New flag to track authentication initialization
 
 // Signal that the extension is ready to load
 const signalExtensionReady = () => {
@@ -61,31 +62,40 @@ const signalExtensionReady = () => {
         console.error('Error broadcasting extension status:', err);
       });
     }
+    
+    // Only focus on authentication initialization, don't start PDF worker
+    setTimeout(() => {
+      console.log('Starting authentication initialization...');
+      authInitializationComplete = true;
+    }, 500);
   } catch (error) {
     console.error('Error signaling extension ready:', error);
   }
 };
 
-// Completely separate PDF initialization from extension startup
-const scheduleDelayedPdfInitialization = () => {
-  // Only schedule this once
-  if (pdfWorkerInitializationAttempted) {
-    console.log('PDF initialization already attempted, not scheduling again');
-    return;
+// Initialize PDF worker only when needed (called before scanning operations)
+const initializePdfWorkerIfNeeded = async (): Promise<boolean> => {
+  // If already initialized, return immediately
+  if (pdfWorkerInitialized) {
+    console.log('PDF worker already initialized, skipping initialization');
+    return true;
   }
   
-  pdfWorkerInitializationAttempted = true;
+  console.log('Initializing PDF worker on-demand for scanning operation');
   
-  console.log('Scheduling PDF.js initialization to happen after extension is fully loaded (10 seconds delay)');
-  setTimeout(() => {
-    console.log('Delayed PDF.js initialization now starting...');
-    initializePdfWorker().then(result => {
-      pdfWorkerInitialized = result;
-      console.log('PDF.js initialization result:', result ? 'success' : 'failed');
-    }).catch(error => {
-      console.error('Error during PDF.js initialization:', error);
-    });
-  }, 10000); // Extended to 10 seconds to ensure extension is fully loaded
+  try {
+    // Perform the actual initialization
+    const result = await initializePdfWorker();
+    pdfWorkerInitialized = result;
+    pdfWorkerInitializationAttempted = true;
+    
+    console.log('PDF worker on-demand initialization result:', result ? 'success' : 'failed');
+    return result;
+  } catch (error) {
+    console.error('Error during on-demand PDF worker initialization:', error);
+    pdfWorkerInitializationAttempted = true;
+    return false;
+  }
 };
 
 // Add global error handling for the service worker
@@ -102,13 +112,21 @@ declare const self: ServiceWorkerGlobalScope;
 
 // Service worker lifecycle
 self.addEventListener('install', (event: ExtendableEvent) => {
-  console.warn('Service worker install event');
-  self.skipWaiting();
+  console.log('Service worker install event');
+  // Skip waiting to become active immediately
+  event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', (event: ExtendableEvent) => {
-  console.warn('Service worker activate event');
-  event.waitUntil(self.clients.claim());
+  console.log('Service worker activate event');
+  // Claim all clients to ensure the service worker controls all tabs/windows
+  event.waitUntil(
+    self.clients.claim().then(() => {
+      console.log('Service worker has claimed all clients');
+      signalExtensionReady(); // Signal extension ready after service worker is activated
+      // Don't initialize PDF worker here - wait for it to be needed
+    })
+  );
 });
 
 // Keep the service worker alive
@@ -183,10 +201,59 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   // Handle PING message for checking if background script is active
   if (message.type === 'PING') {
+    // Always respond immediately to ping - highest priority
     sendResponse({ success: true });
     return true;
   }
   
+  // Handle AUTHENTICATE with high priority - respond even if PDF is loading
+  if (message.type === 'AUTHENTICATE') {
+    console.log('Prioritizing authentication request');
+    
+    // If PDF worker is still initializing, mark it as initialized to avoid blocking auth
+    if (!pdfWorkerInitialized) {
+      console.log('Setting PDF worker as initialized to prioritize auth');
+      pdfWorkerInitialized = true;
+    }
+    
+    // Continue with authentication handling immediately
+    handleAuthentication(message, sendResponse);
+    return true;
+  }
+  
+  // Handle INIT_PDF_WORKER message - initialize on-demand
+  if (message.type === 'INIT_PDF_WORKER') {
+    console.log('Received request to initialize PDF extraction');
+    
+    // Check if PDF has already been initialized
+    if (pdfWorkerInitialized) {
+      console.log('PDF.js already initialized, returning success immediately');
+      sendResponse({ 
+        success: true, 
+        message: 'PDF.js already initialized',
+        isAsync: false
+      });
+      return true;
+    }
+    
+    // Initialize the PDF worker immediately
+    initializePdfWorkerIfNeeded().then(success => {
+      console.log('PDF worker initialization completed with result:', success ? 'success' : 'failed');
+    }).catch(error => {
+      console.error('Error during PDF worker initialization:', error);
+    });
+    
+    // Don't block the response - always return success immediately
+    sendResponse({ 
+      success: true, 
+      message: 'PDF initialization started on-demand',
+      isAsync: true
+    });
+    
+    return true;
+  }
+  
+  // Handle all other messages
   (async () => {
     try {
       switch (message?.type) {
@@ -424,118 +491,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
 
         case 'AUTHENTICATE':
-          console.log('Background: Processing authentication request (sign in)');
-          
-          try {
-            // Parse isSignUp parameter if provided
-            const isSignUp = !!message.isSignUp;
-            console.log('Authentication mode:', isSignUp ? 'sign-up' : 'sign-in');
-            
-            // Call the authentication function to get Google token and profile
-            const { authenticate } = await import('../services/auth/googleAuth');
-            const authResult = await authenticateWithProfile();
-            
-            console.log('Background: Google authentication completed with result:', 
-              authResult.success ? 'Success' : 'Failed',
-              authResult.profile ? `for ${authResult.profile.email}` : 'no profile'
-            );
-            
-            if (authResult.success && authResult.profile) {
-              console.log('Background: Google authentication successful:', authResult.profile.email);
-              console.log('Background: Google profile data:', authResult.profile);
-              
-              // Always store the profile locally for reference
-              await chrome.storage.local.set({
-                'google_user_id': authResult.profile.id,
-                'user_email': authResult.profile.email,
-                'user_profile': authResult.profile,
-                'token_expiry': Date.now() + (3600 * 1000) // 1 hour expiry
-              });
-              
-              console.log('Background: Stored Google user ID:', authResult.profile.id);
-              
-              try {
-                // Use the signInWithGoogle function which handles the full authentication flow
-                const { signInWithGoogle } = await import('../services/supabase/client');
-                
-                console.log('Background: Authenticating with Supabase using Google credentials...');
-                const signInResult = await signInWithGoogle(
-                  'token-not-needed', // Our improved function doesn't need this anymore
-                  authResult.profile.email,
-                  authResult.profile.name,
-                  authResult.profile.picture,
-                  isSignUp, // Pass whether this is signup or signin
-                  authResult.profile // Pass the full profile for best results
-                );
-                
-                if (signInResult.data && signInResult.data.user) {
-                  console.log('Background: User authenticated successfully:', signInResult.data.user.id);
-                  
-                  // Return the combined result
-                  sendResponse({
-                    success: true,
-                    isAuthenticated: true,
-                    profile: {
-                      ...authResult.profile,
-                      supabase_id: signInResult.data.user.id
-                    },
-                    message: signInResult.message || 'Signed in successfully!',
-                    existingUser: true
-                  });
-                  return;
-                } else {
-                  console.error('Background: Failed to authenticate with Supabase:', signInResult.error);
-                  // Still return success if Google auth worked
-                  sendResponse({
-                    success: true,
-                    isAuthenticated: true,
-                    profile: authResult.profile,
-                    message: 'Signed in with Google only. Supabase authentication failed.',
-                    databaseError: signInResult.error?.message || 'Unknown error'
-                  });
-                  return;
-                }
-              } catch (dbError) {
-                console.error('Background: Error with database operation:', dbError);
-                // Still return success if Google auth worked
-                sendResponse({
-                  success: true,
-                  isAuthenticated: true,
-                  profile: authResult.profile,
-                  message: 'Signed in with Google only. Database error occurred.',
-                  databaseError: dbError instanceof Error ? dbError.message : 'Unknown database error'
-                });
-                return;
-              }
-            }
-            
-            // If authentication failed, return the error
-            console.log('Background: Authentication result:', authResult);
-            sendResponse(authResult);
-          } catch (error) {
-            console.error('Authentication error:', error);
-        
-        let errorMessage = error instanceof Error ? error.message : 'Unknown authentication error';
-        
-        // User-friendly messages for common errors
-        if (errorMessage.includes('canceled') || errorMessage.includes('did not approve')) {
-          errorMessage = 'Authentication was canceled. Please try again.';
-        } else if (errorMessage.includes('Failed to get user info from Google')) {
-          errorMessage = 'Could not get your account information. Please check your permissions and try again.';
-        }
-        
-            sendResponse({
-              success: false,
-          error: errorMessage,
-          isAuthenticated: false
-            });
-          }
-      return true;
+          // This is a fallback - the message is actually handled above for priority
+          await handleAuthentication(message, sendResponse);
+          break;
 
-    case 'SIGN_OUT':
+        case 'SIGN_OUT':
           try {
-        console.log('Background: Processing sign out request');
-          
+            console.log('Background: Processing sign out request');
+            
             // Clear Chrome storage keys related to authentication
             await chrome.storage.local.remove([
               'gmail-bill-scanner-auth',
@@ -554,8 +517,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               'user_data'
             ]);
           
-        // Also revoke the Google token if possible
-        try {
+            // Also revoke the Google token if possible
+            try {
               // Get the current token
               const token = await new Promise<string | null>((resolve) => {
                 chrome.identity.getAuthToken({ interactive: false }, (token) => {
@@ -567,7 +530,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 });
               });
               
-          if (token) {
+              if (token) {
                 // Revoke the token with Google
                 await new Promise<void>((resolve) => {
                   chrome.identity.removeCachedAuthToken({ token }, () => {
@@ -590,7 +553,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
             
             console.log('Successfully signed out');
-      sendResponse({ success: true });
+            sendResponse({ success: true });
           } catch (error) {
             console.error('Sign out error:', error);
             sendResponse({
@@ -598,238 +561,238 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               error: error instanceof Error ? error.message : 'Sign out failed'
             });
           }
-      break;
+          break;
 
-    case 'GET_USER_DATA':
-      try {
-        console.log('Background: Processing get user data request');
-        
-        // Import needed functions from our simplified client
-        const { getSupabaseClient, getStoredSession } = await import('../services/supabase/client');
-        const supabase = await getSupabaseClient();
-        
-        // Retrieve session from Chrome storage
-        const session = await getStoredSession();
-        
-        // If no session found, user is not authenticated
-        if (!session || !session.user?.id) {
-          sendResponse({ success: false, error: 'User not authenticated' });
-          return;
-        }
-        
-        const userId = session.user.id;
-        
-        // Get user data from public.users table
-        const { data: userData, error } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', userId)
-          .maybeSingle();
-        
-        if (error) {
-          console.error('Error fetching user data:', error);
-          sendResponse({ success: false, error: error.message });
-          return;
-        }
-        
-        sendResponse({ success: true, userData });
-      } catch (error) {
-        console.error('Error getting user data:', error);
-        sendResponse({
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to get user data'
-            });
-          }
-      break;
+        case 'GET_USER_DATA':
+          try {
+            console.log('Background: Processing get user data request');
+            
+            // Import needed functions from our simplified client
+            const { getSupabaseClient, getStoredSession } = await import('../services/supabase/client');
+            const supabase = await getSupabaseClient();
+            
+            // Retrieve session from Chrome storage
+            const session = await getStoredSession();
+            
+            // If no session found, user is not authenticated
+            if (!session || !session.user?.id) {
+              sendResponse({ success: false, error: 'User not authenticated' });
+              return;
+            }
+            
+            const userId = session.user.id;
+            
+            // Get user data from public.users table
+            const { data: userData, error } = await supabase
+              .from('users')
+              .select('*')
+              .eq('id', userId)
+              .maybeSingle();
+            
+            if (error) {
+              console.error('Error fetching user data:', error);
+              sendResponse({ success: false, error: error.message });
+              return;
+            }
+            
+            sendResponse({ success: true, userData });
+          } catch (error) {
+            console.error('Error getting user data:', error);
+            sendResponse({
+              success: false,
+              error: error instanceof Error ? error.message : 'Failed to get user data'
+                });
+              }
+          break;
 
-    case 'SCAN_EMAILS':
+        case 'SCAN_EMAILS':
           await handleScanEmails(message.payload, sendResponse);
-      break;
+        break;
 
-    case 'EXPORT_TO_SHEETS':
+        case 'EXPORT_TO_SHEETS':
           await handleExportToSheets(message.payload, sendResponse);
-      break;
+        break;
 
-    case 'CREATE_SPREADSHEET':
-      try {
-        console.log('CREATE_SPREADSHEET message received:', message);
-        const { name } = message.payload;
-        
-        // Get authentication token (scopes are configured in manifest.json)
-        const token = await getAccessToken();
-        if (!token) {
-          sendResponse({ success: false, error: 'Not authenticated' });
-          return;
-        }
-        
-        try {
-          // Create a new spreadsheet using Sheets API
-          const response = await fetch(
-            'https://sheets.googleapis.com/v4/spreadsheets',
-            {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                properties: {
-                  title: name || 'Bills Tracker',
-                },
-                sheets: [
-                  {
-                    properties: {
-                      title: 'Bills',
-                      gridProperties: {
-                        frozenRowCount: 1,
-                      },
-                    },
+        case 'CREATE_SPREADSHEET':
+          try {
+            console.log('CREATE_SPREADSHEET message received:', message);
+            const { name } = message.payload;
+            
+            // Get authentication token (scopes are configured in manifest.json)
+            const token = await getAccessToken();
+            if (!token) {
+              sendResponse({ success: false, error: 'Not authenticated' });
+              return;
+            }
+            
+            try {
+              // Create a new spreadsheet using Sheets API
+              const response = await fetch(
+                'https://sheets.googleapis.com/v4/spreadsheets',
+                {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
                   },
-                ],
-              }),
-            }
-          );
-          
-          if (!response.ok) {
-            const error = await response.json();
-            throw new Error(`Sheets API error: ${error.error?.message || 'Unknown error'}`);
-          }
-          
-          const data = await response.json();
-          const spreadsheetId = data.spreadsheetId;
-          
-          // Initialize the spreadsheet with headers
-          const headerResponse = await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Bills!A1:I1?valueInputOption=RAW`,
-            {
-              method: 'PUT',
-              headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                range: 'Bills!A1:I1',
-                majorDimension: 'ROWS',
-                values: [
-                  ['Date', 'Merchant', 'Amount', 'Currency', 'Category', 'Due Date', 'Paid', 'Notes', 'Source']
-                ],
-              }),
-            }
-          );
-          
-          if (!headerResponse.ok) {
-            console.warn('Failed to initialize headers, but spreadsheet was created');
-          }
-          
-          // Return the spreadsheet ID and name
-          sendResponse({ 
-            success: true, 
-            spreadsheetId,
-            spreadsheetName: name || 'Bills Tracker'
-          });
-        } catch (error) {
-          console.error('Error creating spreadsheet:', error);
-          sendResponse({ 
-            success: false, 
-            error: error instanceof Error ? error.message : 'Unknown error' 
-          });
-        }
-      } catch (error) {
-        console.error('Error in CREATE_SPREADSHEET handler:', error);
-        sendResponse({ 
-          success: false, 
-          error: error instanceof Error ? error.message : 'Unknown error' 
-        });
-      }
-      break;
-
-    case 'REAUTHENTICATE_GMAIL':
-      try {
-        // Check if we should verify the existing token first
-        const checkExistingToken = message.options?.checkExistingToken === true;
-        
-        if (checkExistingToken) {
-          // First check if we already have a valid token
-          const hasValidToken = await new Promise<boolean>((resolve) => {
-            chrome.identity.getAuthToken({ interactive: false }, async (token) => {
-              if (chrome.runtime.lastError || !token) {
-                resolve(false);
-                return;
+                  body: JSON.stringify({
+                    properties: {
+                      title: name || 'Bills Tracker',
+                    },
+                    sheets: [
+                      {
+                        properties: {
+                          title: 'Bills',
+                          gridProperties: {
+                            frozenRowCount: 1,
+                          },
+                        },
+                      },
+                    ],
+                  }),
+                }
+              );
+              
+              if (!response.ok) {
+                const error = await response.json();
+                throw new Error(`Sheets API error: ${error.error?.message || 'Unknown error'}`);
               }
               
-              try {
-                // Verify the token by fetching user info
-                const userInfo = await fetchGoogleUserInfo(token);
-                if (userInfo && userInfo.email) {
-                  // Token is valid and working - send response immediately
-                  sendResponse({
-                    success: true,
-                    profile: userInfo
-                  });
-                  resolve(true);
-                  return;
+              const data = await response.json();
+              const spreadsheetId = data.spreadsheetId;
+              
+              // Initialize the spreadsheet with headers
+              const headerResponse = await fetch(
+                `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Bills!A1:I1?valueInputOption=RAW`,
+                {
+                  method: 'PUT',
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    range: 'Bills!A1:I1',
+                    majorDimension: 'ROWS',
+                    values: [
+                      ['Date', 'Merchant', 'Amount', 'Currency', 'Category', 'Due Date', 'Paid', 'Notes', 'Source']
+                    ],
+                  }),
                 }
-                resolve(false);
-              } catch (error) {
-                resolve(false);
+              );
+              
+              if (!headerResponse.ok) {
+                console.warn('Failed to initialize headers, but spreadsheet was created');
               }
+              
+              // Return the spreadsheet ID and name
+              sendResponse({ 
+                success: true, 
+                spreadsheetId,
+                spreadsheetName: name || 'Bills Tracker'
+              });
+            } catch (error) {
+              console.error('Error creating spreadsheet:', error);
+              sendResponse({ 
+                success: false, 
+                error: error instanceof Error ? error.message : 'Unknown error' 
+              });
+            }
+          } catch (error) {
+            console.error('Error in CREATE_SPREADSHEET handler:', error);
+            sendResponse({ 
+              success: false, 
+              error: error instanceof Error ? error.message : 'Unknown error' 
             });
-          });
-          
-          // If we already sent a response, exit
-          if (hasValidToken) {
-            return true;
           }
-        }
-        
-        // If no valid token or checkExistingToken is false, proceed with authentication
-        
-        // Revoke previous token to ensure we get a fresh one
-        await new Promise<void>((resolve) => {
-          chrome.identity.getAuthToken({ interactive: false }, (token) => {
-            if (token) {
-              chrome.identity.removeCachedAuthToken({ token }, () => {
-                // Once token is removed from cache, resolve
-                resolve();
+          break;
+
+        case 'REAUTHENTICATE_GMAIL':
+          try {
+            // Check if we should verify the existing token first
+            const checkExistingToken = message.options?.checkExistingToken === true;
+            
+            if (checkExistingToken) {
+              // First check if we already have a valid token
+              const hasValidToken = await new Promise<boolean>((resolve) => {
+                chrome.identity.getAuthToken({ interactive: false }, async (token) => {
+                  if (chrome.runtime.lastError || !token) {
+                    resolve(false);
+                    return;
+                  }
+                  
+                  try {
+                    // Verify the token by fetching user info
+                    const userInfo = await fetchGoogleUserInfo(token);
+                    if (userInfo && userInfo.email) {
+                      // Token is valid and working - send response immediately
+                      sendResponse({
+                        success: true,
+                        profile: userInfo
+                      });
+                      resolve(true);
+                      return;
+                    }
+                    resolve(false);
+                  } catch (error) {
+                    resolve(false);
+                  }
+                });
+              });
+              
+              // If we already sent a response, exit
+              if (hasValidToken) {
+                return true;
+              }
+            }
+            
+            // If no valid token or checkExistingToken is false, proceed with authentication
+            
+            // Revoke previous token to ensure we get a fresh one
+            await new Promise<void>((resolve) => {
+              chrome.identity.getAuthToken({ interactive: false }, (token) => {
+                if (token) {
+                  chrome.identity.removeCachedAuthToken({ token }, () => {
+                    // Once token is removed from cache, resolve
+                    resolve();
+                  });
+                } else {
+                  // No token to remove
+                  resolve();
+                }
+              });
+            });
+            
+            // Now authenticate with user interaction
+            const authResult = await authenticateWithProfile();
+            
+            // If successful, update the connection
+            if (authResult.success && authResult.profile) {
+              // Update storage with Google profile
+              await chrome.storage.local.set({
+                'google_user_id': authResult.profile.id,
+                'google_profile': authResult.profile
+              });
+              
+              sendResponse({
+                success: true,
+                profile: authResult.profile
               });
             } else {
-              // No token to remove
-              resolve();
+              sendResponse({
+                success: false,
+                error: authResult.error || 'Authentication failed'
+              });
             }
-          });
-        });
-        
-        // Now authenticate with user interaction
-        const authResult = await authenticateWithProfile();
-        
-        // If successful, update the connection
-        if (authResult.success && authResult.profile) {
-          // Update storage with Google profile
-          await chrome.storage.local.set({
-            'google_user_id': authResult.profile.id,
-            'google_profile': authResult.profile
-          });
-          
-          sendResponse({
-            success: true,
-            profile: authResult.profile
-          });
-        } else {
-          sendResponse({
-            success: false,
-            error: authResult.error || 'Authentication failed'
-          });
-        }
-      } catch (error) {
-        console.error('Error reauthenticating Gmail:', error);
-        sendResponse({
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error'
-        });
-      }
-      break;
+          } catch (error) {
+            console.error('Error reauthenticating Gmail:', error);
+            sendResponse({
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            });
+          }
+          break;
 
-    case 'GET_PROCESSED_ITEMS_COUNT':
+        case 'GET_PROCESSED_ITEMS_COUNT':
           try {
             // Import the function on demand to avoid circular dependencies
             const { getSupabaseClient } = await import('../services/supabase/client');
@@ -864,9 +827,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               error: error instanceof Error ? error.message : 'Failed to get processed items count'
             });
           }
-      break;
+        break;
 
-    case 'GET_USER_STATS':
+        case 'GET_USER_STATS':
           try {
             console.log('Background: GET_USER_STATS request received');
             
@@ -962,9 +925,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               errorType: 'UNKNOWN_ERROR'
             });
           }
-      break;
+        break;
 
-    case 'GET_USER_PROFILE':
+        case 'GET_USER_PROFILE':
           try {
             console.log('Background: GET_USER_PROFILE request received');
             // Import the function on demand to avoid circular dependencies
@@ -1048,550 +1011,501 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               error: error instanceof Error ? error.message : 'Failed to get user profile'
             });
           }
-      break;
+        break;
 
-    case 'LOGOUT':
-      try {
-        console.log('Background: Processing logout request');
-        const logoutResult = await logout();
-        console.log('Background: Logout result:', logoutResult);
-        sendResponse(logoutResult);
-      } catch (error) {
-        console.error('Background: Logout error:', error);
-        sendResponse({ 
-          success: false, 
-          error: error instanceof Error ? error.message : 'Logout failed' 
-        });
-      }
-      break;
-
-    case 'GOOGLE_AUTH_COMPLETED':
-      try {
-        console.log('Background: Processing Google auth completion');
-        const profile = message.profile;
-        
-        if (!profile || !profile.id || !profile.email) {
-          console.error('Missing required profile data');
-          sendResponse({
-            success: false,
-            error: 'Missing required profile data'
-          });
-          return;
-        }
-        
-        console.log('Google auth completed for:', {
-          id: profile.id,
-          email: profile.email,
-          name: profile.name || '(no name)'
-        });
-        
-        // Store the profile in Chrome storage
-        await chrome.storage.local.set({
-          'google_user_id': profile.id,
-          'google_profile': profile,
-          'gmail_connected': true,
-          'gmail_email': profile.email,
-          'last_gmail_update': new Date().toISOString()
-        });
-        
-        // Ensure the user record exists in Supabase
-        if (profile.id && profile.email) {
-          const supabaseUserId = await ensureUserRecord(profile.id, profile.email);
-          console.log('Ensured user record with Supabase ID:', supabaseUserId);
-          
-          sendResponse({ 
-            success: true, 
-            profile, 
-            supabaseUserId 
-          });
-        } else {
-          sendResponse({ success: true, profile });
-        }
-      } catch (error) {
-        console.error('Error handling Google auth completion:', error);
-        sendResponse({ 
-          success: false, 
-          error: error instanceof Error ? error.message : 'Unknown error' 
-        });
-      }
-      break;
-
-    case 'LINK_GOOGLE_USER':
-      try {
-        console.log('Background: Processing LINK_GOOGLE_USER request');
-        
-        const profile = message.profile;
-        if (!profile || !profile.id || !profile.email) {
-          console.error('Missing required profile data');
-          sendResponse({
-            success: false,
-            error: 'Missing required profile data'
-          });
-          return;
-        }
-        
-        console.log('Linking Google profile:', {
-          id: profile.id,
-          email: profile.email,
-          name: profile.name || '(no name)'
-        });
-        
-        // Import the necessary function
-        const { linkGoogleUserInSupabase } = await import('../services/supabase/client');
-        
-        // Link the Google user with Supabase
-        const linkResult = await linkGoogleUserInSupabase({
-          profile: {
-            id: profile.id,
-            email: profile.email,
-            name: profile.name,
-            picture: profile.picture
-          },
-          token: null // Token not needed for this operation
-        });
-        
-        console.log('Link result:', linkResult.success ? 'Success' : 'Failed');
-        
-        if (linkResult.success && linkResult.user?.id) {
-          // Store the Supabase user ID in Chrome storage
-          await chrome.storage.local.set({
-            'supabase_user_id': linkResult.user.id,
-            'authenticated_at': new Date().toISOString(),
-            'user_data': linkResult.user || null
-          });
-          
-          console.log('Stored Supabase user ID:', linkResult.user.id);
-          
-          // Return the result
-          sendResponse({
-            success: true,
-            userId: linkResult.user.id,
-            userData: linkResult.user
-          });
-        } else {
-          console.error('Failed to link user:', linkResult.error);
-          sendResponse({
-            success: false,
-            error: linkResult.error || 'Unknown error'
-          });
-        }
-      } catch (error) {
-        console.error('Error linking Google user:', error);
-        sendResponse({
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error'
-        });
-      }
-      break;
-
-    case 'GET_AVAILABLE_SHEETS':
-      try {
-        console.log('Fetching available Google Sheets...');
-        
-        // Get authentication token
-        const token = await getAccessToken();
-        if (!token) {
-          console.error('No auth token available for GET_AVAILABLE_SHEETS');
-          sendResponse({ success: false, error: 'Not authenticated' });
-          return;
-        }
-        
-        try {
-          // Use the Sheets API instead of Drive API
-          // Although this just gives us the sheets we can access directly by ID, 
-          // it doesn't require additional scopes
-          console.log('Using Google Sheets API to find available spreadsheets...');
-          
-          // Get the user's spreadsheets from storage if available
-          const storageData = await chrome.storage.local.get(['lastSpreadsheetId', 'recentSpreadsheets']);
-          const lastSpreadsheetId = storageData.lastSpreadsheetId;
-          const recentSpreadsheets = storageData.recentSpreadsheets || [];
-          
-          // Return the list of spreadsheets
-          interface SpreadsheetInfo {
-            id: string;
-            name: string;
-          }
-          
-          const sheets: SpreadsheetInfo[] = [];
-          
-          // Add last used spreadsheet if available
-          if (lastSpreadsheetId) {
-            try {
-              // Validate the spreadsheet exists and is accessible
-              const response = await fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${lastSpreadsheetId}?fields=properties.title`,
-                {
-                  method: "GET",
-                  headers: {
-                    Authorization: `Bearer ${token}`,
-                    "Content-Type": "application/json",
-                  },
-                }
-              );
-              
-              if (response.ok) {
-                const data = await response.json();
-                sheets.push({
-                  id: lastSpreadsheetId,
-                  name: data.properties.title || 'Last Used Spreadsheet'
-                });
-                console.log('Successfully added last used spreadsheet to list');
-              }
-            } catch (validateError) {
-              console.warn('Error validating last spreadsheet, it may be inaccessible:', validateError);
-            }
-          }
-          
-          // Add recent spreadsheets if available
-          if (recentSpreadsheets && recentSpreadsheets.length > 0) {
-            for (const recent of recentSpreadsheets) {
-              // Skip if it's the same as the last spreadsheet
-              if (recent.id === lastSpreadsheetId) continue;
-              
-              try {
-                // Validate the spreadsheet exists and is accessible
-                const response = await fetch(
-                  `https://sheets.googleapis.com/v4/spreadsheets/${recent.id}?fields=properties.title`,
-                  {
-                    method: "GET",
-                    headers: {
-                      Authorization: `Bearer ${token}`,
-                      "Content-Type": "application/json",
-                    },
-                  }
-                );
-                
-                if (response.ok) {
-                  const data = await response.json();
-                  // Use stored name if title validation fails
-                  sheets.push({
-                    id: recent.id,
-                    name: data.properties?.title || recent.name || 'Unnamed Spreadsheet'
-                  });
-                }
-              } catch (validateError) {
-                console.warn(`Error validating recent spreadsheet ${recent.id}, skipping:`, validateError);
-              }
-            }
-            console.log(`Added ${sheets.length - (lastSpreadsheetId ? 1 : 0)} recent spreadsheets to list`);
-          }
-          
-          console.log(`Returning ${sheets.length} available spreadsheets`);
-          sendResponse({ success: true, sheets });
-        } catch (error) {
-          console.error('Error fetching spreadsheets:', error);
-          sendResponse({ 
-            success: false, 
-            error: error instanceof Error ? error.message : 'Error fetching spreadsheets' 
-          });
-        }
-      } catch (error) {
-        console.error('Error in GET_AVAILABLE_SHEETS handler:', error);
-        sendResponse({ 
-          success: false, 
-          error: error instanceof Error ? error.message : 'Error handling spreadsheet request' 
-        });
-      }
-      break;
-
-    case 'INSERT_TRUSTED_SOURCE':
-      try {
-        const { userId, emailAddress, description, isActive, googleUserId } = message.payload || {};
-        
-        if (!userId || !emailAddress) {
-          sendResponse({ 
-            success: false, 
-            error: 'Missing required parameters: userId and emailAddress are required' 
-          });
-          return;
-        }
-        
-        console.log('Background: Inserting trusted source with service role:', 
-          { userId, emailAddress, description, googleUserId });
-        
-        // Import the client module to access the Supabase client
-        import('../services/supabase/client').then(async (module) => {
+        case 'GOOGLE_AUTH_COMPLETED':
           try {
-            // Get the Supabase client with service role key (only available in background)
-            if (!module.supabase) {
-              throw new Error('Supabase client not available');
+            console.log('Background: Processing Google auth completion');
+            const profile = message.profile;
+            
+            if (!profile || !profile.id || !profile.email) {
+              console.error('Missing required profile data');
+              sendResponse({
+                success: false,
+                error: 'Missing required profile data'
+              });
+              return;
             }
             
-            // Get service role client if available (this should be a secure function that doesn't expose the key)
-            const supabaseAdmin = await module.getSupabaseClient() || module.supabase;
+            console.log('Google auth completed for:', {
+              id: profile.id,
+              email: profile.email,
+              name: profile.name || '(no name)'
+            });
             
-            // Insert the record directly with the service role key
-            const { data, error } = await supabaseAdmin
-              .from('email_sources')
-              .insert({
-                user_id: userId,
-                email_address: emailAddress,
-                description: description || null,
-                is_active: isActive !== false
-              })
-              .select()
-              .single();
+            // Store the profile in Chrome storage
+            await chrome.storage.local.set({
+              'google_user_id': profile.id,
+              'google_profile': profile,
+              'gmail_connected': true,
+              'gmail_email': profile.email,
+              'last_gmail_update': new Date().toISOString()
+            });
             
-            if (error) {
-              console.error('Background: Error inserting trusted source:', error);
+            // Ensure the user record exists in Supabase
+            if (profile.id && profile.email) {
+              const supabaseUserId = await ensureUserRecord(profile.id, profile.email);
+              console.log('Ensured user record with Supabase ID:', supabaseUserId);
               
-              // Check if it might be a unique constraint error
-              if (error.code === '23505') {
-                // Try to fetch the existing record instead
-                const { data: existingData, error: fetchError } = await supabaseAdmin
+              sendResponse({ 
+                success: true, 
+                profile, 
+                supabaseUserId 
+              });
+            } else {
+              sendResponse({ success: true, profile });
+            }
+          } catch (error) {
+            console.error('Error handling Google auth completion:', error);
+            sendResponse({ 
+              success: false, 
+              error: error instanceof Error ? error.message : 'Unknown error' 
+            });
+          }
+          break;
+
+        case 'LINK_GOOGLE_USER':
+          try {
+            console.log('Background: Processing LINK_GOOGLE_USER request');
+            
+            const profile = message.profile;
+            if (!profile || !profile.id || !profile.email) {
+              console.error('Missing required profile data');
+              sendResponse({
+                success: false,
+                error: 'Missing required profile data'
+              });
+              return;
+            }
+            
+            console.log('Linking Google profile:', {
+              id: profile.id,
+              email: profile.email,
+              name: profile.name || '(no name)'
+            });
+            
+            // Import the necessary function
+            const { linkGoogleUserInSupabase } = await import('../services/supabase/client');
+            
+            // Link the Google user with Supabase
+            const linkResult = await linkGoogleUserInSupabase({
+              profile: {
+                id: profile.id,
+                email: profile.email,
+                name: profile.name,
+                picture: profile.picture
+              },
+              token: null // Token not needed for this operation
+            });
+            
+            console.log('Link result:', linkResult.success ? 'Success' : 'Failed');
+            
+            if (linkResult.success && linkResult.user?.id) {
+              // Store the Supabase user ID in Chrome storage
+              await chrome.storage.local.set({
+                'supabase_user_id': linkResult.user.id,
+                'authenticated_at': new Date().toISOString(),
+                'user_data': linkResult.user || null
+              });
+              
+              console.log('Stored Supabase user ID:', linkResult.user.id);
+              
+              // Return the result
+              sendResponse({
+                success: true,
+                userId: linkResult.user.id,
+                userData: linkResult.user
+              });
+            } else {
+              console.error('Failed to link user:', linkResult.error);
+              sendResponse({
+                success: false,
+                error: linkResult.error || 'Unknown error'
+              });
+            }
+          } catch (error) {
+            console.error('Error linking Google user:', error);
+            sendResponse({
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            });
+          }
+          break;
+
+        case 'GET_AVAILABLE_SHEETS':
+          try {
+            console.log('Fetching available Google Sheets...');
+            
+            // Get authentication token
+            const token = await getAccessToken();
+            if (!token) {
+              console.error('No auth token available for GET_AVAILABLE_SHEETS');
+              sendResponse({ success: false, error: 'Not authenticated' });
+              return;
+            }
+            
+            try {
+              // Use the Sheets API instead of Drive API
+              // Although this just gives us the sheets we can access directly by ID, 
+              // it doesn't require additional scopes
+              console.log('Using Google Sheets API to find available spreadsheets...');
+              
+              // Get the user's spreadsheets from storage if available
+              const storageData = await chrome.storage.local.get(['lastSpreadsheetId', 'recentSpreadsheets']);
+              const lastSpreadsheetId = storageData.lastSpreadsheetId;
+              const recentSpreadsheets = storageData.recentSpreadsheets || [];
+              
+              // Return the list of spreadsheets
+              interface SpreadsheetInfo {
+                id: string;
+                name: string;
+              }
+              
+              const sheets: SpreadsheetInfo[] = [];
+              
+              // Add last used spreadsheet if available
+              if (lastSpreadsheetId) {
+                try {
+                  // Validate the spreadsheet exists and is accessible
+                  const response = await fetch(
+                    `https://sheets.googleapis.com/v4/spreadsheets/${lastSpreadsheetId}?fields=properties.title`,
+                    {
+                      method: "GET",
+                      headers: {
+                        Authorization: `Bearer ${token}`,
+                        "Content-Type": "application/json",
+                      },
+                    }
+                  );
+                  
+                  if (response.ok) {
+                    const data = await response.json();
+                    sheets.push({
+                      id: lastSpreadsheetId,
+                      name: data.properties.title || 'Last Used Spreadsheet'
+                    });
+                    console.log('Successfully added last used spreadsheet to list');
+                  }
+                } catch (validateError) {
+                  console.warn('Error validating last spreadsheet, it may be inaccessible:', validateError);
+                }
+              }
+              
+              // Add recent spreadsheets if available
+              if (recentSpreadsheets && recentSpreadsheets.length > 0) {
+                for (const recent of recentSpreadsheets) {
+                  // Skip if it's the same as the last spreadsheet
+                  if (recent.id === lastSpreadsheetId) continue;
+                  
+                  try {
+                    // Validate the spreadsheet exists and is accessible
+                    const response = await fetch(
+                      `https://sheets.googleapis.com/v4/spreadsheets/${recent.id}?fields=properties.title`,
+                      {
+                        method: "GET",
+                        headers: {
+                          Authorization: `Bearer ${token}`,
+                          "Content-Type": "application/json",
+                        },
+                      }
+                    );
+                    
+                    if (response.ok) {
+                      const data = await response.json();
+                      // Use stored name if title validation fails
+                      sheets.push({
+                        id: recent.id,
+                        name: data.properties?.title || recent.name || 'Unnamed Spreadsheet'
+                      });
+                    }
+                  } catch (validateError) {
+                    console.warn(`Error validating recent spreadsheet ${recent.id}, skipping:`, validateError);
+                  }
+                }
+                console.log(`Added ${sheets.length - (lastSpreadsheetId ? 1 : 0)} recent spreadsheets to list`);
+              }
+              
+              console.log(`Returning ${sheets.length} available spreadsheets`);
+              sendResponse({ success: true, sheets });
+            } catch (error) {
+              console.error('Error fetching spreadsheets:', error);
+              sendResponse({ 
+                success: false, 
+                error: error instanceof Error ? error.message : 'Error fetching spreadsheets' 
+              });
+            }
+          } catch (error) {
+            console.error('Error in GET_AVAILABLE_SHEETS handler:', error);
+            sendResponse({ 
+              success: false, 
+              error: error instanceof Error ? error.message : 'Error handling spreadsheet request' 
+            });
+          }
+          break;
+
+        case 'INSERT_TRUSTED_SOURCE':
+          try {
+            const { userId, emailAddress, description, isActive, googleUserId } = message.payload || {};
+            
+            if (!userId || !emailAddress) {
+              sendResponse({ 
+                success: false, 
+                error: 'Missing required parameters: userId and emailAddress are required' 
+              });
+              return;
+            }
+            
+            console.log('Background: Inserting trusted source with service role:', 
+              { userId, emailAddress, description, googleUserId });
+            
+            // Import the client module to access the Supabase client
+            import('../services/supabase/client').then(async (module) => {
+              try {
+                // Get the Supabase client with service role key (only available in background)
+                if (!module.supabase) {
+                  throw new Error('Supabase client not available');
+                }
+                
+                // Get service role client if available (this should be a secure function that doesn't expose the key)
+                const supabaseAdmin = await module.getSupabaseClient() || module.supabase;
+                
+                // Insert the record directly with the service role key
+                const { data, error } = await supabaseAdmin
                   .from('email_sources')
-                  .select('*')
+                  .insert({
+                    user_id: userId,
+                    email_address: emailAddress,
+                    description: description || null,
+                    is_active: isActive !== false
+                  })
+                  .select()
+                  .single();
+                
+                if (error) {
+                  console.error('Background: Error inserting trusted source:', error);
+                  
+                  // Check if it might be a unique constraint error
+                  if (error.code === '23505') {
+                    // Try to fetch the existing record instead
+                    const { data: existingData, error: fetchError } = await supabaseAdmin
+                      .from('email_sources')
+                      .select('*')
+                      .eq('user_id', userId)
+                      .eq('email_address', emailAddress)
+                      .is('deleted_at', null)
+                      .single();
+                    
+                    if (fetchError) {
+                      console.error('Background: Error fetching existing record:', fetchError);
+                      sendResponse({ 
+                        success: false, 
+                        error: fetchError.message || 'Failed to fetch existing record'
+                      });
+                      return;
+                    }
+                    
+                    if (existingData) {
+                      console.log('Background: Found existing record:', existingData);
+                      sendResponse({ 
+                        success: true, 
+                        data: existingData,
+                        message: 'Retrieved existing record'
+                      });
+                      return;
+                    }
+                  }
+                  
+                  sendResponse({ 
+                    success: false, 
+                    error: error.message || 'Failed to insert trusted source'
+                  });
+                  return;
+                }
+                
+                console.log('Background: Successfully inserted trusted source:', data);
+                sendResponse({ 
+                  success: true, 
+                  data,
+                  message: 'Successfully inserted trusted source'
+                });
+              } catch (error) {
+                console.error('Background: Error in service role operation:', error);
+                sendResponse({
+                  success: false, 
+                  error: error instanceof Error ? error.message : 'Unknown error in service operation'
+                });
+              }
+            }).catch(error => {
+              console.error('Background: Error importing client module:', error);
+              sendResponse({
+                success: false,
+                error: 'Failed to import service functions'
+              });
+            });
+            return true; // Keep the response channel open
+          } catch (error) {
+            console.error('Background: Error processing trusted source insert:', error);
+            sendResponse({ 
+              success: false, 
+              error: error instanceof Error ? error.message : 'Unknown error'
+            });
+          }
+          break;
+          
+        case 'REMOVE_TRUSTED_SOURCE':
+          try {
+            const { userId, emailAddress, googleUserId } = message.payload || {};
+            
+            if (!userId || !emailAddress) {
+              sendResponse({ 
+                success: false, 
+                error: 'Missing required parameters: userId and emailAddress are required' 
+              });
+              return;
+            }
+            
+            console.log('Background: Removing trusted source with service role:', 
+              { userId, emailAddress, googleUserId });
+            
+            // Import the client module to access the Supabase client
+            import('../services/supabase/client').then(async (module) => {
+              try {
+                // Get the Supabase client with service role key (only available in background)
+                if (!module.supabase) {
+                  throw new Error('Supabase client not available');
+                }
+                
+                // Get service role client if available (this should be a secure function that doesn't expose the key)
+                const supabaseAdmin = await module.getSupabaseClient() || module.supabase;
+                
+                // Update the record to set is_active=false directly with the service role key
+                const { data, error } = await supabaseAdmin
+                  .from('email_sources')
+                  .update({ is_active: false })
                   .eq('user_id', userId)
                   .eq('email_address', emailAddress)
                   .is('deleted_at', null)
+                  .select()
                   .single();
                 
-                if (fetchError) {
-                  console.error('Background: Error fetching existing record:', fetchError);
+                if (error) {
+                  console.error('Background: Error removing trusted source:', error);
                   sendResponse({ 
                     success: false, 
-                    error: fetchError.message || 'Failed to fetch existing record'
+                    error: error.message || 'Failed to remove trusted source'
                   });
                   return;
                 }
                 
-                if (existingData) {
-                  console.log('Background: Found existing record:', existingData);
+                console.log('Background: Successfully removed trusted source:', data);
+                sendResponse({ 
+                  success: true, 
+                  data,
+                  message: 'Successfully removed trusted source'
+                });
+              } catch (error) {
+                console.error('Background: Error in service role operation for removing source:', error);
+                sendResponse({
+                  success: false, 
+                  error: error instanceof Error ? error.message : 'Unknown error in service operation'
+                });
+              }
+            }).catch(error => {
+              console.error('Background: Error importing client module for removing source:', error);
+              sendResponse({
+                success: false,
+                error: 'Failed to import service functions'
+              });
+            });
+            return true; // Keep the response channel open
+          } catch (error) {
+            console.error('Background: Error processing trusted source removal:', error);
+            sendResponse({ 
+              success: false, 
+              error: error instanceof Error ? error.message : 'Unknown error'
+            });
+          }
+          break;
+
+        case 'DELETE_TRUSTED_SOURCE':
+          try {
+            const { userId, emailAddress } = message.payload || {};
+            
+            if (!userId || !emailAddress) {
+              sendResponse({ 
+                success: false, 
+                error: 'Missing required parameters: userId and emailAddress are required' 
+              });
+              return;
+            }
+            
+            console.log('Background: Permanently deleting trusted source with service role:', 
+              { userId, emailAddress });
+            
+            // Import the client module to access the Supabase client
+            import('../services/supabase/client').then(async (module) => {
+              try {
+                // Get the Supabase client with service role key (only available in background)
+                if (!module.supabase) {
+                  throw new Error('Supabase client not available');
+                }
+                
+                // Get service role client if available (this should be a secure function that doesn't expose the key)
+                const supabaseAdmin = await module.getSupabaseClient() || module.supabase;
+                
+                // Update the record to set deleted_at timestamp directly with the service role key
+                const { data, error } = await supabaseAdmin
+                  .from('email_sources')
+                  .update({ deleted_at: new Date().toISOString() })
+                  .eq('user_id', userId)
+                  .eq('email_address', emailAddress)
+                  .select()
+                  .single();
+                
+                if (error) {
+                  console.error('Background: Error deleting trusted source:', error);
                   sendResponse({ 
-                    success: true, 
-                    data: existingData,
-                    message: 'Retrieved existing record'
+                    success: false, 
+                    error: error.message || 'Failed to delete trusted source'
                   });
                   return;
                 }
+                
+                console.log('Background: Successfully deleted trusted source:', data);
+                sendResponse({ 
+                  success: true, 
+                  data,
+                  message: 'Successfully deleted trusted source'
+                });
+              } catch (error) {
+                console.error('Background: Error in service role operation for deleting source:', error);
+                sendResponse({
+                  success: false, 
+                  error: error instanceof Error ? error.message : 'Unknown error in service operation'
+                });
               }
-              
-              sendResponse({ 
-                success: false, 
-                error: error.message || 'Failed to insert trusted source'
+            }).catch(error => {
+              console.error('Background: Error importing client module for deleting source:', error);
+              sendResponse({
+                success: false,
+                error: 'Failed to import service functions'
               });
-              return;
-            }
-            
-            console.log('Background: Successfully inserted trusted source:', data);
-            sendResponse({ 
-              success: true, 
-              data,
-              message: 'Successfully inserted trusted source'
             });
+            return true; // Keep the response channel open
           } catch (error) {
-            console.error('Background: Error in service role operation:', error);
-            sendResponse({
+            console.error('Background: Error processing trusted source deletion:', error);
+            sendResponse({ 
               success: false, 
-              error: error instanceof Error ? error.message : 'Unknown error in service operation'
+              error: error instanceof Error ? error.message : 'Unknown error'
             });
           }
-        }).catch(error => {
-          console.error('Background: Error importing client module:', error);
-          sendResponse({
-            success: false,
-            error: 'Failed to import service functions'
-          });
-        });
-        return true; // Keep the response channel open
-      } catch (error) {
-        console.error('Background: Error processing trusted source insert:', error);
-        sendResponse({ 
-          success: false, 
-          error: error instanceof Error ? error.message : 'Unknown error'
-        });
-      }
-      break;
-      
-    case 'REMOVE_TRUSTED_SOURCE':
-      try {
-        const { userId, emailAddress, googleUserId } = message.payload || {};
-        
-        if (!userId || !emailAddress) {
-          sendResponse({ 
-            success: false, 
-            error: 'Missing required parameters: userId and emailAddress are required' 
-          });
-          return;
-        }
-        
-        console.log('Background: Removing trusted source with service role:', 
-          { userId, emailAddress, googleUserId });
-        
-        // Import the client module to access the Supabase client
-        import('../services/supabase/client').then(async (module) => {
-          try {
-            // Get the Supabase client with service role key (only available in background)
-            if (!module.supabase) {
-              throw new Error('Supabase client not available');
-            }
-            
-            // Get service role client if available (this should be a secure function that doesn't expose the key)
-            const supabaseAdmin = await module.getSupabaseClient() || module.supabase;
-            
-            // Update the record to set is_active=false directly with the service role key
-            const { data, error } = await supabaseAdmin
-              .from('email_sources')
-              .update({ is_active: false })
-              .eq('user_id', userId)
-              .eq('email_address', emailAddress)
-              .is('deleted_at', null)
-              .select()
-              .single();
-            
-            if (error) {
-              console.error('Background: Error removing trusted source:', error);
-              sendResponse({ 
-                success: false, 
-                error: error.message || 'Failed to remove trusted source'
-              });
-              return;
-            }
-            
-            console.log('Background: Successfully removed trusted source:', data);
-            sendResponse({ 
-              success: true, 
-              data,
-              message: 'Successfully removed trusted source'
-            });
-          } catch (error) {
-            console.error('Background: Error in service role operation for removing source:', error);
-            sendResponse({
-              success: false, 
-              error: error instanceof Error ? error.message : 'Unknown error in service operation'
-            });
-          }
-        }).catch(error => {
-          console.error('Background: Error importing client module for removing source:', error);
-          sendResponse({
-            success: false,
-            error: 'Failed to import service functions'
-          });
-        });
-        return true; // Keep the response channel open
-      } catch (error) {
-        console.error('Background: Error processing trusted source removal:', error);
-        sendResponse({ 
-          success: false, 
-          error: error instanceof Error ? error.message : 'Unknown error'
-        });
-      }
-      break;
+          break;
 
-    case 'DELETE_TRUSTED_SOURCE':
-      try {
-        const { userId, emailAddress } = message.payload || {};
-        
-        if (!userId || !emailAddress) {
-          sendResponse({ 
-            success: false, 
-            error: 'Missing required parameters: userId and emailAddress are required' 
-          });
-          return;
-        }
-        
-        console.log('Background: Permanently deleting trusted source with service role:', 
-          { userId, emailAddress });
-        
-        // Import the client module to access the Supabase client
-        import('../services/supabase/client').then(async (module) => {
-          try {
-            // Get the Supabase client with service role key (only available in background)
-            if (!module.supabase) {
-              throw new Error('Supabase client not available');
-            }
-            
-            // Get service role client if available (this should be a secure function that doesn't expose the key)
-            const supabaseAdmin = await module.getSupabaseClient() || module.supabase;
-            
-            // Update the record to set deleted_at timestamp directly with the service role key
-            const { data, error } = await supabaseAdmin
-              .from('email_sources')
-              .update({ deleted_at: new Date().toISOString() })
-              .eq('user_id', userId)
-              .eq('email_address', emailAddress)
-              .select()
-              .single();
-            
-            if (error) {
-              console.error('Background: Error deleting trusted source:', error);
-              sendResponse({ 
-                success: false, 
-                error: error.message || 'Failed to delete trusted source'
-              });
-              return;
-            }
-            
-            console.log('Background: Successfully deleted trusted source:', data);
-            sendResponse({ 
-              success: true, 
-              data,
-              message: 'Successfully deleted trusted source'
-            });
-          } catch (error) {
-            console.error('Background: Error in service role operation for deleting source:', error);
-            sendResponse({
-              success: false, 
-              error: error instanceof Error ? error.message : 'Unknown error in service operation'
-            });
-          }
-        }).catch(error => {
-          console.error('Background: Error importing client module for deleting source:', error);
-          sendResponse({
-            success: false,
-            error: 'Failed to import service functions'
-          });
-        });
-        return true; // Keep the response channel open
-      } catch (error) {
-        console.error('Background: Error processing trusted source deletion:', error);
-        sendResponse({ 
-          success: false, 
-          error: error instanceof Error ? error.message : 'Unknown error'
-        });
+        default:
+          console.warn(`Unknown message type: ${message.type}`);
+          sendResponse({ success: false, error: `Unknown message type: ${message.type}` });
+          break;
       }
-      break;
-
-    case 'INIT_PDF_WORKER':
-      console.log('Received request to initialize PDF extraction');
-      
-      // Check if PDF has already been initialized
-      if (pdfWorkerInitialized) {
-        console.log('PDF.js already initialized, returning success immediately');
-        sendResponse({ 
-          success: true, 
-          message: 'PDF.js already initialized',
-          isAsync: false
-        });
-        return true;
-      }
-      
-      // If initialization was attempted but failed, try again
-      if (pdfWorkerInitializationAttempted) {
-        console.log('PDF initialization was attempted before, scheduling another attempt');
-        // Schedule another attempt but don't block the response
-        scheduleDelayedPdfInitialization();
-      } else {
-        // First time seeing this request, schedule initialization
-        console.log('First PDF initialization request, scheduling initialization');
-        scheduleDelayedPdfInitialization();
-      }
-      
-      // Don't block the response - always return success immediately
-      sendResponse({ 
-        success: true, 
-        message: 'PDF initialization will be scheduled after extension is loaded',
-        isAsync: true
-      });
-      
-      return true;
-
-    default:
-      console.warn(`Unknown message type: ${message.type}`);
-      sendResponse({ success: false, error: `Unknown message type: ${message.type}` });
-      break;
-  }
     } catch (error) {
       console.error('Error handling message:', error);
       sendResponse({
@@ -1605,6 +1519,118 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 /**
+ * Handle authentication requests with high priority
+ */
+async function handleAuthentication(message: any, sendResponse: Function) {
+  console.log('Background: Processing authentication request (sign in)');
+  
+  try {
+    // Parse isSignUp parameter if provided
+    const isSignUp = !!message.isSignUp;
+    console.log('Authentication mode:', isSignUp ? 'sign-up' : 'sign-in');
+    
+    // Call the authentication function to get Google token and profile
+    const { authenticate } = await import('../services/auth/googleAuth');
+    const authResult = await authenticateWithProfile();
+    
+    console.log('Background: Google authentication completed with result:', 
+      authResult.success ? 'Success' : 'Failed',
+      authResult.profile ? `for ${authResult.profile.email}` : 'no profile'
+    );
+    
+    if (authResult.success && authResult.profile) {
+      console.log('Background: Google authentication successful:', authResult.profile.email);
+      console.log('Background: Google profile data:', authResult.profile);
+      
+      // Always store the profile locally for reference
+      await chrome.storage.local.set({
+        'google_user_id': authResult.profile.id,
+        'user_email': authResult.profile.email,
+        'user_profile': authResult.profile,
+        'token_expiry': Date.now() + (3600 * 1000) // 1 hour expiry
+      });
+      
+      console.log('Background: Stored Google user ID:', authResult.profile.id);
+      
+      try {
+        // Use the signInWithGoogle function which handles the full authentication flow
+        const { signInWithGoogle } = await import('../services/supabase/client');
+        
+        console.log('Background: Authenticating with Supabase using Google credentials...');
+        const signInResult = await signInWithGoogle(
+          'token-not-needed', // Our improved function doesn't need this anymore
+          authResult.profile.email,
+          authResult.profile.name,
+          authResult.profile.picture,
+          isSignUp, // Pass whether this is signup or signin
+          authResult.profile // Pass the full profile for best results
+        );
+        
+        if (signInResult.data && signInResult.data.user) {
+          console.log('Background: User authenticated successfully:', signInResult.data.user.id);
+          
+          // Return the combined result
+          sendResponse({
+            success: true,
+            isAuthenticated: true,
+            profile: {
+              ...authResult.profile,
+              supabase_id: signInResult.data.user.id
+            },
+            message: signInResult.message || 'Signed in successfully!',
+            existingUser: true
+          });
+          return;
+        } else {
+          console.error('Background: Failed to authenticate with Supabase:', signInResult.error);
+          // Still return success if Google auth worked
+          sendResponse({
+            success: true,
+            isAuthenticated: true,
+            profile: authResult.profile,
+            message: 'Signed in with Google only. Supabase authentication failed.',
+            databaseError: signInResult.error?.message || 'Unknown error'
+          });
+          return;
+        }
+      } catch (dbError) {
+        console.error('Background: Error with database operation:', dbError);
+        // Still return success if Google auth worked
+        sendResponse({
+          success: true,
+          isAuthenticated: true,
+          profile: authResult.profile,
+          message: 'Signed in with Google only. Database error occurred.',
+          databaseError: dbError instanceof Error ? dbError.message : 'Unknown database error'
+        });
+        return;
+      }
+    }
+    
+    // If authentication failed, return the error
+    console.log('Background: Authentication result:', authResult);
+    sendResponse(authResult);
+  } catch (error) {
+    console.error('Authentication error:', error);
+
+    let errorMessage = error instanceof Error ? error.message : 'Unknown authentication error';
+    
+    // User-friendly messages for common errors
+    if (errorMessage.includes('canceled') || errorMessage.includes('did not approve')) {
+      errorMessage = 'Authentication was canceled. Please try again.';
+    } else if (errorMessage.includes('Failed to get user info from Google')) {
+      errorMessage = 'Could not get your account information. Please check your permissions and try again.';
+    }
+    
+    sendResponse({
+      success: false,
+      error: errorMessage,
+      isAuthenticated: false
+    });
+  }
+}
+
+/**
  * Handle scanning emails and extracting bills
  */
 async function handleScanEmails(
@@ -1613,6 +1639,10 @@ async function handleScanEmails(
 ) {
   try {
     console.log('Starting email scan process...');
+    
+    // Initialize PDF worker before scanning (this won't block if already initialized)
+    console.log('Ensuring PDF worker is initialized before scanning emails');
+    await initializePdfWorkerIfNeeded();
     
     // Get authentication token
     const token = await getAccessToken();
@@ -2694,10 +2724,10 @@ async function authenticateWithProfile(): Promise<{ success: boolean; profile?: 
   }
 }
 
-// Simplified PDF worker initialization with robust error handling - but made optional/lazy
+// Simplified PDF worker initialization with reliable error handling
 const initializePdfWorker = async () => {
   try {
-    console.log("Initializing direct PDF.js extraction...");
+    console.log("Initializing PDF.js extraction...");
     
     // Only attempt to initialize if we're in the right context
     if (typeof chrome !== 'undefined' && chrome.runtime) {
@@ -2706,39 +2736,17 @@ const initializePdfWorker = async () => {
       console.log(`PDF.js worker URL: ${workerUrl}`);
       
       // Set global flag to indicate success
-      console.log("PDF.js initialization successful - worker will be loaded on demand");
+      console.log("PDF.js initialization successful");
       return true;
     } else {
-      console.log("Not in extension context, skipping PDF.js initialization");
+      console.error("Not in extension context, PDF.js initialization failed");
+      return false;
     }
-    
-    return true;
   } catch (error) {
     console.error('Error in PDF initialization:', error);
     return false;
   }
 };
 
-// Helper to dispatch event with error handling
-function notifyPdfWorkerFallback(reason: string) {
-  console.log(`Using direct PDF.js extraction (${reason})`);
-}
-
-// Signal extension ready first and schedule initialization
-setTimeout(() => {
-  // Signal that the extension core is ready - do this first and only this
-  signalExtensionReady();
-
-  console.log('Extension loaded, now scheduling PDF.js initialization...');
-  
-  // Schedule PDF initialization after a short delay
-  setTimeout(() => {
-    initializePdfWorker().then(result => {
-      pdfWorkerInitialized = true; // Always mark as successful - we'll handle actual loading on demand
-      console.log('PDF.js initialization result: success');
-    }).catch(error => {
-      console.error('Error during PDF.js initialization:', error);
-      pdfWorkerInitialized = true; // Still mark as successful, we'll handle errors at extraction time
-    });
-  }, 2000);
-}, 500);
+// Signal extension ready and initialize PDF worker
+signalExtensionReady();
