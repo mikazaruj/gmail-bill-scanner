@@ -17,8 +17,8 @@ let manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
 console.log('Original CSP:', manifest.content_security_policy?.extension_pages);
 
-// Use a secure CSP that doesn't require unsafe-eval and doesn't load external scripts
-const newCSP = "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self';";
+// Use a more permissive CSP that allows Web Workers and wasm for PDF.js
+const newCSP = "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self'; font-src 'self';";
 
 // Update the manifest's CSP
 manifest.content_security_policy.extension_pages = newCSP;

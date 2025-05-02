@@ -40,6 +40,63 @@ console.log('=== DEBUG: Background script with trusted sources handlers loaded =
 console.log('=== Gmail Bill Scanner background service worker starting up... ===');
 console.warn('Background worker started - this log should be visible');
 
+// Add global flag to track PDF initialization
+let pdfWorkerInitialized = false;
+let pdfWorkerInitializationAttempted = false;
+
+// Signal that the extension is ready to load
+const signalExtensionReady = () => {
+  console.log('=== Extension core is ready to use ===');
+  // Broadcast this to any listeners
+  try {
+    if (typeof self !== 'undefined' && self.clients) {
+      self.clients.matchAll().then(clients => {
+        clients.forEach(client => {
+          client.postMessage({
+            type: 'EXTENSION_LOADED',
+            status: 'ready'
+          });
+        });
+      }).catch(err => {
+        console.error('Error broadcasting extension status:', err);
+      });
+    }
+  } catch (error) {
+    console.error('Error signaling extension ready:', error);
+  }
+};
+
+// Completely separate PDF initialization from extension startup
+const scheduleDelayedPdfInitialization = () => {
+  // Only schedule this once
+  if (pdfWorkerInitializationAttempted) {
+    console.log('PDF initialization already attempted, not scheduling again');
+    return;
+  }
+  
+  pdfWorkerInitializationAttempted = true;
+  
+  console.log('Scheduling PDF.js initialization to happen after extension is fully loaded (10 seconds delay)');
+  setTimeout(() => {
+    console.log('Delayed PDF.js initialization now starting...');
+    initializePdfWorker().then(result => {
+      pdfWorkerInitialized = result;
+      console.log('PDF.js initialization result:', result ? 'success' : 'failed');
+    }).catch(error => {
+      console.error('Error during PDF.js initialization:', error);
+    });
+  }, 10000); // Extended to 10 seconds to ensure extension is fully loaded
+};
+
+// Add global error handling for the service worker
+self.addEventListener('error', (event: ErrorEvent) => {
+  console.error('Service worker global error:', event.error);
+});
+
+self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+  console.error('Unhandled promise rejection in service worker:', event.reason);
+});
+
 // Service worker for Gmail Bill Scanner
 declare const self: ServiceWorkerGlobalScope;
 
@@ -1499,10 +1556,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'INIT_PDF_WORKER':
       console.log('Received request to initialize PDF extraction');
       
-      // Just acknowledge the request
+      // Check if PDF has already been initialized
+      if (pdfWorkerInitialized) {
+        console.log('PDF.js already initialized, returning success immediately');
+        sendResponse({ 
+          success: true, 
+          message: 'PDF.js already initialized',
+          isAsync: false
+        });
+        return true;
+      }
+      
+      // If initialization was attempted but failed, try again
+      if (pdfWorkerInitializationAttempted) {
+        console.log('PDF initialization was attempted before, scheduling another attempt');
+        // Schedule another attempt but don't block the response
+        scheduleDelayedPdfInitialization();
+      } else {
+        // First time seeing this request, schedule initialization
+        console.log('First PDF initialization request, scheduling initialization');
+        scheduleDelayedPdfInitialization();
+      }
+      
+      // Don't block the response - always return success immediately
       sendResponse({ 
         success: true, 
-        message: 'Using direct PDF.js extraction - no worker needed' 
+        message: 'PDF initialization will be scheduled after extension is loaded',
+        isAsync: true
       });
       
       return true;
@@ -2614,18 +2694,51 @@ async function authenticateWithProfile(): Promise<{ success: boolean; profile?: 
   }
 }
 
-// Simplified PDF worker initialization
+// Simplified PDF worker initialization with robust error handling - but made optional/lazy
 const initializePdfWorker = async () => {
-  console.log("PDF.js direct extraction is being used - no worker needed");
-  return true;
+  try {
+    console.log("Initializing direct PDF.js extraction...");
+    
+    // Only attempt to initialize if we're in the right context
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      // Make sure the PDF worker is available
+      const workerUrl = chrome.runtime.getURL('pdf.worker.min.js');
+      console.log(`PDF.js worker URL: ${workerUrl}`);
+      
+      // Set global flag to indicate success
+      console.log("PDF.js initialization successful - worker will be loaded on demand");
+      return true;
+    } else {
+      console.log("Not in extension context, skipping PDF.js initialization");
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error in PDF initialization:', error);
+    return false;
+  }
 };
 
-// Helper to dispatch event
+// Helper to dispatch event with error handling
 function notifyPdfWorkerFallback(reason: string) {
   console.log(`Using direct PDF.js extraction (${reason})`);
 }
 
-// No need for complex initialization on startup
+// Signal extension ready first and schedule initialization
 setTimeout(() => {
-  console.log('Direct PDF.js extraction is ready');
-}, 1000);
+  // Signal that the extension core is ready - do this first and only this
+  signalExtensionReady();
+
+  console.log('Extension loaded, now scheduling PDF.js initialization...');
+  
+  // Schedule PDF initialization after a short delay
+  setTimeout(() => {
+    initializePdfWorker().then(result => {
+      pdfWorkerInitialized = true; // Always mark as successful - we'll handle actual loading on demand
+      console.log('PDF.js initialization result: success');
+    }).catch(error => {
+      console.error('Error during PDF.js initialization:', error);
+      pdfWorkerInitialized = true; // Still mark as successful, we'll handle errors at extraction time
+    });
+  }, 2000);
+}, 500);

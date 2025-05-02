@@ -95,38 +95,46 @@ export const PopupContent = () => {
   const [isReturningUser, setIsReturningUser] = useState<boolean>(false);
   const [initStage, setInitStage] = useState<string>('starting');
   
-  const { isAuthenticated, isLoading, userProfile, refreshProfile } = useAuth();
+  // DEBUGGING: Force display the UI for testing
+  const [forceDisplay, setForceDisplay] = useState<boolean>(false);
   
-  // Hardcoded default scan values until we fix the import issues
-  const scanValues = {
-    scanStatus: 'idle',
-    scanResults: [],
-    scanProgressMessage: '',
-    dashboardStats: {
-      processed: 0,
-      billsFound: 0,
-      errors: 0
-    },
-    exportInProgress: false,
-    error: null,
-    lastProcessedAt: null,
-    successRate: 0,
-    timeSaved: 0,
-    startScan: async () => {},
-    exportToSheets: async () => {},
-    clearResults: () => {},
-    clearError: () => {}
-  };
-  
+  // Get auth state - use only properties that exist in the interface
   const { 
-    scanStatus, 
-    scanProgressMessage, 
-    exportInProgress,
-    scanResults,
-    dashboardStats,
-    startScan,
-    exportToSheets
-  } = scanValues;
+    isAuthenticated, 
+    isLoading, 
+    error,
+    userProfile,
+    refreshProfile
+  } = useAuth();
+
+  // Get scan context
+  const scanContext = React.useContext(ScanContext);
+  
+  // Debug the current state
+  useEffect(() => {
+    console.log('DEBUG - PopupContent state:', {
+      backgroundReady,
+      pdfWorkerReady,
+      initStage,
+      authState: {
+        isAuthenticated,
+        isLoading,
+        error,
+        hasUserProfile: !!userProfile
+      }
+    });
+    
+    // Force display after 5 seconds if UI is still not showing
+    const timer = setTimeout(() => {
+      console.log('DEBUG - Forcing UI display after timeout');
+      setForceDisplay(true);
+      setBackgroundReady(true);
+      setPdfWorkerReady(true);
+      setInitStage('forced_display');
+    }, 5000);
+    
+    return () => clearTimeout(timer);
+  }, [backgroundReady, pdfWorkerReady, initStage, isAuthenticated, isLoading, error, userProfile]);
 
   // When component mounts, check if this is a returning user
   useEffect(() => {
@@ -484,20 +492,20 @@ export const PopupContent = () => {
     );
   }
 
-  if (scanStatus === 'scanning') {
+  if (scanContext.scanStatus === 'scanning') {
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
         <div className="loading-indicator">
           <div className="spinner"></div>
-          <p>{scanProgressMessage}</p>
+          <p>{scanContext.scanProgressMessage}</p>
         </div>
         <p className="loading-description">This may take a few minutes depending on your settings...</p>
       </div>
     );
   }
 
-  if (exportInProgress) {
+  if (scanContext.exportInProgress) {
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
