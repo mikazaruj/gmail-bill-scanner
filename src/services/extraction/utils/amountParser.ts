@@ -37,15 +37,22 @@ export function parseHungarianAmount(amountStr: string): number {
     const endsWithCommaDecimals = /,\d{1,2}$/.test(cleanedAmount);
     const hasCommaDecimals = /,\d{1,2}/.test(cleanedAmount);
     
+    // Additional patterns to detect Hungarian format
+    const looksLikeHungarianThousands = /\d{1,3}[.]\d{3}(?:[.,\s]\d{3})*$/.test(cleanedAmount);
+    
     console.log('Format analysis:', { 
       hasThousandDots, 
       hasThousandSpaces,
       endsWithCommaDecimals,
-      hasCommaDecimals
+      hasCommaDecimals,
+      looksLikeHungarianThousands
     });
     
     // Step 3: Handle Hungarian number format (e.g., "175.945" or "175 945")
-    if (hasThousandDots || hasThousandSpaces) {
+    if (hasThousandDots || hasThousandSpaces || looksLikeHungarianThousands) {
+      // Save original cleaned amount for comparison later
+      const originalAmount = cleanedAmount;
+      
       // Remove thousand separators (spaces or dots)
       cleanedAmount = cleanedAmount
         .replace(/\s/g, '')  // Remove spaces
@@ -57,6 +64,21 @@ export function parseHungarianAmount(amountStr: string): number {
       if (hasCommaDecimals) {
         cleanedAmount = cleanedAmount.replace(/,(\d{1,3})$/, '.$1');
         console.log('After converting decimal comma to dot:', cleanedAmount);
+      }
+      
+      // Special case: If originalAmount had a "." and was likely a Hungarian format with thousands,
+      // but no comma decimal part, it's likely a whole number. Make sure we parse it correctly.
+      if (!hasCommaDecimals && hasThousandDots) {
+        // Count the number of dots, if all dots are thousand separators, the number is a whole number
+        const dotPositions = originalAmount.split('').map((char, idx) => char === '.' ? idx : -1).filter(idx => idx !== -1);
+        const allDotsAreThousandSeparators = dotPositions.every(pos => {
+          const charsAfterDot = originalAmount.length - pos - 1;
+          return charsAfterDot % 3 === 0;
+        });
+        
+        if (allDotsAreThousandSeparators) {
+          console.log('All dots appear to be thousand separators, treating as whole number');
+        }
       }
     } 
     // Handle format like "175,95" where comma is used as decimal
@@ -74,16 +96,12 @@ export function parseHungarianAmount(amountStr: string): number {
     
     console.log('Parsed amount:', amount);
     
-    // If the amount is too small and missing thousands place, multiply by 1000
-    // This handles case where e.g. "123.456" is parsed as 123.456 instead of 123456
-    // Only do this for certain patterns that match Hungarian thousands separators
-    if (amount < 100) {
-      const originalStr = cleanedAmount.replace('.', '');
-      if (originalStr.length >= 5 && (hasThousandDots || hasThousandSpaces) && !hasCommaDecimals) {
-        console.log('Amount seems too small, might be missing thousands, adjusting...');
-        amount = amount * 1000;
-        console.log('Adjusted amount:', amount);
-      }
+    // If the amount seems suspiciously small but the original string was longer,
+    // it's likely we're dealing with a thousand separator issue
+    if (amount < 100 && amountStr.replace(/[^\d]/g, '').length >= 5) {
+      console.log('Amount seems suspiciously small compared to original string length, multiplying by 1000');
+      amount = amount * 1000;
+      console.log('Adjusted amount:', amount);
     }
     
     return amount;

@@ -24,6 +24,7 @@ import { ensureUserRecord } from '../services/identity/userIdentityService';
 import { handleError } from '../services/error/errorService';
 import { buildBillSearchQuery } from '../services/gmailSearchBuilder';
 import { Bill } from '../types/Bill';
+import { getUserSettings } from '../services/settings';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -2209,90 +2210,76 @@ async function handleExportToSheets(
   sendResponse: (response: { success: boolean, error?: string, spreadsheetUrl?: string }) => void
 ) {
   try {
-    console.log('==== EXPORT TO SHEETS - START ====');
-    console.log(`Bills in payload: ${payload.bills ? payload.bills.length : 0}`);
-    console.log(`Spreadsheet ID provided: ${payload.spreadsheetId ? 'Yes' : 'No'}`);
-    console.log(`Auto-export setting: ${payload.autoExportToSheets}`);
+    console.log('Export to sheets request received:', payload);
     
-    // Debug check to find out why autoExportToSheets is undefined
-    if (payload.autoExportToSheets === undefined) {
-      console.log('WARNING: autoExportToSheets is undefined in handleExportToSheets');
-      // Set a default value to ensure it works
-      payload.autoExportToSheets = true;
-      console.log('Setting default autoExportToSheets value to:', payload.autoExportToSheets);
-    }
+    // Check if we have bills data
+    const bills = payload.bills || [];
     
-    // Check if we're in a service worker context and log it
-    const isServiceWorker = typeof window === 'undefined' || 
-                           typeof document === 'undefined' ||
-                           (typeof window !== 'undefined' && typeof window.document === 'undefined');
-    
-    console.log('Running in service worker context:', isServiceWorker);
-    
-    // Fix the undefined function issue by importing it first
-    const { getAccessTokenWithRefresh } = await import('../services/auth/googleAuth');
-    const token = await getAccessTokenWithRefresh();
-    
-    if (!token) {
-      const errorMsg = 'Not authenticated. Please sign in first.';
-      console.error(errorMsg);
+    if (bills.length === 0) {
+      console.log('No bills to export');
       sendResponse({
         success: false,
-        error: errorMsg
+        error: 'No bills to export'
       });
       return;
     }
     
-    console.log('Authentication token obtained successfully');
+    console.log(`Found ${bills.length} bills to export`);
     
-    // Validate bills payload
-    if (!payload.bills || !Array.isArray(payload.bills) || payload.bills.length === 0) {
-      const errorMsg = 'No bills provided for export';
-      console.error(errorMsg);
+    // Get access token for Google Sheets API
+    let token;
+    try {
+      token = await getAccessToken();
+      
+      if (!token) {
+        throw new Error('Not authenticated for Google Sheets');
+      }
+    } catch (authError) {
+      console.error('Authentication error:', authError);
       sendResponse({
         success: false,
-        error: errorMsg
+        error: 'Authentication failed: ' + (authError instanceof Error ? authError.message : String(authError))
       });
       return;
     }
     
-    const bills = payload.bills;
-    console.log(`Found ${bills.length} bills in payload:`);
-    // Log first bill for debugging
-    if (bills.length > 0) {
-      console.log('Sample bill:', JSON.stringify(bills[0]).substring(0, 200) + '...');
-    }
-    
-    // Get user identity for storing export info
-    const userIdentity = await import('../services/identity/userIdentityService').then(module => {
-      return module.resolveUserIdentity();  // Using resolveUserIdentity instead of getUserIdentity
-    });
-    
-    if (!userIdentity || !userIdentity.supabaseId) {
-      const errorMsg = 'Cannot export: User identity not found';
-      console.error(errorMsg);
-      sendResponse({
-        success: false,
-        error: errorMsg
-      });
-      return;
-    }
-    
-    console.log('User identity resolved:', userIdentity.supabaseId);
-    
-    // Get the user settings to check for existing spreadsheet ID
-    console.log('Checking for existing spreadsheet in user settings...');
-    const { getUserSettings } = await import('../services/settings');
-    const userSettings = await getUserSettings(userIdentity.supabaseId as string);
-    
-    console.log('User settings retrieved:', userSettings ? 'Yes' : 'No');
-    
+    // Get spreadsheet ID from payload or settings
     let spreadsheetId = payload.spreadsheetId;
     
-    // If no spreadsheet ID was provided in the payload, try to use the one from settings
-    if (!spreadsheetId && userSettings && userSettings.sheet_id) {
-      console.log(`Using existing spreadsheet ID from user settings: ${userSettings.sheet_id}`);
-      spreadsheetId = userSettings.sheet_id;
+    // If no spreadsheet ID in payload, try to get from settings
+    if (!spreadsheetId) {
+      try {
+        // Get current user ID from storage
+        const userData = await chrome.storage.local.get(['supabase_user_id', 'google_user_id']);
+        const userId = userData.supabase_user_id || userData.google_user_id;
+        
+        if (userId) {
+          const userSettings = await getUserSettings(userId);
+          console.log('User settings retrieved:', {
+            has_settings: !!userSettings,
+            sheet_id_exists: !!userSettings?.sheet_id,
+            found_spreadsheet_id: userSettings?.sheet_id || '(none)'
+          });
+          
+          spreadsheetId = userSettings?.sheet_id || '';
+          console.log('Got spreadsheet ID from settings:', spreadsheetId);
+        } else {
+          console.log('No user ID found to fetch settings');
+        }
+      } catch (settingsError) {
+        console.error('Error getting user settings:', settingsError);
+      }
+    }
+    
+    // If we still don't have a spreadsheet ID, check if we have a cached one
+    if (!spreadsheetId) {
+      try {
+        const localData = await chrome.storage.local.get(['spreadsheetId']);
+        spreadsheetId = localData.spreadsheetId;
+        console.log('Got spreadsheet ID from local storage:', spreadsheetId);
+      } catch (storageError) {
+        console.error('Error accessing local storage:', storageError);
+      }
     }
     
     // If we still don't have a spreadsheet ID, don't create a new one - inform user to set one up in settings
@@ -2316,26 +2303,120 @@ async function handleExportToSheets(
       try {
         console.log('Using direct API approach for export...');
         
+        // Pre-process bill data to ensure it's clean and has all required fields
+        const processedBills = bills.map(bill => {
+          // Create a fresh object with only the fields we need
+          return {
+            vendor: bill.vendor || bill.issuer_name || 'Unknown',
+            amount: typeof bill.amount === 'number' ? bill.amount : 
+                    bill.total_amount ? parseFloat(String(bill.total_amount)) : 0,
+            date: bill.date || bill.invoice_date || new Date(),
+            dueDate: bill.dueDate || bill.due_date,
+            accountNumber: bill.accountNumber || bill.account_number || '',
+            paid: !!bill.isPaid,
+            category: bill.category || bill.bill_category || 'Other',
+            currency: bill.currency || 'USD',
+            emailId: bill.emailId || '',
+            attachmentId: bill.attachmentId || ''
+          };
+        });
+        
         // Prepare simple data rows with basic fields
-        const simpleRows = bills.map(bill => {
+        const simpleRows = processedBills.map(bill => {
           return [
-            bill.vendor || bill.issuer_name || '',     // A: Vendor
-            String(bill.amount || bill.total_amount || '0'),  // B: Amount
-            formatDateForSheet(bill.date || bill.invoice_date),         // C: Date
-            formatDateForSheet(bill.dueDate || bill.due_date),         // D: Due Date
-            bill.accountNumber || bill.account_number || '',  // E: Account Number
-            bill.paid ? 'Yes' : 'No',                 // F: Paid
-            bill.category || bill.bill_category || '', // G: Category
-            bill.emailId || '',                       // H: Email ID
-            bill.attachmentId || ''                  // I: Attachment ID
+            bill.vendor || '',                      // A: Vendor
+            String(bill.amount || '0'),             // B: Amount
+            formatDateForSheet(bill.date),          // C: Date
+            formatDateForSheet(bill.dueDate),       // D: Due Date
+            bill.accountNumber || '',               // E: Account Number
+            bill.paid ? 'Yes' : 'No',               // F: Paid
+            bill.category || '',                    // G: Category
+            bill.currency || 'USD',                 // H: Currency
+            bill.emailId || '',                     // I: Email ID
+            bill.attachmentId || ''                 // J: Attachment ID
           ];
         });
         
         console.log(`Attempting direct append of ${simpleRows.length} rows to sheet...`);
         console.log('Sample row data:', simpleRows[0]);
         
+        // First, check if the sheet exists and has headers
+        try {
+          const checkResponse = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=false`,
+            {
+              method: 'GET',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              }
+            }
+          );
+          
+          const sheetInfo = await checkResponse.json();
+          console.log('Sheet info:', sheetInfo.sheets ? sheetInfo.sheets.length : 'No sheets found');
+          
+          // Check if Bills sheet exists
+          const billsSheet = sheetInfo.sheets ? 
+            sheetInfo.sheets.find((s: any) => s.properties.title === 'Bills') : 
+            null;
+            
+          if (!billsSheet) {
+            console.log('Bills sheet not found, creating it');
+            
+            // Create Bills sheet with headers
+            const headers = [
+              'Vendor', 'Amount', 'Date', 'Due Date', 'Account Number', 
+              'Paid', 'Category', 'Currency', 'Email ID', 'Attachment ID'
+            ];
+            
+            // Create new sheet
+            await fetch(
+              `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  requests: [
+                    {
+                      addSheet: {
+                        properties: {
+                          title: 'Bills',
+                        }
+                      }
+                    }
+                  ]
+                })
+              }
+            );
+            
+            // Add headers
+            await fetch(
+              `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Bills!A1:J1?valueInputOption=USER_ENTERED`,
+              {
+                method: 'UPDATE',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  values: [headers]
+                })
+              }
+            );
+            
+            console.log('Created Bills sheet with headers');
+          }
+        } catch (checkError) {
+          console.error('Error checking/creating sheet:', checkError);
+          // Continue anyway, hoping the sheet exists
+        }
+        
         // Direct API call to append values - this works in service workers
-        const appendRange = 'Bills!A2:I';
+        const appendRange = 'Bills!A2:J';
         const response = await fetch(
           `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${appendRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
           {
@@ -2390,66 +2471,37 @@ async function handleExportToSheets(
           return;
         }
       } catch (directApiError) {
-        console.error('Direct API export attempt failed:', directApiError);
+        // Log the error but continue to try the legacy approach
+        console.error('Direct API approach failed:', directApiError);
         
-        // If direct API fails, try the sheetsApi module as a fallback
-        console.log('Falling back to sheetsApi module approach...');
+        // Try the imported sheetsApi function as a fallback
+        const { appendBillData } = await import('../services/sheets/sheetsApi');
         
-        // Import the appendBillData function
-        const sheetsApi = await import('../services/sheets/sheetsApi');
+        await appendBillData(token, spreadsheetId, bills);
         
-        // Append the bill data to the spreadsheet
-        try {
-          const success = await sheetsApi.appendBillData(token, spreadsheetId, bills);
-          
-          if (!success) {
-            throw new Error('Failed to append bill data to spreadsheet');
-          }
-          
-          console.log('Successfully exported bills to spreadsheet using sheetsApi module');
-          
-          // Generate spreadsheet URL for response
+        // This would only be reached if appendBillData succeeds
           const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
           
-          // In a service worker context, we might not be able to access document
-          try {
             sendResponse({
               success: true,
               spreadsheetUrl
             });
             
-            console.log('==== EXPORT TO SHEETS - SUCCESS ====');
+        console.log('==== EXPORT TO SHEETS - SUCCESS (LEGACY APPROACH) ====');
             return;
-          } catch (responseError) {
-            console.error('Error in fallback sendResponse:', responseError);
-            // Try a simpler response without spreadsheetUrl if we're in a service worker
-            sendResponse({
-              success: true
-            });
-            console.log('==== EXPORT TO SHEETS - SUCCESS (SIMPLIFIED RESPONSE) ====');
-            return;
-          }
-        } catch (appendError) {
-          console.error('Error in appendBillData:', appendError);
-          throw appendError; // Let the outer error handler take care of it
-        }
       }
     } catch (exportError) {
-      const errorMsg = `Error exporting bills to spreadsheet: ${exportError instanceof Error ? exportError.message : 'Unknown error'}`;
-      console.error(errorMsg);
-      console.error('==== EXPORT TO SHEETS - FAILED ====');
+      console.error('Export failed:', exportError);
       sendResponse({
         success: false,
-        error: errorMsg
+        error: 'Export failed: ' + (exportError instanceof Error ? exportError.message : String(exportError))
       });
     }
   } catch (error) {
-    const errorMsg = `Export to sheets failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-    console.error(errorMsg);
-    console.error('==== EXPORT TO SHEETS - FATAL ERROR ====');
+    console.error('Unhandled error in export to sheets:', error);
     sendResponse({
       success: false,
-      error: errorMsg
+      error: 'Unhandled error: ' + (error instanceof Error ? error.message : String(error))
     });
   }
 }
@@ -2931,37 +2983,100 @@ function deduplicateBills(bills: BillData[]): BillData[] {
     
     // First add the PDF bills as they typically have more detailed info
     pdfBills.forEach(pdfBill => {
-      // Find corresponding email body bill with similar amount (within 10% margin)
+      // Find corresponding email body bill with similar properties
       const similarEmailBill = emailBodyBills.find(emailBill => {
         // Skip if already processed
         if (processedEmails.has(emailBill.id)) return false;
         
-        // Compare amounts with a 10% margin of error
-        if (!pdfBill.amount || !emailBill.amount) return false;
+        // Assign scores for different match criteria
+        let matchScore = 0;
         
-        const pdfAmount = pdfBill.amount;
-        const emailAmount = emailBill.amount;
-        const minAmount = Math.min(pdfAmount, emailAmount);
-        const maxAmount = Math.max(pdfAmount, emailAmount);
+        // 0. Check for matching invoice number (highest confidence match)
+        if (pdfBill.invoiceNumber && emailBill.invoiceNumber && 
+            pdfBill.invoiceNumber === emailBill.invoiceNumber) {
+          // Invoice number match is a very strong indicator - give it a high score
+          matchScore += 70;
+          console.log('Found matching invoice numbers:', pdfBill.invoiceNumber);
+        }
         
-        return maxAmount / minAmount <= 1.1; // 10% margin
+        // 1. Compare amounts with a more relaxed margin of error (now 30% instead of 10%)
+        if (pdfBill.amount && emailBill.amount) {
+          const pdfAmount = pdfBill.amount;
+          const emailAmount = emailBill.amount;
+          const minAmount = Math.min(pdfAmount, emailAmount);
+          const maxAmount = Math.max(pdfAmount, emailAmount);
+          
+          // More relaxed margin for small bills
+          const marginOfError = minAmount < 100 ? 0.5 : 0.3; // 50% for small bills, 30% otherwise
+          
+          if (maxAmount / minAmount <= (1 + marginOfError)) {
+            matchScore += 40; // 40 points for amount match
+          } else if (pdfAmount < 100 && (pdfAmount * 1000) === emailAmount) {
+            // Special case: PDF amount might be incorrectly parsed (e.g., 7 instead of 7000)
+            matchScore += 40;
+            console.log('Special case: Likely found amount parsing error. PDF amount:', pdfAmount, 'Email amount:', emailAmount);
+          }
+        }
+        
+        // 2. Compare vendors (case insensitive)
+        if (pdfBill.vendor && emailBill.vendor) {
+          const normalizedPdfVendor = pdfBill.vendor.toLowerCase().trim();
+          const normalizedEmailVendor = emailBill.vendor.toLowerCase().trim();
+          
+          if (normalizedPdfVendor === normalizedEmailVendor) {
+            matchScore += 30; // 30 points for exact vendor match
+          } else if (normalizedPdfVendor.includes(normalizedEmailVendor) || 
+                    normalizedEmailVendor.includes(normalizedPdfVendor)) {
+            matchScore += 20; // 20 points for partial vendor match
+          }
+        }
+        
+        // 3. Compare dates (if available)
+        if (pdfBill.date && emailBill.date) {
+          const pdfDate = new Date(pdfBill.date);
+          const emailDate = new Date(emailBill.date);
+          
+          // Calculate date difference in days
+          const diffTime = Math.abs(pdfDate.getTime() - emailDate.getTime());
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          
+          if (diffDays <= 2) {
+            matchScore += 20; // 20 points for dates within 2 days
+          } else if (diffDays <= 7) {
+            matchScore += 10; // 10 points for dates within 7 days
+          }
+        }
+        
+        // 4. Compare categories (if available)
+        if (pdfBill.category && emailBill.category && 
+            pdfBill.category.toLowerCase() === emailBill.category.toLowerCase()) {
+          matchScore += 10; // 10 points for matching category
+        }
+        
+        console.log(`Match score between PDF bill ${pdfBill.id} and Email bill ${emailBill.id}: ${matchScore}`);
+        
+        // Consider it a match if the total score is at least 50 (out of 100 possible points)
+        return matchScore >= 50;
       });
       
       if (similarEmailBill) {
-        // Merge the bills, preferring PDF data
+        // Merge the bills, preferring PDF data but keeping email data when PDF data is missing
         const mergedBill = {
           ...similarEmailBill,
           ...pdfBill,
           id: pdfBill.id,
-          // Merge any other fields that might have better data in email
+          // Merge fields, preferring non-empty values
           vendor: pdfBill.vendor || similarEmailBill.vendor,
           accountNumber: pdfBill.accountNumber || similarEmailBill.accountNumber,
           category: pdfBill.category || similarEmailBill.category,
+          amount: pdfBill.amount && pdfBill.amount > 0 ? pdfBill.amount : similarEmailBill.amount,
+          currency: pdfBill.currency || similarEmailBill.currency,
           // Keep track of both sources
           mergedFromEmail: true,
           emailId: similarEmailBill.emailId || pdfBill.emailId
         };
         
+        console.log(`Merged PDF bill ${pdfBill.id} with Email bill ${similarEmailBill.id}`);
         deduplicated.push(mergedBill);
         processedEmails.add(similarEmailBill.id);
       } else {

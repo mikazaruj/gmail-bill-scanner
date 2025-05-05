@@ -111,7 +111,7 @@ const InitialScanButton = ({
         processAttachments: settings.processAttachments || true,
         trustedSourcesOnly: settings.trustedSourcesOnly,
         captureImportantNotices: settings.captureImportantNotices || true,
-        autoExportToSheets: true,
+        autoExportToSheets: settings.autoExportToSheets || true,
         scheduleEnabled: settings.scheduleEnabled || false,
         scheduleFrequency: settings.scheduleFrequency || 'weekly',
         scheduleDayOfWeek: 'monday',
@@ -128,7 +128,7 @@ const InitialScanButton = ({
         highAmountThreshold: settings.highAmountThreshold || 100
       };
       
-      // Log language settings being used for the scan
+      // Log settings being used for the scan
       console.log(`InitialScanButton: Running scan with input language: ${scanSettings.inputLanguage}, output language: ${scanSettings.outputLanguage}`);
       console.log(`InitialScanButton: Running scan with trustedSourcesOnly: ${scanSettings.trustedSourcesOnly}`);
       console.log(`InitialScanButton: Running scan with autoExportToSheets: ${scanSettings.autoExportToSheets}`);
