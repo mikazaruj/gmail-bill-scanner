@@ -3,6 +3,7 @@ import { createContext, useState, useEffect } from 'react';
 import { BillData, DashboardStats, ScanningStatus, Settings } from '../../types/Message';
 import { getUserStats } from '../../services/supabase/client';
 import { useAuth } from '../hooks/useAuth';
+import { Settings as MessageSettings } from '../../types/Message';
 
 interface ScanContextType {
   scanStatus: ScanningStatus;
@@ -44,6 +45,17 @@ export const ScanContext = createContext<ScanContextType>({
 
 interface ScanProviderProps {
   children: React.ReactNode | JSX.Element | JSX.Element[] | string | null;
+}
+
+// Response type for scan emails operation
+interface ScanEmailsResponse {
+  success: boolean;
+  bills: BillData[];
+  error?: string;
+  stats?: {
+    processed: number;
+    errors: number;
+  };
 }
 
 export const ScanProvider = ({ children }: ScanProviderProps) => {
@@ -127,45 +139,36 @@ export const ScanProvider = ({ children }: ScanProviderProps) => {
   };
 
   const startScan = async (settings: Settings) => {
+    if (scanStatus === 'scanning') {
+      console.error('Scan already in progress');
+      return;
+    }
+
     setScanStatus('scanning');
-    setScanProgressMessage('Starting scan...');
-    setScanResults([]);
     setError(null);
-    setDashboardStats(defaultDashboardStats);
+    setScanResults([]);
+    setScanProgressMessage('Scanning emails...');
 
     try {
-      // Simulate progress updates (this will be replaced with real progress updates)
-      const messages = [
-        'Fetching emails...',
-        'Processing emails...',
-        'Extracting bill data...',
-        'Analyzing attachments...',
-        'Finalizing results...'
-      ];
-
-      for (const msg of messages) {
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        setScanProgressMessage(msg);
-        setDashboardStats(prev => ({
-          ...prev,
-          processed: prev.processed + Math.floor(Math.random() * 5) + 1
-        }));
-      }
-
-      const response = await new Promise<any>((resolve, reject) => {
+      // Log language settings being used
+      console.log(`Starting scan with input language: ${settings.inputLanguage}, output language: ${settings.outputLanguage}`);
+      console.log(`Starting scan with autoExportToSheets: ${settings.autoExportToSheets}`);
+      
+      const response = await new Promise<ScanEmailsResponse>((resolve, reject) => {
         chrome.runtime.sendMessage({
           type: 'SCAN_EMAILS',
           payload: {
-            maxResults: settings.maxResults,
-            searchDays: settings.searchDays,
+            maxResults: settings.maxResults || 20,
+            searchDays: settings.searchDays || 30,
             autoExportToSheets: settings.autoExportToSheets
           }
         }, (response) => {
           if (chrome.runtime.lastError) {
+            console.error('Chrome runtime error during scan:', chrome.runtime.lastError);
             reject(new Error(chrome.runtime.lastError.message));
             return;
           }
-          resolve(response);
+          resolve(response as ScanEmailsResponse);
         });
       });
       

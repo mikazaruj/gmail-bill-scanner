@@ -14,6 +14,7 @@ import {
   detectServiceType,
   calculateConfidence
 } from "../patterns/patternLoader";
+import { parseHungarianAmount } from '../utils/amountParser';
 
 export class PatternBasedExtractor implements ExtractionStrategy {
   readonly name = 'pattern-based';
@@ -72,14 +73,8 @@ export class PatternBasedExtractor implements ExtractionStrategy {
       // Parse amount
       let amount = 0;
       try {
-        // Clean the amount string
-        const cleanedAmount = amountStr
-          .replace(/\s/g, '')
-          .replace(/\.(?=\d{3})/g, '')
-          .replace(/,(?=\d{3})/g, '')
-          .replace(/,(\d{1,2})$/, '.$1');
-        
-        amount = parseFloat(cleanedAmount);
+        console.log('Raw amount string in pattern extractor:', amountStr);
+        amount = parseHungarianAmount(amountStr);
       } catch (e) {
         console.error('Error parsing amount:', e);
         return {
@@ -277,14 +272,8 @@ export class PatternBasedExtractor implements ExtractionStrategy {
       // Parse amount
       let amount = 0;
       try {
-        // Clean the amount string
-        const cleanedAmount = amountStr
-          .replace(/\s/g, '')
-          .replace(/\.(?=\d{3})/g, '')
-          .replace(/,(?=\d{3})/g, '')
-          .replace(/,(\d{1,2})$/, '.$1');
-        
-        amount = parseFloat(cleanedAmount);
+        console.log('Raw amount string in pattern extractor (PDF):', amountStr);
+        amount = parseHungarianAmount(amountStr);
       } catch (e) {
         console.error('Error parsing amount:', e);
         return {

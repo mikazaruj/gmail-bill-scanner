@@ -4,6 +4,8 @@
  * Builds search queries for bills in multiple languages
  */
 
+import { getBillKeywords } from './extraction/patterns/patternLoader';
+
 /**
  * Builds a Gmail search query for bills in English and Hungarian
  * 
@@ -26,11 +28,15 @@ export function buildBillSearchQuery(
   
   console.log(`Looking for emails after ${formattedDate} (${days} days ago)`);
   
-  // English search terms - include both subject and body content
-  const englishTerms = '(subject:(invoice OR bill OR receipt OR payment OR statement OR due) OR has:attachment)';
+  // Get language-specific bill keywords from pattern loader
+  const engBillKeywords = getBillKeywords('en').slice(0, 8);
+  const huBillKeywords = getBillKeywords('hu').slice(0, 8);
   
-  // Hungarian search terms - include common terms for bills and expand to search in body
-  const hungarianTerms = '(subject:(számla OR fizetés OR díj OR "Új számla" OR "számla készült" OR áram OR gáz OR víz OR szolgáltatás) OR has:attachment)';
+  // English search terms - include both subject and body content
+  const englishTerms = `(subject:(${engBillKeywords.join(' OR ')}) OR has:attachment)`;
+  
+  // Hungarian search terms - include common terms for bills from pattern file
+  const hungarianTerms = `(subject:(${huBillKeywords.join(' OR ')}) OR has:attachment)`;
   
   let languageQuery: string;
   
@@ -102,23 +108,26 @@ export function buildSpecificBillSearchQuery(
 ): string {
   const baseQuery = buildBillSearchQuery(days, language, trustedSources);
   
-  let specificTerms: string;
+  // Get the appropriate patterns based on language
+  const categoryPatterns = language === 'hu' 
+    ? require('./extraction/patterns/hungarian-bill-patterns.json').categoryPatterns
+    : {
+        'utility': ['electricity', 'water', 'gas', 'utility', 'power', 'energy'],
+        'subscription': ['subscription', 'monthly', 'recurring'],
+        'telco': ['phone', 'mobile', 'internet', 'broadband', 'wireless', 'telecom']
+      };
+  
+  let specificTerms: string = '';
   
   switch (billType) {
     case 'utility':
-      specificTerms = language === 'hu' 
-        ? '(áram OR villany OR gáz OR víz OR közüzemi OR szolgáltató)'
-        : '(electricity OR water OR gas OR utility OR power OR energy)';
+      specificTerms = `(${categoryPatterns.Utilities?.slice(0, 5).join(' OR ')})`;
       break;
     case 'subscription':
-      specificTerms = language === 'hu'
-        ? '(előfizetés OR havi díj OR ismétlődő)'
-        : '(subscription OR monthly OR recurring)';
+      specificTerms = `(${categoryPatterns.Subscriptions?.slice(0, 5).join(' OR ')})`;
       break;
     case 'telco':
-      specificTerms = language === 'hu'
-        ? '(telefon OR mobil OR internet OR vodafone OR telekom OR yettel OR digi)'
-        : '(phone OR mobile OR internet OR broadband OR wireless OR telecom)';
+      specificTerms = `(${categoryPatterns.Telecommunications?.slice(0, 5).join(' OR ')})`;
       break;
     default:
       return baseQuery; // Return the base query for 'all'

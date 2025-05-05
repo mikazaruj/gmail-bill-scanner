@@ -20,6 +20,24 @@ export interface ServiceType {
   identifiers: string[];
 }
 
+export interface CategoryPatterns {
+  [category: string]: string[];
+}
+
+export interface CurrencySymbols {
+  [symbol: string]: string;
+}
+
+export interface HungarianPdfExtraction {
+  includedCharacters: string;
+  specialCompanyPatterns: {
+    [company: string]: {
+      defaultCategory: string;
+      defaultCurrency: string;
+    };
+  };
+}
+
 export interface BillLanguagePattern {
   language: 'en' | 'hu';
   documentIdentifiers: {
@@ -39,6 +57,12 @@ export interface BillLanguagePattern {
     vendorMatch: number;
     fullExtraction: number;
   };
+  // New properties
+  billKeywords?: string[];
+  utilityCompanies?: string[];
+  categoryPatterns?: CategoryPatterns;
+  currencySymbols?: CurrencySymbols;
+  hungarianPdfExtraction?: HungarianPdfExtraction;
 }
 
 /**
@@ -55,6 +79,61 @@ export function getLanguagePatterns(language: 'en' | 'hu' = 'en'): BillLanguageP
     default:
       return englishPatterns as BillLanguagePattern;
   }
+}
+
+/**
+ * Get bill keywords for a specific language
+ * 
+ * @param language Language code ('en' or 'hu')
+ * @returns Array of bill-related keywords
+ */
+export function getBillKeywords(language: 'en' | 'hu' = 'en'): string[] {
+  const patterns = getLanguagePatterns(language);
+  return patterns.billKeywords || patterns.commonWords || [];
+}
+
+/**
+ * Get utility company names for a specific language
+ * 
+ * @param language Language code ('en' or 'hu')
+ * @returns Array of utility company names
+ */
+export function getUtilityCompanies(language: 'en' | 'hu' = 'en'): string[] {
+  const patterns = getLanguagePatterns(language);
+  return patterns.utilityCompanies || [];
+}
+
+/**
+ * Get category patterns for a specific language
+ * 
+ * @param language Language code ('en' or 'hu')
+ * @returns Object with categories and their patterns
+ */
+export function getCategoryPatterns(language: 'en' | 'hu' = 'en'): CategoryPatterns {
+  const patterns = getLanguagePatterns(language);
+  return patterns.categoryPatterns || {};
+}
+
+/**
+ * Get currency symbols for a specific language
+ * 
+ * @param language Language code ('en' or 'hu')
+ * @returns Object with currency symbols and their codes
+ */
+export function getCurrencySymbols(language: 'en' | 'hu' = 'en'): CurrencySymbols {
+  const patterns = getLanguagePatterns(language);
+  return patterns.currencySymbols || {};
+}
+
+/**
+ * Get PDF extraction settings for a specific language
+ * 
+ * @param language Language code ('en' or 'hu')
+ * @returns PDF extraction settings
+ */
+export function getPdfExtractionSettings(language: 'en' | 'hu' = 'en'): HungarianPdfExtraction | null {
+  const patterns = getLanguagePatterns(language);
+  return patterns.hungarianPdfExtraction || null;
 }
 
 /**
@@ -134,6 +213,28 @@ export function detectServiceType(text: string, language: 'en' | 'hu' = 'en'): {
           category: typeData.category
         };
       }
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Get special treatment patterns for specific companies
+ * 
+ * @param companyName Company name to check
+ * @param language Language code
+ * @returns Special company pattern data if available
+ */
+export function getSpecialCompanyPattern(companyName: string, language: 'en' | 'hu' = 'en'): any | null {
+  const patterns = getLanguagePatterns(language);
+  if (!patterns.hungarianPdfExtraction?.specialCompanyPatterns) return null;
+  
+  const companyNameLower = companyName.toLowerCase();
+  
+  for (const [company, data] of Object.entries(patterns.hungarianPdfExtraction.specialCompanyPatterns)) {
+    if (companyNameLower.includes(company.toLowerCase())) {
+      return data;
     }
   }
   

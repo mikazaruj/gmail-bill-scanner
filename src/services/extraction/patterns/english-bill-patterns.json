@@ -15,6 +15,48 @@
       ]
     }
   ],
+  "billKeywords": [
+    "bill", "invoice", "receipt", "payment", "due", "statement", "transaction",
+    "charge", "fee", "subscription", "order", "purchase"
+  ],
+  "utilityCompanies": [
+    "electricity", "gas", "water", "utility", "hydro", "comcast", "at&t", "verizon",
+    "dish", "directv", "spectrum", "xfinity", "charter", "energy", "power", "duke",
+    "national grid", "pg&e", "pge"
+  ],
+  "categoryPatterns": {
+    "Utilities": [
+      "electric", "gas", "water", "sewage", "utility", "utilities", "power",
+      "energy", "hydro"
+    ],
+    "Telecommunications": [
+      "phone", "mobile", "cell", "wireless", "telecom", "internet", 
+      "broadband", "fiber", "wifi", "cable", "tv", "television"
+    ],
+    "Subscriptions": [
+      "netflix", "spotify", "hulu", "disney", "apple", "prime", "amazon prime",
+      "youtube", "subscription", "membership"
+    ],
+    "Shopping": [
+      "amazon", "walmart", "target", "best buy", "ebay", "etsy", "shop", 
+      "store", "purchase", "order"
+    ],
+    "Travel": [
+      "airline", "flight", "hotel", "motel", "booking", "reservation", 
+      "travel", "trip", "vacation", "airbnb", "expedia"
+    ],
+    "Insurance": [
+      "insurance", "policy", "coverage", "claim", "premium", "health", 
+      "dental", "vision", "car insurance", "auto insurance"
+    ],
+    "Entertainment": [
+      "entertainment", "movie", "game", "concert", "ticket", "event"
+    ],
+    "Food": [
+      "restaurant", "food", "meal", "delivery", "doordash", "grubhub", 
+      "ubereats", "postmates"
+    ]
+  },
   "fieldExtractors": [
     {
       "fieldName": "amount",
@@ -106,6 +148,15 @@
         "waste", "garbage", "trash", "collection", "recycling", "disposal"
       ]
     }
+  },
+  "currencySymbols": {
+    "$": "USD",
+    "€": "EUR",
+    "£": "GBP",
+    "¥": "JPY",
+    "₹": "INR",
+    "C$": "CAD",
+    "A$": "AUD"
   },
   "commonWords": [
     "bill", "payment", "due", "amount", "total", "service", "usage", "account", "statement", "invoice",

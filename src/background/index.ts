@@ -1736,14 +1736,52 @@ async function handleScanEmails(
       notifyHighAmount: true,
       notifyErrors: true,
       highAmountThreshold: 100,
-      autoExportToSheets: true // Add the auto-export setting with default true
+      autoExportToSheets: payload.autoExportToSheets !== undefined ? payload.autoExportToSheets : true
     };
     
     // Get user settings from Chrome storage
     const chromeSettings = await chrome.storage.sync.get(settings);
     
-    // Override with Chrome settings
+    // Merge default settings with Chrome settings
     Object.assign(settings, chromeSettings);
+    
+    // Get user settings from Supabase to ensure we have the latest settings
+    try {
+      const userSettings = await getUserSettings(userId);
+      console.log('Retrieved user settings from Supabase:', userSettings);
+      
+      if (userSettings) {
+        // Map Supabase settings to our settings object
+        if (userSettings.search_days) settings.scanDays = userSettings.search_days;
+        if (userSettings.trusted_sources_only !== undefined) settings.trustedSourcesOnly = userSettings.trusted_sources_only;
+        if (userSettings.auto_export_to_sheets !== undefined) settings.autoExportToSheets = userSettings.auto_export_to_sheets;
+        
+        // Map language settings - Use payload language as first priority, then Supabase, then default
+        settings.inputLanguage = payload.inputLanguage || userSettings.input_language || settings.inputLanguage;
+        settings.outputLanguage = payload.outputLanguage || userSettings.output_language || settings.outputLanguage;
+
+        // Log what we got from Supabase
+        console.log('Setting autoExportToSheets from Supabase:', userSettings.auto_export_to_sheets);
+      }
+    } catch (supabaseError) {
+      console.error('Error getting settings from Supabase:', supabaseError);
+      // Continue with default + Chrome settings if Supabase fails
+    }
+    
+    // Override settings with explicit payload values if provided
+    if (payload.trustedSourcesOnly !== undefined) settings.trustedSourcesOnly = payload.trustedSourcesOnly;
+    if (payload.captureImportantNotices !== undefined) settings.captureImportantNotices = payload.captureImportantNotices;
+    if (payload.processAttachments !== undefined) settings.processAttachments = payload.processAttachments;
+    if (payload.inputLanguage) settings.inputLanguage = payload.inputLanguage;
+    if (payload.outputLanguage) settings.outputLanguage = payload.outputLanguage;
+    if (payload.autoExportToSheets !== undefined) settings.autoExportToSheets = payload.autoExportToSheets;
+    
+    console.log('Explicitly mapped settings:', {
+      trustedSourcesOnly: settings.trustedSourcesOnly,
+      inputLanguage: settings.inputLanguage,
+      outputLanguage: settings.outputLanguage,
+      autoExportToSheets: settings.autoExportToSheets
+    });
     
     // Attempt to get more detailed settings from Supabase if available
     if (userId && getUserSettings) {
@@ -1830,11 +1868,22 @@ async function handleScanEmails(
     // Add non-bill related email search if enabled and we're not restricting to trusted sources
     // When trusted_sources_only is true, we should not add this OR condition
     if (settings.captureImportantNotices && !settings.trustedSourcesOnly) {
-      query += ' OR subject:(price change OR service update OR important notice OR policy update)';
+      // Use language-specific keywords for important notices
+      const noticeKeywords = settings.inputLanguage === 'hu' 
+        ? 'árváltozás OR szolgáltatás módosítás OR fontos értesítés OR szolgáltatási feltételek' 
+        : 'price change OR service update OR important notice OR policy update';
+      
+      query += ` OR subject:(${noticeKeywords})`;
     } else if (settings.captureImportantNotices && settings.trustedSourcesOnly && trustedEmailAddresses && trustedEmailAddresses.length > 0) {
       // If trusted_sources_only is true, we need to ensure important notices are still restricted to trusted sources
       const trustedSourcesQuery = trustedEmailAddresses.map(email => `from:${email}`).join(' OR ');
-      query += ` OR (subject:(price change OR service update OR important notice OR policy update) AND (${trustedSourcesQuery}))`;
+      
+      // Use language-specific keywords for important notices
+      const noticeKeywords = settings.inputLanguage === 'hu' 
+        ? 'árváltozás OR szolgáltatás módosítás OR fontos értesítés OR szolgáltatási feltételek' 
+        : 'price change OR service update OR important notice OR policy update';
+      
+      query += ` OR (subject:(${noticeKeywords}) AND (${trustedSourcesQuery}))`;
     }
     
     console.log('Gmail search query:', query);
@@ -1865,7 +1914,7 @@ async function handleScanEmails(
     };
     
     // Process each email to extract bill data
-    const bills: BillData[] = [];
+    let bills: BillData[] = [];
     const processedResults: Record<string, any> = {};
     
     for (const messageId of messageIds) {
@@ -2055,6 +2104,17 @@ async function handleScanEmails(
     
     console.log('Scan completed with stats:', stats);
     
+    // Perform deduplication on the bills before sending response
+    if (bills.length > 0) {
+      const originalCount = bills.length;
+      bills = deduplicateBills(bills);
+      stats.billsFound = bills.length;
+      
+      if (originalCount !== bills.length) {
+        console.log(`Deduplication removed ${originalCount - bills.length} duplicate bills`);
+      }
+    }
+    
     // Send response with bills and stats
     sendResponse({ 
       success: true, 
@@ -2066,10 +2126,27 @@ async function handleScanEmails(
       }
     });
 
+    console.log('Checking auto-export settings before executing:', {
+      autoExportToSheets: settings.autoExportToSheets,
+      billsCount: bills.length
+    });
+
+    // Make sure we have a proper boolean value for autoExportToSheets
+    if (settings.autoExportToSheets === undefined) {
+      // Set to true as fallback if undefined
+      settings.autoExportToSheets = payload.autoExportToSheets !== undefined ? payload.autoExportToSheets : true;
+      console.log('Auto-export setting was undefined, setting to:', settings.autoExportToSheets);
+    }
+
     // If auto-export is enabled and we found bills, trigger export to sheets
     if (settings.autoExportToSheets && bills.length > 0) {
       try {
         console.log('Auto-export is enabled and bills were found. Attempting to export to Google Sheets...');
+        console.log('Auto-export setting value:', settings.autoExportToSheets);
+        console.log('Bills found for auto-export:', bills.length);
+        
+        // Add a small delay to ensure previous operations complete
+        await new Promise(resolve => setTimeout(resolve, 500));
         
         // Verify the access token again for sheets permission
         const sheetsToken = await getAccessToken();
@@ -2078,29 +2155,42 @@ async function handleScanEmails(
           return;
         }
         
-        // Attempt to export with a slight delay to let the UI update
-        setTimeout(async () => {
-          try {
-            console.log(`Auto-exporting ${bills.length} bills to Google Sheets...`);
-            const result = await handleExportToSheets({ bills }, (response) => {
-              if (response.success) {
-                console.log('Auto-export to Sheets successful');
-                
-                if (response.spreadsheetUrl) {
-                  console.log('Spreadsheet URL:', response.spreadsheetUrl);
-                  // We could send a notification here if needed
-                }
-              } else {
-                console.error('Auto-export to Sheets failed:', response.error);
+        // Attempt to export immediately without delay
+        try {
+          console.log(`Auto-exporting ${bills.length} bills to Google Sheets...`);
+          
+          // Add service worker context check
+          const isServiceWorker = typeof window === 'undefined' || 
+                                 typeof document === 'undefined' ||
+                                 (typeof window !== 'undefined' && typeof window.document === 'undefined');
+          
+          console.log('Auto-export running in service worker context:', isServiceWorker);
+          
+          await handleExportToSheets({ 
+            bills, 
+            autoExportToSheets: settings.autoExportToSheets 
+          }, (response) => {
+            if (response.success) {
+              console.log('Auto-export to Sheets successful');
+              
+              if (response.spreadsheetUrl) {
+                console.log('Spreadsheet URL:', response.spreadsheetUrl);
+                // We could send a notification here if needed
               }
-            });
-          } catch (exportError) {
-            console.error('Auto-export to Sheets failed with exception:', exportError);
-          }
-        }, 1000);
+            } else {
+              console.error('Auto-export to Sheets failed:', response.error);
+            }
+          });
+        } catch (exportError) {
+          console.error('Auto-export to Sheets failed with exception:', exportError);
+          // Don't let auto-export failure stop the scan completion
+        }
       } catch (exportSetupError) {
         console.error('Error setting up auto-export:', exportSetupError);
+        // Don't let auto-export setup failure stop the scan completion
       }
+    } else {
+      console.log('Auto-export skipped. autoExportToSheets:', settings.autoExportToSheets, 'bills.length:', bills.length);
     }
   } catch (error) {
     console.error('Error scanning emails:', error);
@@ -2115,14 +2205,29 @@ async function handleScanEmails(
  * Handle exporting bills to Google Sheets
  */
 async function handleExportToSheets(
-  payload: { bills?: BillData[], spreadsheetId?: string }, 
+  payload: { bills?: BillData[], spreadsheetId?: string, autoExportToSheets?: boolean }, 
   sendResponse: (response: { success: boolean, error?: string, spreadsheetUrl?: string }) => void
 ) {
   try {
     console.log('==== EXPORT TO SHEETS - START ====');
     console.log(`Bills in payload: ${payload.bills ? payload.bills.length : 0}`);
     console.log(`Spreadsheet ID provided: ${payload.spreadsheetId ? 'Yes' : 'No'}`);
-    console.log('Running in service worker context:', typeof window === 'undefined' || typeof document === 'undefined');
+    console.log(`Auto-export setting: ${payload.autoExportToSheets}`);
+    
+    // Debug check to find out why autoExportToSheets is undefined
+    if (payload.autoExportToSheets === undefined) {
+      console.log('WARNING: autoExportToSheets is undefined in handleExportToSheets');
+      // Set a default value to ensure it works
+      payload.autoExportToSheets = true;
+      console.log('Setting default autoExportToSheets value to:', payload.autoExportToSheets);
+    }
+    
+    // Check if we're in a service worker context and log it
+    const isServiceWorker = typeof window === 'undefined' || 
+                           typeof document === 'undefined' ||
+                           (typeof window !== 'undefined' && typeof window.document === 'undefined');
+    
+    console.log('Running in service worker context:', isServiceWorker);
     
     // Fix the undefined function issue by importing it first
     const { getAccessTokenWithRefresh } = await import('../services/auth/googleAuth');
@@ -2263,16 +2368,27 @@ async function handleExportToSheets(
         
         console.log('Successfully exported bills to spreadsheet using direct API approach');
         
-        // Generate spreadsheet URL for response
+        // Generate spreadsheet URL for response - make sure this works in service worker context
         const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
         
-        sendResponse({
-          success: true,
-          spreadsheetUrl
-        });
-        
-        console.log('==== EXPORT TO SHEETS - SUCCESS ====');
-        return;
+        // In a service worker context, we might not be able to access document
+        try {
+          sendResponse({
+            success: true,
+            spreadsheetUrl
+          });
+          
+          console.log('==== EXPORT TO SHEETS - SUCCESS ====');
+          return;
+        } catch (responseError) {
+          console.error('Error in sendResponse:', responseError);
+          // Try a simpler response without spreadsheetUrl if we're in a service worker
+          sendResponse({
+            success: true
+          });
+          console.log('==== EXPORT TO SHEETS - SUCCESS (SIMPLIFIED RESPONSE) ====');
+          return;
+        }
       } catch (directApiError) {
         console.error('Direct API export attempt failed:', directApiError);
         
@@ -2295,13 +2411,24 @@ async function handleExportToSheets(
           // Generate spreadsheet URL for response
           const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
           
-          sendResponse({
-            success: true,
-            spreadsheetUrl
-          });
-          
-          console.log('==== EXPORT TO SHEETS - SUCCESS ====');
-          return;
+          // In a service worker context, we might not be able to access document
+          try {
+            sendResponse({
+              success: true,
+              spreadsheetUrl
+            });
+            
+            console.log('==== EXPORT TO SHEETS - SUCCESS ====');
+            return;
+          } catch (responseError) {
+            console.error('Error in fallback sendResponse:', responseError);
+            // Try a simpler response without spreadsheetUrl if we're in a service worker
+            sendResponse({
+              success: true
+            });
+            console.log('==== EXPORT TO SHEETS - SUCCESS (SIMPLIFIED RESPONSE) ====');
+            return;
+          }
         } catch (appendError) {
           console.error('Error in appendBillData:', appendError);
           throw appendError; // Let the outer error handler take care of it
@@ -2750,3 +2877,107 @@ const initializePdfWorker = async () => {
 
 // Signal extension ready and initialize PDF worker
 signalExtensionReady();
+
+// Add this function for bill deduplication outside handleScanEmails
+function deduplicateBills(bills: BillData[]): BillData[] {
+  console.log(`Deduplicating ${bills.length} bills...`);
+  
+  // Create a map to group bills by message ID
+  const billsByMessageId = new Map<string, BillData[]>();
+  
+  // Group bills by message ID
+  bills.forEach(bill => {
+    const messageId = bill.emailId || '';
+    if (!billsByMessageId.has(messageId)) {
+      billsByMessageId.set(messageId, []);
+    }
+    billsByMessageId.get(messageId)!.push(bill);
+  });
+  
+  const deduplicated: BillData[] = [];
+  
+  // Process each group of bills from the same email
+  billsByMessageId.forEach((emailBills, messageId) => {
+    // If there's only one bill, no need to deduplicate
+    if (emailBills.length === 1) {
+      deduplicated.push(emailBills[0]);
+      return;
+    }
+    
+    console.log(`Found ${emailBills.length} bills from the same email: ${messageId}`);
+    
+    // Separate bills from email body and PDF attachments
+    const emailBodyBills = emailBills.filter(bill => 
+      bill.source?.type === 'email' || !bill.attachmentId);
+    
+    const pdfBills = emailBills.filter(bill => 
+      bill.source?.type === 'pdf' || bill.attachmentId);
+    
+    // If there are no PDF bills, keep all email body bills
+    if (pdfBills.length === 0) {
+      deduplicated.push(...emailBodyBills);
+      return;
+    }
+    
+    // If there are no email body bills, keep all PDF bills
+    if (emailBodyBills.length === 0) {
+      deduplicated.push(...pdfBills);
+      return;
+    }
+    
+    // Handle both email body and PDF bills from the same email
+    // We'll merge them if they appear to be the same bill
+    const processedEmails = new Set<string>();
+    
+    // First add the PDF bills as they typically have more detailed info
+    pdfBills.forEach(pdfBill => {
+      // Find corresponding email body bill with similar amount (within 10% margin)
+      const similarEmailBill = emailBodyBills.find(emailBill => {
+        // Skip if already processed
+        if (processedEmails.has(emailBill.id)) return false;
+        
+        // Compare amounts with a 10% margin of error
+        if (!pdfBill.amount || !emailBill.amount) return false;
+        
+        const pdfAmount = pdfBill.amount;
+        const emailAmount = emailBill.amount;
+        const minAmount = Math.min(pdfAmount, emailAmount);
+        const maxAmount = Math.max(pdfAmount, emailAmount);
+        
+        return maxAmount / minAmount <= 1.1; // 10% margin
+      });
+      
+      if (similarEmailBill) {
+        // Merge the bills, preferring PDF data
+        const mergedBill = {
+          ...similarEmailBill,
+          ...pdfBill,
+          id: pdfBill.id,
+          // Merge any other fields that might have better data in email
+          vendor: pdfBill.vendor || similarEmailBill.vendor,
+          accountNumber: pdfBill.accountNumber || similarEmailBill.accountNumber,
+          category: pdfBill.category || similarEmailBill.category,
+          // Keep track of both sources
+          mergedFromEmail: true,
+          emailId: similarEmailBill.emailId || pdfBill.emailId
+        };
+        
+        deduplicated.push(mergedBill);
+        processedEmails.add(similarEmailBill.id);
+      } else {
+        // No similar email bill found, add the PDF bill as is
+        deduplicated.push(pdfBill);
+      }
+    });
+    
+    // Add remaining email body bills that weren't merged
+    emailBodyBills.forEach(emailBill => {
+      if (!processedEmails.has(emailBill.id)) {
+        deduplicated.push(emailBill);
+      }
+    });
+  });
+  
+  console.log(`Deduplication complete. Original: ${bills.length}, After: ${deduplicated.length} bills`);
+  return deduplicated;
+}

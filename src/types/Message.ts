@@ -76,6 +76,12 @@ export interface ScanEmailsRequest {
   maxResults?: number;
   searchDays?: number;
   autoExportToSheets?: boolean; // Whether to automatically export to Google Sheets after scanning
+  inputLanguage?: string;
+  outputLanguage?: string;
+  trustedSourcesOnly?: boolean;
+  captureImportantNotices?: boolean;
+  processAttachments?: boolean;
+  runInitialScan?: boolean;
 }
 
 export interface ScanEmailsResponse {

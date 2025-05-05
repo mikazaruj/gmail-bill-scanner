@@ -111,7 +111,7 @@ const InitialScanButton = ({
         processAttachments: settings.processAttachments || true,
         trustedSourcesOnly: settings.trustedSourcesOnly,
         captureImportantNotices: settings.captureImportantNotices || true,
-        autoExportToSheets: false,
+        autoExportToSheets: true,
         scheduleEnabled: settings.scheduleEnabled || false,
         scheduleFrequency: settings.scheduleFrequency || 'weekly',
         scheduleDayOfWeek: 'monday',
@@ -131,6 +131,7 @@ const InitialScanButton = ({
       // Log language settings being used for the scan
       console.log(`InitialScanButton: Running scan with input language: ${scanSettings.inputLanguage}, output language: ${scanSettings.outputLanguage}`);
       console.log(`InitialScanButton: Running scan with trustedSourcesOnly: ${scanSettings.trustedSourcesOnly}`);
+      console.log(`InitialScanButton: Running scan with autoExportToSheets: ${scanSettings.autoExportToSheets}`);
       
       // 3. Trigger the scan
       await startScan(scanSettings);

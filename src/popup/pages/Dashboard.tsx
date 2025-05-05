@@ -1,4 +1,5 @@
-import React, { useContext, useState } from 'react';
+import * as React from 'react';
+import { useContext, useState } from 'react';
 import { BarChart2, Clock, RefreshCcw, FileSpreadsheet, Check, AlertTriangle, PieChart, Calendar } from 'lucide-react';
 import CollapsibleSection from '../components/CollapsibleSection';
 import StatCard from '../components/StatCard';
@@ -45,13 +46,14 @@ const Dashboard = ({ onNavigate }: DashboardProps) => {
       processAttachments: settings.processAttachments || true,
       trustedSourcesOnly: settings.trustedSourcesOnly || false,
       captureImportantNotices: settings.captureImportantNotices || true,
+      autoExportToSheets: settings.autoExportToSheets !== undefined ? settings.autoExportToSheets : true,
       scheduleEnabled: settings.scheduleEnabled || false,
       scheduleFrequency: settings.scheduleFrequency || 'weekly',
       scheduleDayOfWeek: 'monday',
       scheduleDayOfMonth: '1',
       scheduleTime: settings.scheduleTime || '09:00',
       runInitialScan: true,
-      maxResults: settings.maxResults,
+      maxResults: settings.maxResults || 20,
       searchDays: settings.searchDays,
       inputLanguage: settings.inputLanguage || 'en',
       outputLanguage: settings.outputLanguage || 'en',

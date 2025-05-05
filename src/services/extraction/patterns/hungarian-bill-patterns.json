@@ -15,6 +15,61 @@
       ]
     }
   ],
+  "billKeywords": [
+    "számla", "számlák", "számlázás", "számlázási", "számláról", "számlához",
+    "fizetés", "fizetési", "fizetve", "fizetendő", "fizetnivaló", "fizetésre", "fizetését", "fizetést",
+    "díj", "díjak", "díjszabás", "díjbekérő", "díjat", "díjról", "díjhoz", "díjakról",
+    "határidő", "határideje", "esedékesség", "esedékes", "esedékességi", "lejárat", "lejárati",
+    "értesítő", "értesítés", "tájékoztató", "emlékeztető", "tájékoztatás", "tájékoztatjuk",
+    "egyenleg", "egyenlege", "befizetés", "tartozás", "kiegyenlítés", "kiegyenlítése", "hátralék",
+    "áramszámla", "gázszámla", "közüzemi", "szolgáltató", "fogyasztás", 
+    "fizetendő", "összeg", "összegek", "áram", "gáz", "víz", "mvm", "energia", "szolgáltatás",
+    "távhő", "távfűtés", "szemétszállítás", "hulladék", "csatorna", "szennyvíz",
+    "részletfizetés", "befizetés", "számlaérték", "előírás"
+  ],
+  "utilityCompanies": [
+    "mvm", "eon", "e.on", "nkm", "elmű", "émász", "tigáz", "főgáz", "digi", "digitel",
+    "telekom", "magyar telekom", "vodafone", "yettel", "díjnet", "díjbeszedő", 
+    "vízmű", "vízművek", "csatornázási", "hulladékgazdálkodás", "fkf", "nhkv",
+    "távhő", "főtáv", "távfűtés", "közüzemi szolgáltató", "gázművek"
+  ],
+  "categoryPatterns": {
+    "Utilities": [
+      "áram", "gáz", "víz", "közüzemi", "szolgáltató", "mvm", "eon", "nkm",
+      "elmű", "émász", "tigáz", "főgáz", "díjnet", "vízmű", "csatornázási",
+      "hulladék", "távhő", "főtáv", "távfűtés", "gázművek", "vízművek", "fkf", "nhkv"
+    ],
+    "Telecommunications": [
+      "telefon", "mobil", "internet", "vodafone", "telekom", "yettel", "digi",
+      "vezetékes", "mobilinternet", "hangszolgáltatás", "adatforgalom", "műholdas",
+      "kábeltévé", "előfizetés", "telefonszolgáltatás"
+    ],
+    "Subscriptions": [
+      "előfizetés", "havi díj", "ismétlődő", "szolgáltatási díj", "tagsági",
+      "tagdíj", "havidíj", "streaming", "hozzáférés", "platform"
+    ],
+    "Shopping": [
+      "vásárlás", "rendelés", "webáruház", "megrendelés", "termék", "árucikk",
+      "online bolt", "webshop", "bolt", "áruház", "értékesítés", "eladás"
+    ],
+    "Travel": [
+      "repülő", "szállás", "hotel", "foglalás", "utazás", "szálloda", "reptér",
+      "járat", "légitársaság", "nyaralás", "üdülés", "vendégház", "apartman"
+    ],
+    "Insurance": [
+      "biztosítás", "biztosító", "életbiztosítás", "casco", "kötelező", "kgfb",
+      "lakásbiztosítás", "balesetbiztosítás", "utasbiztosítás", "egészségbiztosítás",
+      "kgfb", "díjtétel", "díjrészlet", "káresemény", "kárrendezés"
+    ],
+    "Entertainment": [
+      "szórakozás", "film", "játék", "koncert", "jegy", "esemény", "belépő",
+      "rendezvény", "színház", "mozijegy", "fesztivál", "előadás", "kiállítás"
+    ],
+    "Food": [
+      "étterem", "étel", "kiszállítás", "wolt", "foodpanda", "netpincér", "étkezés",
+      "vendéglő", "kávézó", "pizzéria", "étkezde", "gyorsétterem", "ebéd", "vacsora"
+    ]
+  },
   "fieldExtractors": [
     {
       "fieldName": "amount",
@@ -104,6 +159,21 @@
       "identifiers": [
         "hulladék", "szemét", "szemétszállítás", "FKF", "NHKV"
       ]
+    }
+  },
+  "currencySymbols": {
+    "Ft": "HUF",
+    "Ft.": "HUF",
+    "HUF": "HUF",
+    "forint": "HUF"
+  },
+  "hungarianPdfExtraction": {
+    "includedCharacters": "A-Za-z0-9\\s.,\\-:;\\/\\$%€£¥áéíóöőúüűÁÉÍÓÖŐÚÜŰ",
+    "specialCompanyPatterns": {
+      "mvm": {
+        "defaultCategory": "Utilities",
+        "defaultCurrency": "HUF"
+      }
     }
   },
   "commonWords": [

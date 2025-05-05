@@ -307,26 +307,39 @@ type SimplifiedSupabaseClient = {
   from: (table: string) => any;
   auth: any;
   rpc: (fn: string, params?: any) => any;
+  rest?: any; // Add rest property to our type definition
 };
 
-// Create the Supabase client with a simpler type to avoid TypeScript performance issues
-const supabaseClient = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: true,
-    detectSessionInUrl: false,
-    storage: chromeStorageAdapter,
-    storageKey: 'gmail-bill-scanner-auth'
-  },
-  global: {
-    headers: {
-      'x-application-name': 'gmail-bill-scanner'
-    }
+// Create a memoized client instance
+let globalSupabaseClient: SimplifiedSupabaseClient | null = null;
+let globalHeaders: Record<string, string> = {
+  'x-application-name': 'gmail-bill-scanner'
+};
+
+// Create the Supabase client - singleton pattern
+const initializeSupabaseClient = (): SimplifiedSupabaseClient => {
+  if (!globalSupabaseClient) {
+    console.log('Initializing new Supabase client');
+    globalSupabaseClient = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: true,
+        detectSessionInUrl: false,
+        storage: chromeStorageAdapter,
+        storageKey: 'gmail-bill-scanner-auth'
+      },
+      global: {
+        headers: globalHeaders
+      }
+    }) as unknown as SimplifiedSupabaseClient; // Fixed casting with intermediate unknown type
   }
-});
+  
+  // Ensure we never return null by initializing if needed
+  return globalSupabaseClient!;
+};
 
 // Export with a simplified type to avoid deep type instantiation errors
-export const supabase: SimplifiedSupabaseClient = supabaseClient as any;
+export const supabase: SimplifiedSupabaseClient = initializeSupabaseClient();
 
 /**
  * Helper function to safely use Supabase client without excessive type depth issues
@@ -345,7 +358,7 @@ export async function getSupabaseClient(): Promise<SimplifiedSupabaseClient> {
   console.log('Retrieved from storage - google_user_id:', google_user_id);
   
   // Set up headers including Google user ID if available
-  const headers: Record<string, string> = {
+  const newHeaders: Record<string, string> = {
     'x-application-name': 'gmail-bill-scanner'
   };
   
@@ -354,28 +367,25 @@ export async function getSupabaseClient(): Promise<SimplifiedSupabaseClient> {
   if (google_user_id) {
     // This must match exactly with what's in your RLS policy:
     // current_setting('request.headers.google_user_id', true)::text
-    headers['google_user_id'] = google_user_id;
-    console.log('Setting Supabase headers with Google ID:', headers);
+    newHeaders['google_user_id'] = google_user_id;
+    console.log('Setting Supabase headers with Google ID:', newHeaders);
   } else {
     console.log('No Google user ID available for Supabase headers - RLS policies will not work');
   }
   
-  // Create a fresh client each time to avoid auth issues
-  const freshClient = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: true,
-      detectSessionInUrl: false,
-      storage: chromeStorageAdapter,
-      storageKey: 'gmail-bill-scanner-auth'
-    },
-    global: {
-      headers: headers
-    }
-  });
+  // Check if headers have changed
+  const headersChanged = JSON.stringify(newHeaders) !== JSON.stringify(globalHeaders);
   
-  // Return with simplified type to avoid deep type instantiation
-  return freshClient as unknown as SimplifiedSupabaseClient;
+  if (headersChanged) {
+    console.log('Headers changed, resetting Supabase client');
+    // Update global headers
+    globalHeaders = newHeaders;
+    // Force client recreation by nullifying it
+    globalSupabaseClient = null;
+  }
+  
+  // Return the singleton client (will be reinitialized if we nullified it)
+  return initializeSupabaseClient();
 }
 
 /**
