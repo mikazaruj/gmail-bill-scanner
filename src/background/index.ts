@@ -642,7 +642,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
 
         case 'EXPORT_TO_SHEETS':
-          await handleExportToSheets(message.payload, sendResponse);
+          try {
+            console.log('Handling EXPORT_TO_SHEETS message');
+            
+            const { bills, spreadsheetId, autoExportToSheets } = message;
+            
+            // Call our updated handler
+            await handleExportToSheets({ 
+              bills, 
+              spreadsheetId,
+              autoExportToSheets
+            }, sendResponse);
+            
+            // Indicate async response
+            return true;
+          } catch (error) {
+            console.error('Error handling EXPORT_TO_SHEETS:', error);
+            sendResponse({
+              success: false,
+              error: 'Error exporting to sheet: ' + (error instanceof Error ? error.message : String(error))
+            });
+            return true;
+          }
         break;
 
         case 'CREATE_SPREADSHEET':
@@ -1478,6 +1499,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           break;
 
+        case 'EXTRACT_TEXT_FROM_PDF':
+          try {
+            // Get required parameters
+            const { base64String, language, userId, extractFields } = message;
+            
+            // First try to use our consolidated processing handler
+            const { processPdfExtraction } = await import('./handlers/pdfProcessingHandler');
+            
+            // Process the PDF
+            processPdfExtraction({
+              base64String,
+              language: language || 'en',
+              userId,
+              extractFields: extractFields !== false
+            }, sendResponse);
+            
+            // Indicate async response will be used
+            return true;
+          } catch (error) {
+            // Fall back to the older method if the import or handler fails
+            console.error('Error using consolidated PDF handler, falling back to legacy method:', error);
+            
+            // Handle the extract text request
+            await processPdfExtraction(message, sendResponse);
+            return true;
+          }
+
         default:
           console.warn(`Unknown message type: ${message.type}`);
           sendResponse({ success: false, error: `Unknown message type: ${message.type}` });
@@ -2199,22 +2247,12 @@ async function handleExportToSheets(
     console.log(`Found ${bills.length} bills to export`);
     
     // Get Google token for Sheets API
-    const token = await new Promise<string>((resolve, reject) => {
-      chrome.identity.getAuthToken({ interactive: true }, (token) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        
-        // Add null check to handle undefined token
-        if (!token) {
-          reject(new Error('Failed to get auth token'));
-          return;
-        }
-        
-        resolve(token);
-      });
-    });
+    const token = await getAccessToken();
+    if (!token) {
+      console.error('No auth token available for Sheets export');
+      sendResponse({ success: false, error: 'Not authenticated' });
+      return;
+    }
     
     // Get spreadsheet ID from settings
     let spreadsheetId = requestedSpreadsheetId;
@@ -2255,13 +2293,15 @@ async function handleExportToSheets(
           // Create a new spreadsheet
           console.log('No spreadsheet ID found in settings, creating a new one');
           
-          const newSpreadsheet = await createNewSpreadsheet(token);
+          // Create new spreadsheet directly with Sheets API
+          const newSpreadsheet = await createSheetsSpreadsheet(token, 'Bills Tracker');
           spreadsheetId = newSpreadsheet.spreadsheetId;
           newSpreadsheetCreated = true;
           
           // Save the new spreadsheet ID to user settings
           if (identity.supabaseId) {
-            await updateSettingsInSupabase(identity.supabaseId, { 
+            const { updateMultipleUserPreferences } = await import('../services/settings');
+            await updateMultipleUserPreferences(identity.supabaseId, { 
               sheet_id: spreadsheetId 
             });
             console.log(`Saved new spreadsheet ID to user settings: ${spreadsheetId}`);
@@ -2279,20 +2319,17 @@ async function handleExportToSheets(
     console.log(`Using spreadsheet ID: ${spreadsheetId}`);
     
     // Fetch user's field mappings if available
-    // Import the FieldMapping type
-    const { getFieldMappings } = await import('../services/fieldMapping');
-    
-    // Initialize with correct type
     let userFieldMappings: FieldMapping[] = [];
     
     try {
       // Identify the user
       const { resolveUserIdentity } = await import('../services/identity/userIdentityService');
       const identity = await resolveUserIdentity();
-      userId = identity?.supabaseId;
+      const userId = identity?.supabaseId;
       
       if (userId) {
         // Get field mappings from Supabase
+        const { getFieldMappings } = await import('../services/fieldMapping');
         userFieldMappings = await getFieldMappings(userId);
         console.log(`Fetched ${userFieldMappings?.length || 0} field mappings for user ${userId}`);
       }
@@ -2330,16 +2367,13 @@ async function handleExportToSheets(
       
       // Add headers to spreadsheet
       try {
-        await appendToSheet(token, spreadsheetId, [headers], 'RAW');
+        await appendSheetValues(token, spreadsheetId, 'Bills!A1:Z1', [headers], 'RAW');
         console.log('Successfully added headers to spreadsheet');
       } catch (headerError) {
         console.error('Error adding headers to spreadsheet:', headerError);
         // Continue anyway
       }
     }
-    
-    // Try using direct API approach
-    console.log('Using direct API approach for export...');
     
     // Map bills to rows based on field mappings
     const rowData = bills.map(bill => {
@@ -2398,64 +2432,23 @@ async function handleExportToSheets(
       }
     });
     
-    console.log(`Attempting direct append of ${rowData.length} rows to sheet...`);
-    console.log(`Sample row data: ${JSON.stringify(rowData[0])}`);
+    console.log(`Appending ${rowData.length} rows to sheet...`);
     
-    // Direct API call to append values - this works in service workers
-    const appendRange = 'Bills!A2:J';
-    const response = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${appendRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          values: rowData,
-        }),
-      }
-    );
+    // Direct API call to append values
+    const appendRange = 'Bills!A2:Z';
+    await appendSheetValues(token, spreadsheetId, appendRange, rowData, 'USER_ENTERED');
     
-    // Check for response errors
-    if (!response.ok) {
-      const responseText = await response.text();
-      console.error('Direct append failed with status:', response.status);
-      console.error('Response text:', responseText);
-      
-      let errorData;
-      try {
-        errorData = JSON.parse(responseText);
-      } catch (e) {
-        errorData = { error: { message: responseText } };
-      }
-      
-      throw new Error(`Sheets API error: ${errorData.error?.message || responseText || 'Unknown error'}`);
-    }
+    console.log('Successfully exported bills to spreadsheet');
     
-    console.log('Successfully exported bills to spreadsheet using direct API approach');
-    
-    // Generate spreadsheet URL for response - make sure this works in service worker context
+    // Generate spreadsheet URL for response
     const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
     
-    // In a service worker context, we might not be able to access document
-    try {
-      sendResponse({
-        success: true,
-        spreadsheetUrl
-      });
-      
-      console.log('==== EXPORT TO SHEETS - SUCCESS ====');
-      return;
-    } catch (responseError) {
-      console.error('Error in sendResponse:', responseError);
-      // Try a simpler response without spreadsheetUrl if we're in a service worker
-      sendResponse({
-        success: true
-      });
-      console.log('==== EXPORT TO SHEETS - SUCCESS (SIMPLIFIED RESPONSE) ====');
-      return;
-    }
+    sendResponse({
+      success: true,
+      spreadsheetUrl
+    });
+    
+    console.log('==== EXPORT TO SHEETS - SUCCESS ====');
   } catch (error) {
     console.error('Error exporting bills to sheets:', error);
     sendResponse({
@@ -2463,6 +2456,42 @@ async function handleExportToSheets(
       error: 'Error exporting bills to sheets: ' + (error instanceof Error ? error.message : String(error))
     });
   }
+}
+
+/**
+ * Append values to a Google Sheet - Service worker compatible
+ */
+async function appendSheetValues(
+  token: string,
+  spreadsheetId: string,
+  range: string,
+  values: any[][],
+  valueInputOption: string = 'USER_ENTERED'
+): Promise<void> {
+  if (!token) {
+    throw new Error('No authentication token provided');
+  }
+  
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:append?valueInputOption=${valueInputOption}&insertDataOption=INSERT_ROWS`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        values: values,
+      }),
+    }
+  );
+  
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(`Sheets API error: ${errorData.error?.message || 'Unknown error'}`);
+  }
+  
+  return await response.json();
 }
 
 // Helper function to format dates for Google Sheets

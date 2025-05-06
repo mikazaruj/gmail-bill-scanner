@@ -116,7 +116,7 @@ function handlePdfProcessingPort(port: chrome.runtime.Port) {
         
         // Process the PDF using consolidated service
         const result = await pdfService.extractPdfContent(
-          combinedBuffer.buffer,
+          combinedBuffer,
           transfer.metadata.language,
           transfer.metadata.userId,
           transfer.metadata.extractFields
@@ -154,7 +154,7 @@ function handlePdfProcessingPort(port: chrome.runtime.Port) {
  * Process a PDF extraction request using base64 (legacy method)
  */
 export async function processPdfExtraction(message: any, sendResponse: Function) {
-  console.log('Processing PDF extraction request via base64 (legacy method)');
+  console.log('Processing PDF extraction request (legacy method)');
   
   try {
     const { 
@@ -170,10 +170,26 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
       return;
     }
     
-    // Process using our consolidated service
+    // Always convert to ArrayBuffer first for consistent processing
+    let pdfData: Uint8Array;
+    try {
+      // Import the normalizePdfData function
+      const { normalizePdfData } = await import('../../services/pdf/consolidatedPdfService');
+      pdfData = await normalizePdfData(base64String);
+      console.log('Successfully converted base64 to Uint8Array');
+    } catch (conversionError) {
+      console.error('Error converting PDF data to Uint8Array:', conversionError);
+      sendResponse({
+        success: false,
+        error: 'Failed to convert PDF data: ' + (conversionError instanceof Error ? conversionError.message : String(conversionError))
+      });
+      return;
+    }
+    
+    // Process using our consolidated service with ArrayBuffer
     try {
       const result = await pdfService.extractPdfContent(
-        base64String,
+        pdfData,  // Pass Uint8Array directly
         language,
         userId,
         extractFields
