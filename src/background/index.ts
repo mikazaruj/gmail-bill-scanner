@@ -25,6 +25,8 @@ import { handleError } from '../services/error/errorService';
 import { buildBillSearchQuery } from '../services/gmailSearchBuilder';
 import { Bill } from '../types/Bill';
 import { getUserSettings } from '../services/settings';
+// Using different import name to avoid conflict with dynamically imported function
+import { initializePdfProcessingHandlers } from './pdfProcessor';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -36,10 +38,11 @@ const SCOPES = [
 
 // At the very top of the file
 console.log('=== DEBUG: Background script with trusted sources handlers loaded ===');
-
-// Background service worker for Gmail Bill Scanner
 console.log('=== Gmail Bill Scanner background service worker starting up... ===');
-console.warn('Background worker started - this log should be visible');
+console.log('Background worker started - this log should be visible');
+
+// Initialize PDF processing handlers for chunked transfers
+initializePdfProcessingHandlers();
 
 // Add global flag to track PDF initialization
 let pdfWorkerInitialized = false;
@@ -198,13 +201,17 @@ async function logout(): Promise<{ success: boolean; error?: string }> {
 
 // Message handlers
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('Background received message:', message.type);
+  // Log the message for debugging (omit large payloads)
+  if (message.type !== 'extractTextFromPdf' && message.type !== 'extractPdfWithTransfer') {
+    console.log('Background received message:', message.type);
+  } else {
+    console.log('Background received PDF extraction request');
+  }
   
   // Handle PING message for checking if background script is active
   if (message.type === 'PING') {
-    // Always respond immediately to ping - highest priority
-    sendResponse({ success: true });
-    return true;
+    sendResponse({ success: true, message: 'Background script is active' });
+    return;
   }
   
   // Handle AUTHENTICATE with high priority - respond even if PDF is loading
@@ -266,279 +273,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.error('Error importing PDF processor:', error);
       sendResponse({
         success: false,
-/**
- * Background Script for Gmail Bill Scanner
- * 
- * Handles communication between content scripts, popup, and Google APIs
- */
-
-/// <reference lib="webworker" />
-
-// Import core dependencies and types
-import { getEmailContent, getAttachments } from '../services/gmail/gmailApi';
-import { createSpreadsheet, appendBillData } from '../services/sheets/sheetsApi';
-import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../types/Message';
-import { 
-  isAuthenticated,
-  getAccessToken,
-  authenticate,
-  fetchGoogleUserInfo,
-  fetchGoogleUserInfoExtended,
-  signOut as googleSignOut
-} from '../services/auth/googleAuth';
-import { signInWithGoogle, syncAuthState } from '../services/supabase/client';
-import { searchEmails } from '../services/gmail/gmailService';
-import { ensureUserRecord } from '../services/identity/userIdentityService';
-import { handleError } from '../services/error/errorService';
-import { buildBillSearchQuery } from '../services/gmailSearchBuilder';
-import { Bill } from '../types/Bill';
-import { getUserSettings } from '../services/settings';
-
-// Required OAuth scopes
-const SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/spreadsheets",
-  "https://www.googleapis.com/auth/userinfo.email",
-  "https://www.googleapis.com/auth/userinfo.profile"
-];
-
-// At the very top of the file
-console.log('=== DEBUG: Background script with trusted sources handlers loaded ===');
-
-// Background service worker for Gmail Bill Scanner
-console.log('=== Gmail Bill Scanner background service worker starting up... ===');
-console.warn('Background worker started - this log should be visible');
-
-// Add global flag to track PDF initialization
-let pdfWorkerInitialized = false;
-let pdfWorkerInitializationAttempted = false;
-let authInitializationComplete = false; // New flag to track authentication initialization
-
-// Signal that the extension is ready to load
-const signalExtensionReady = () => {
-  console.log('=== Extension core is ready to use ===');
-  // Broadcast this to any listeners
-  try {
-    if (typeof self !== 'undefined' && self.clients) {
-      self.clients.matchAll().then(clients => {
-        clients.forEach(client => {
-          client.postMessage({
-            type: 'EXTENSION_LOADED',
-            status: 'ready'
-          });
-        });
-      }).catch(err => {
-        console.error('Error broadcasting extension status:', err);
-      });
-    }
-    
-    // Only focus on authentication initialization, don't start PDF worker
-    setTimeout(() => {
-      console.log('Starting authentication initialization...');
-      authInitializationComplete = true;
-    }, 500);
-  } catch (error) {
-    console.error('Error signaling extension ready:', error);
-  }
-};
-
-// Initialize PDF worker only when needed (called before scanning operations)
-const initializePdfWorkerIfNeeded = async (): Promise<boolean> => {
-  // If already initialized, return immediately
-  if (pdfWorkerInitialized) {
-    console.log('PDF worker already initialized, skipping initialization');
-    return true;
-  }
-  
-  console.log('Initializing PDF worker on-demand for scanning operation');
-  
-  try {
-    // Perform the actual initialization
-    const result = await initializePdfWorker();
-    pdfWorkerInitialized = result;
-    pdfWorkerInitializationAttempted = true;
-    
-    console.log('PDF worker on-demand initialization result:', result ? 'success' : 'failed');
-    return result;
-  } catch (error) {
-    console.error('Error during on-demand PDF worker initialization:', error);
-    pdfWorkerInitializationAttempted = true;
-    return false;
-  }
-};
-
-// Add global error handling for the service worker
-self.addEventListener('error', (event: ErrorEvent) => {
-  console.error('Service worker global error:', event.error);
-});
-
-self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
-  console.error('Unhandled promise rejection in service worker:', event.reason);
-});
-
-// Service worker for Gmail Bill Scanner
-declare const self: ServiceWorkerGlobalScope;
-
-// Service worker lifecycle
-self.addEventListener('install', (event: ExtendableEvent) => {
-  console.log('Service worker install event');
-  // Skip waiting to become active immediately
-  event.waitUntil(self.skipWaiting());
-});
-
-self.addEventListener('activate', (event: ExtendableEvent) => {
-  console.log('Service worker activate event');
-  // Claim all clients to ensure the service worker controls all tabs/windows
-  event.waitUntil(
-    self.clients.claim().then(() => {
-      console.log('Service worker has claimed all clients');
-      signalExtensionReady(); // Signal extension ready after service worker is activated
-      // Don't initialize PDF worker here - wait for it to be needed
-    })
-  );
-});
-
-// Keep the service worker alive
-chrome.alarms.create('keepAlive', { periodInMinutes: 1 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'keepAlive') {
-    console.warn('Background service worker is alive');
-  }
-});
-
-self.addEventListener('unload', () => {
-  chrome.alarms.clear('keepAlive');
-  console.log('Gmail Bill Scanner background service worker shutting down');
-});
-
-// Token storage key for compatibility
-const TOKEN_STORAGE_KEY = "gmail_bill_scanner_auth_token";
-
-// Helper functions for token storage safety
-async function storeGoogleTokenSafely(userId: string, googleId: string, token: string): Promise<boolean> {
-  try {
-    console.log(`Storing Google token for user ${userId} with Google ID ${googleId}`);
-    
-    // Store via RPC to service worker if available (preferred)
-    const rpcResult = await storeTokenViaRPC(userId, token);
-    if (rpcResult.success) {
-      return true;
-    }
-    
-    // Fall back to direct storage if RPC fails
-    const directResult = await storeTokenDirectly(userId, token);
-    return directResult.success;
-  } catch (error) {
-    console.error("Error storing Google token:", error);
-    return false;
-  }
-}
-
-// Sign out helper function - simplify to use the imported signOut
-async function signOut(): Promise<void> {
-  try {
-    await googleSignOut();
-  } catch (error) {
-    console.error("Error during sign out:", error);
-    handleError(error instanceof Error ? error : new Error(String(error)), {
-      severity: 'medium', 
-      shouldNotify: true,
-      context: { operation: 'sign_out' }
-    });
-  }
-}
-
-// Logout function - simplified to use googleSignOut
-async function logout(): Promise<{ success: boolean; error?: string }> {
-  try {
-    await googleSignOut();
-    return { success: true };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    handleError(error instanceof Error ? error : new Error(errorMessage), {
-      severity: 'medium',
-      shouldNotify: true,
-      context: { operation: 'logout' }
-    });
-    return { success: false, error: errorMessage };
-  }
-}
-
-// Message handlers
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('Background received message:', message.type);
-  
-  // Handle PING message for checking if background script is active
-  if (message.type === 'PING') {
-    // Always respond immediately to ping - highest priority
-    sendResponse({ success: true });
-    return true;
-  }
-  
-  // Handle AUTHENTICATE with high priority - respond even if PDF is loading
-  if (message.type === 'AUTHENTICATE') {
-    console.log('Prioritizing authentication request');
-    
-    // If PDF worker is still initializing, mark it as initialized to avoid blocking auth
-    if (!pdfWorkerInitialized) {
-      console.log('Setting PDF worker as initialized to prioritize auth');
-      pdfWorkerInitialized = true;
-    }
-    
-    // Continue with authentication handling immediately
-    handleAuthentication(message, sendResponse);
-    return true;
-  }
-  
-  // Handle INIT_PDF_WORKER message - initialize on-demand
-  if (message.type === 'INIT_PDF_WORKER') {
-    console.log('Received request to initialize PDF extraction');
-    
-    // Check if PDF has already been initialized
-    if (pdfWorkerInitialized) {
-      console.log('PDF.js already initialized, returning success immediately');
-      sendResponse({ 
-        success: true, 
-        message: 'PDF.js already initialized',
-        isAsync: false
-      });
-      return true;
-    }
-    
-    // Initialize the PDF worker immediately
-    initializePdfWorkerIfNeeded().then(success => {
-      console.log('PDF worker initialization completed with result:', success ? 'success' : 'failed');
-    }).catch(error => {
-      console.error('Error during PDF worker initialization:', error);
-    });
-    
-    // Don't block the response - always return success immediately
-    sendResponse({ 
-      success: true, 
-      message: 'PDF initialization started on-demand',
-      isAsync: true
-    });
-    
-    return true;
-  }
-  
-  // Handle extractTextFromPdf message - process PDF through offscreen document
-  if (message.type === 'extractTextFromPdf') {
-    console.log('Received PDF extraction request');
-    
-    // Import our PDF processor module on demand
-    import('./pdfProcessor').then(({ processPdfExtraction }) => {
-      // Process the PDF using our new processor
-      processPdfExtraction(message, sendResponse);
-    }).catch(error => {
-      console.error('Error importing PDF processor:', error);
-      sendResponse({
-        success: false,
         error: error instanceof Error ? error.message : 'Failed to import PDF processor'
       });
     });
     
-    return true; // Keep the response channel open
+    return true; // Keep the messaging channel open for async response
   }
   
   // Handle all other messages
@@ -3286,12 +3025,29 @@ function deduplicateBills(bills: BillData[]): BillData[] {
         // Skip if already merged
         if (mergedEmailBillIds.has(emailBill.id)) return false;
         
+        // Debug log to show what bills we're trying to match
+        console.log(`Comparing bills - PDF: ${JSON.stringify({
+          id: pdfBill.id,
+          vendor: pdfBill.vendor,
+          amount: pdfBill.amount,
+          date: pdfBill.date,
+          invoiceNumber: pdfBill.invoiceNumber || 'N/A'
+        })} with Email: ${JSON.stringify({
+          id: emailBill.id,
+          vendor: emailBill.vendor,
+          amount: emailBill.amount,
+          date: emailBill.date,
+          invoiceNumber: emailBill.invoiceNumber || 'N/A'
+        })}`);
+
         // 1. Most important: Check invoice number (if available)
         if (pdfBill.invoiceNumber && emailBill.invoiceNumber && 
             pdfBill.invoiceNumber.trim() === emailBill.invoiceNumber.trim()) {
           console.log(`Found exact invoice number match: ${pdfBill.invoiceNumber}`);
-          return true;
+          return true; // If invoice numbers match exactly, this is definitely the same bill
         }
+        
+        // Continue with other matching criteria for bills without invoice numbers
         
         // 2. Check vendor name (exact or partial match)
         const vendorMatch = pdfBill.vendor && emailBill.vendor && (
@@ -3303,20 +3059,13 @@ function deduplicateBills(bills: BillData[]): BillData[] {
         // 3. Check amount (exact or close match)
         let amountMatch = false;
         if (pdfBill.amount && emailBill.amount) {
-          const pdfAmount = pdfBill.amount;
-          const emailAmount = emailBill.amount;
-          const minAmount = Math.min(pdfAmount, emailAmount);
-          const maxAmount = Math.max(pdfAmount, emailAmount);
-          
-          // Allow larger margin for smaller amounts
-          const marginOfError = minAmount < 100 ? 0.5 : 0.3; // 50% for small bills, 30% otherwise
-          
-          if (maxAmount / minAmount <= (1 + marginOfError)) {
-            amountMatch = true;
-          }
+          // Simple amount comparison - they should be within 1% of each other to match
+          const difference = Math.abs(pdfBill.amount - emailBill.amount);
+          const maxAmount = Math.max(pdfBill.amount, emailBill.amount);
+          amountMatch = difference / maxAmount <= 0.01; // 1% tolerance
         }
         
-        // 4. Check bill date (if available, must be within a few days)
+        // 4. Check bill date (if available)
         let dateMatch = false;
         if (pdfBill.date && emailBill.date) {
           const pdfDate = new Date(pdfBill.date);
@@ -3331,16 +3080,19 @@ function deduplicateBills(bills: BillData[]): BillData[] {
           }
         }
         
-        // Determine if it's a match based on multiple criteria
-        return (
-          // Invoice number match alone is sufficient
-          (pdfBill.invoiceNumber && emailBill.invoiceNumber && 
-           pdfBill.invoiceNumber.trim() === emailBill.invoiceNumber.trim()) ||
-          // Or vendor match plus either amount or date match
-          (vendorMatch && (amountMatch || dateMatch)) ||
-          // Or all three match (stronger confidence)
-          (vendorMatch && amountMatch && dateMatch)
-        );
+        // Determine if it's a match - simplified logic with clear conditions
+        if (vendorMatch && amountMatch) {
+          console.log(`MATCH: Same vendor and amount`);
+          return true; // Same vendor and amount is a strong indicator
+        }
+        
+        if (vendorMatch && dateMatch && (pdfBill.amount === emailBill.amount)) {
+          console.log(`MATCH: Same vendor, date, and identical amounts`);
+          return true; // Same vendor and date with identical amounts is definitely a match
+        }
+        
+        // No match found for these bills
+        return false;
       });
       
       if (matchingEmailBill) {
@@ -3410,25 +3162,25 @@ function mergeBills(pdfBill: BillData, emailBill: BillData): BillData {
   // Keep track of both sources
   mergedBill.emailId = emailBill.emailId || pdfBill.emailId;
   
-  // Handle the amount field specially - check for suspiciously small values
+  // Handle the amount field - use the most reliable source
   if (pdfBill.amount && emailBill.amount) {
     const pdfAmount = pdfBill.amount;
     const emailAmount = emailBill.amount;
     
-    if (pdfAmount < 10 && emailAmount > 1000) {
-      // PDF amount is suspiciously small, use email amount
-      mergedBill.amount = emailAmount;
-      console.log(`Adjusted amount in merged bill: ${pdfAmount} -> ${emailAmount} (PDF value was suspiciously small)`);
-    } else if (emailAmount < 10 && pdfAmount > 1000) {
-      // Email amount is suspiciously small, use PDF amount
+    // Check if amounts are close (within 5%)
+    const difference = Math.abs(pdfAmount - emailAmount);
+    const maxAmount = Math.max(pdfAmount, emailAmount);
+    const percentDifference = difference / maxAmount;
+    
+    if (percentDifference <= 0.05) {
+      // Amounts are close, prefer PDF value as it's typically from the source document
       mergedBill.amount = pdfAmount;
-      console.log(`Kept PDF amount in merged bill: ${pdfAmount} (email value ${emailAmount} was suspiciously small)`);
+      console.log(`Using PDF amount in merged bill: ${pdfAmount} (email amount ${emailAmount} is within 5%)`);
     } else {
-      // Both amounts seem reasonable, prefer the larger one as it's less likely to be missing decimals
-      mergedBill.amount = Math.max(pdfAmount, emailAmount);
-      if (pdfAmount !== emailAmount) {
-        console.log(`Selected larger amount in merged bill: ${mergedBill.amount} (PDF: ${pdfAmount}, Email: ${emailAmount})`);
-      }
+      // Amounts differ significantly, log the discrepancy but still prefer PDF 
+      // since we've already determined these bills should be merged
+      mergedBill.amount = pdfAmount;
+      console.log(`Using PDF amount in merged bill despite difference: PDF ${pdfAmount}, Email ${emailAmount}`);
     }
   } else {
     // One of the amounts is missing, use whichever one exists
@@ -3440,68 +3192,92 @@ function mergeBills(pdfBill: BillData, emailBill: BillData): BillData {
 
 /**
  * Process PDF extraction using the offscreen document
+ * 
+ * @deprecated This function is being phased out in favor of the module-based approach in pdfProcessor.ts.
+ * Please use the processPdfExtraction function from that module instead.
+ * 
+ * TODO: Remove this function and update all callsites to use the module-based approach.
  */
 async function processPdfExtraction(message: any, sendResponse: Function) {
+  console.warn('Using deprecated processPdfExtraction in index.ts - please migrate to pdfProcessor.ts');
+  
+  // Import and delegate to the new module-based implementation
   try {
-    const { base64String, language = 'en' } = message;
+    const { processPdfExtraction: newProcessPdfExtraction } = await import('./pdfProcessor');
+    return newProcessPdfExtraction(message, sendResponse);
+  } catch (error) {
+    console.error('Failed to import pdfProcessor module, falling back to legacy implementation:', error);
     
-    if (!base64String) {
-      sendResponse({ success: false, error: 'No PDF data provided' });
-      return;
-    }
-    
-    // Create offscreen document if needed
-    if (typeof chrome.offscreen !== 'undefined') {
-      try {
-        // Check if offscreen document exists
+    // Legacy implementation follows
+    try {
+      const { base64String, language = 'en' } = message;
+      
+      if (!base64String) {
+        sendResponse({ success: false, error: 'No PDF data provided' });
+        return;
+      }
+      
+      // Create offscreen document if needed
+      if (typeof chrome.offscreen !== 'undefined') {
         try {
-          // Use a different approach to detect if the document exists
-          const existingDocuments = await chrome.runtime.sendMessage({ type: 'PING_OFFSCREEN' })
-                                    .catch(() => null);
-          if (!existingDocuments) {
-            throw new Error('Offscreen document not available');
+          // Check if offscreen document exists
+          try {
+            // Use a different approach to detect if the document exists
+            const existingDocuments = await chrome.runtime.sendMessage({ type: 'PING_OFFSCREEN' })
+                                      .catch(() => null);
+            if (!existingDocuments) {
+              throw new Error('Offscreen document not available');
+            }
+          } catch (e) {
+            // Create it if it doesn't exist
+            await chrome.offscreen.createDocument({
+              url: chrome.runtime.getURL('pdfHandler.html'),
+              // @ts-ignore - Chrome API types issue
+              reasons: ['DOM_SCRAPING'],
+              justification: 'Process PDF files'
+            });
+            console.log('Offscreen document created for PDF processing');
           }
-        } catch (e) {
-          // Create it if it doesn't exist
-          await chrome.offscreen.createDocument({
-            url: chrome.runtime.getURL('pdfHandler.html'),
-            reasons: ['DOM_PARSER'], // Use a valid reason
-            justification: 'Process PDF files'
+          
+          // Send message to offscreen document
+          const response = await chrome.runtime.sendMessage({
+            target: 'offscreen',
+            type: 'extractTextFromPdf',
+            base64String,
+            language
           });
-          console.log('Offscreen document created for PDF processing');
+          
+          sendResponse(response);
+        } catch (error) {
+          console.error('Error with offscreen document:', error);
+          // Fall back to using direct PDF processing
+          processInBackground(message, sendResponse);
         }
-        
-        // Send message to offscreen document
-        const response = await chrome.runtime.sendMessage({
-          target: 'offscreen',
-          type: 'extractTextFromPdf',
-          base64String,
-          language
-        });
-        
-        sendResponse(response);
-      } catch (error) {
-        console.error('Error with offscreen document:', error);
-        // Fall back to using direct PDF processing
+      } else {
+        // No offscreen API available, process in background
         processInBackground(message, sendResponse);
       }
-    } else {
-      // No offscreen API available, process in background
-      processInBackground(message, sendResponse);
+    } catch (error) {
+      console.error('Error processing PDF extraction:', error);
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'PDF extraction failed'
+      });
     }
-  } catch (error) {
-    console.error('Error processing PDF extraction:', error);
-    sendResponse({
-      success: false,
-      error: error instanceof Error ? error.message : 'PDF extraction failed'
-    });
   }
 }
 
 /**
  * Process PDF in background context (fallback if offscreen API not available)
+ * 
+ * @deprecated This function is being phased out in favor of the module-based approach in pdfProcessor.ts.
+ * This is an internal function used by the deprecated processPdfExtraction function.
+ * 
+ * TODO: Remove this function once processPdfExtraction is fully migrated to the module-based approach.
  */
 async function processInBackground(message: any, sendResponse: Function) {
+  console.warn('Using deprecated processInBackground in index.ts - please migrate to pdfProcessor.ts');
+  
   try {
     const { base64String, language = 'en' } = message;
     

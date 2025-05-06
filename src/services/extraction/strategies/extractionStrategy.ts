@@ -23,7 +23,7 @@ export interface EmailExtractionContext {
  * PDF extraction context
  */
 export interface PdfExtractionContext {
-  pdfData: string;
+  pdfData: ArrayBuffer | string; // Now accepts both ArrayBuffer and string for standardized approach
   messageId: string;
   attachmentId: string;
   fileName: string;

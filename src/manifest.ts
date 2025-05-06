@@ -44,4 +44,15 @@ export default defineManifest(() => ({
   content_security_policy: {
     extension_pages: "script-src 'self'; object-src 'self'",
   },
+  web_accessible_resources: [
+    {
+      resources: [
+        "assets/*",
+        "pdfHandler.html",
+        "test/*",
+        "pdf.worker.min.js"
+      ],
+      matches: ["<all_urls>"]
+    }
+  ]
 })); 

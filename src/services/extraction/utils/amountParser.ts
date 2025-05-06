@@ -80,34 +80,9 @@ export function parseHungarianAmount(amountStr: string): number {
       return 0;
     }
     
-    console.log('Parsed amount before adjustments:', amount);
+    console.log('Parsed amount:', amount);
     
-    // Step 3: Handle Specific Edge Cases
-    
-    // Case: Small amounts that should be larger
-    const originalDigitCount = originalAmount.replace(/[^\d]/g, '').length;
-    
-    // If we have a very small number (under 100) but the original number had many digits (5+)
-    // This is likely a PDF parsing error where thousand separators were lost
-    if (amount < 100 && originalDigitCount >= 5) {
-      console.log(`Potential parsing error detected: small amount (${amount}) with many original digits (${originalDigitCount})`);
-      
-      // Check if multiplying by 1000 would give a more reasonable result
-      // Common in Hungarian bills to have amounts like 7 that should be 7000
-      if (originalDigitCount >= 4 && originalDigitCount <= 6) {
-        amount = amount * 1000;
-        console.log('Adjusted amount by multiplying by 1000:', amount);
-      }
-    }
-    
-    // Hungarian amounts for bills are very rarely below 1000 HUF
-    // This helps catch cases where the PDF parser missed thousand separators
-    if (amount > 0 && amount < 10) {
-      // For extremely small values below 10, it's almost certainly missing thousands
-      amount = amount * 1000;
-      console.log('Extremely small amount detected, multiplied by 1000:', amount);
-    }
-    
+    // Simply return the parsed amount without any adjustments
     return amount;
   } catch (e) {
     console.error('Error parsing Hungarian amount:', e);

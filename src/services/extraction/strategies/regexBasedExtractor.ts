@@ -183,11 +183,18 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         if (isServiceWorker) {
           // Use basic extraction in service worker context instead of trying to load PDF.js
           console.log('Running in service worker context, using fallback extraction directly');
-          extractedText = this.basicTextExtraction(pdfData, inputLanguage);
+          // Use normalizePdfData to handle both ArrayBuffer and string inputs
+          const { normalizePdfData } = await import('../../../services/pdf/pdfService');
+          const normalizedData = await normalizePdfData(pdfData);
+          extractedText = this.basicTextExtraction(
+            typeof pdfData === 'string' ? pdfData : '', 
+            inputLanguage
+          );
         } else {
           // Only try to use PDF.js in browser context
-          const { extractTextFromBase64Pdf } = await import('../../../services/pdf/pdfService');
-          extractedText = await extractTextFromBase64Pdf(pdfData);
+          const { extractPdfContent } = await import('../../../services/pdf/pdfService');
+          const result = await extractPdfContent(pdfData);
+          extractedText = result.text;
         }
         
         console.log(`Extracted ${extractedText.length} characters from PDF attachment`);
@@ -196,8 +203,11 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         
         // Fallback to basic text extraction
         try {
-          // Try to get some text from base64 data as a last resort
-          extractedText = this.basicTextExtraction(pdfData, inputLanguage);
+          // Try to get some text from data as a last resort
+          extractedText = this.basicTextExtraction(
+            typeof pdfData === 'string' ? pdfData : '', 
+            inputLanguage
+          );
           console.log(`Basic text extraction yielded ${extractedText.length} characters`);
         } catch (fallbackError) {
           console.error('Even fallback PDF text extraction failed:', fallbackError);

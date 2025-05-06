@@ -2,7 +2,8 @@
  * PDF Service
  * 
  * Provides utilities for working with PDF files
- * Properly integrates PDF.js library
+ * Properly integrates PDF.js library with focus on positional extraction
+ * Enhanced for Hungarian utility bills
  */
 
 import * as pdfjsLib from 'pdfjs-dist';
@@ -14,6 +15,47 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 // Promise to track PDF.js loading
 let pdfjsLibPromise: Promise<any> | null = null;
+
+/**
+ * Convert any PDF data to ArrayBuffer format
+ * @param pdfData Data in either ArrayBuffer or base64 string
+ * @returns Promise resolving to a Uint8Array
+ */
+export async function normalizePdfData(pdfData: ArrayBuffer | string): Promise<Uint8Array> {
+  // If already ArrayBuffer, just return a Uint8Array view
+  if (pdfData instanceof ArrayBuffer) {
+    return new Uint8Array(pdfData);
+  }
+  
+  // Assume it's base64 - clean it up and convert
+  try {
+    // Handle URL-safe base64 and optional padding
+    const cleanBase64 = (pdfData as string)
+      .replace(/^data:[^;]+;base64,/, '')
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      .replace(/\s/g, '');
+    
+    // Add padding if needed
+    const padding = cleanBase64.length % 4;
+    const paddedBase64 = padding ? 
+      cleanBase64 + '='.repeat(4 - padding) : 
+      cleanBase64;
+    
+    // Convert base64 to binary
+    const binary = atob(paddedBase64);
+    const bytes = new Uint8Array(binary.length);
+    
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    
+    return bytes;
+  } catch (error) {
+    console.error('Error converting PDF data:', error);
+    throw new Error('Failed to convert PDF data to ArrayBuffer');
+  }
+}
 
 /**
  * Helper function to detect if we're running in a service worker context
@@ -34,20 +76,18 @@ export function isServiceWorkerContext(): boolean {
 async function ensurePdfjsLoaded(): Promise<any> {
   // Check if we're in a service worker context
   if (isServiceWorkerContext()) {
-    console.log('Running in service worker context, using PDF extraction fallback');
-    // Return a mock PDF.js implementation for service worker contexts
-    return {
-      getDocument: () => ({
-        promise: Promise.resolve({
-          numPages: 1,
-          getPage: () => Promise.resolve({
-            getTextContent: () => Promise.resolve({
-              items: [{ str: '[PDF text extraction in service worker - using fallback]' }]
-            })
-          })
-        })
-      })
-    };
+    console.log('Running in service worker context, need to load PDF.js dynamically');
+    
+    // Try to load PDF.js in service worker context
+    try {
+      // Import dynamically
+      const pdfjs = await import('pdfjs-dist');
+      pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+      return pdfjs;
+    } catch (error) {
+      console.error('Error loading PDF.js in service worker:', error);
+      throw new Error('PDF.js loading failed in service worker context');
+    }
   }
   
   // If already available in global scope, use it
@@ -82,39 +122,17 @@ async function ensurePdfjsLoaded(): Promise<any> {
     return pdfjs;
   } catch (error) {
     console.error('Error loading PDF.js:', error);
-    
-    // Provide a mock implementation in case of failure
-    const mockPdfjs = {
-      getDocument: () => ({
-        promise: Promise.resolve({
-          numPages: 1,
-          getPage: () => Promise.resolve({
-            getTextContent: () => Promise.resolve({
-              items: [{ str: '[PDF.js loading failed - text extraction fallback]' }]
-            })
-          })
-        })
-      })
-    };
-    
-    pdfjsLibPromise = Promise.resolve(mockPdfjs);
-    return mockPdfjs;
+    throw error;
   }
 }
 
 /**
- * Extracts text from a PDF file
+ * Extracts text from a PDF file with positional information
  * @param pdfData PDF file data as Uint8Array
- * @returns Extracted text content
+ * @returns Extracted text content with positional data
  */
-export async function extractTextFromPdf(pdfData: Uint8Array): Promise<string> {
+export async function extractTextFromPdfWithPosition(pdfData: Uint8Array): Promise<any> {
   try {
-    // In service worker context, use fallback immediately
-    if (isServiceWorkerContext()) {
-      console.log('Using service worker compatible PDF extraction method');
-      return extractTextFallback(pdfData);
-    }
-    
     // Get PDF.js library instance
     const pdfjsLib = await ensurePdfjsLoaded();
     
@@ -122,30 +140,137 @@ export async function extractTextFromPdf(pdfData: Uint8Array): Promise<string> {
       // Load the PDF document
       const pdfDocument = await pdfjsLib.getDocument({ data: pdfData }).promise;
       let extractedText = '';
+      const pages: Array<{
+        pageNumber: number;
+        text: string;
+        items: any[];
+        lines: any[];
+        width: number;
+        height: number;
+      }> = [];
       
       // Process each page
       for (let i = 1; i <= pdfDocument.numPages; i++) {
         const page = await pdfDocument.getPage(i);
         const content = await page.getTextContent();
         
-        // Concatenate the text items
-        const pageText = content.items
-          .map((item: any) => item.str)
-          .join(' ');
-          
-        extractedText += pageText + '\n';
+        // Extract items with position
+        const items = content.items.map((item: any) => ({
+          text: item.str,
+          x: item.transform[4],
+          y: item.transform[5],
+          width: item.width,
+          height: item.height || 0,
+          fontName: item.fontName,
+          fontSize: item.fontSize || 0
+        }));
+        
+        // Process items to maintain layout
+        const { text, lines } = processPageItems(items, page.view);
+        extractedText += text + '\n\n';
+        
+        // Store page data with layout information
+        pages.push({
+          pageNumber: i,
+          text,
+          items,
+          lines,
+          width: page.view[2],
+          height: page.view[3]
+        });
       }
       
-      return extractedText;
+      return {
+        success: true,
+        text: extractedText,
+        pages
+      };
     } catch (error) {
       console.error('Error processing PDF with PDF.js:', error);
-      
-      // Basic extraction fallback if PDF.js fails
-      return extractTextFallback(pdfData);
+      throw error;
     }
   } catch (error) {
     console.error('Error extracting text from PDF:', error);
-    return '[PDF extraction error: ' + (error instanceof Error ? error.message : 'Unknown error') + ']';
+    throw error;
+  }
+}
+
+/**
+ * Group text items by position to preserve layout
+ * @param items Text items with position
+ * @param viewBox Page dimensions
+ * @returns Processed text and line information
+ */
+function processPageItems(items: any[], viewBox: any): { text: string, lines: any[] } {
+  // Sort items by their y-coordinate (top to bottom)
+  // For items at similar y positions, sort by x (left to right)
+  const sortedItems = [...items].sort((a, b) => {
+    // Use a tolerance for y-position to group items on same line
+    const yTolerance = 5;
+    if (Math.abs(a.y - b.y) <= yTolerance) {
+      return a.x - b.x;
+    }
+    // Reverse y sort (PDF coordinates are bottom-up)
+    return b.y - a.y;
+  });
+  
+  // Group items into lines based on y-position
+  const lines: any[] = [];
+  let currentLine: any[] = [];
+  let currentY: number | null = null;
+  const yTolerance = 5; // Items within this range are on same line
+  
+  for (const item of sortedItems) {
+    if (currentY === null || Math.abs(item.y - currentY) <= yTolerance) {
+      // Same line
+      currentLine.push(item);
+      // Update current Y to average of line items for better grouping
+      if (currentLine.length > 1) {
+        currentY = currentLine.reduce((sum, i) => sum + i.y, 0) / currentLine.length;
+      } else {
+        currentY = item.y;
+      }
+    } else {
+      // New line
+      if (currentLine.length > 0) {
+        // Sort items in the current line by x-position
+        currentLine.sort((a, b) => a.x - b.x);
+        lines.push(currentLine);
+      }
+      currentLine = [item];
+      currentY = item.y;
+    }
+  }
+  
+  // Add the last line if exists
+  if (currentLine.length > 0) {
+    currentLine.sort((a, b) => a.x - b.x);
+    lines.push(currentLine);
+  }
+  
+  // Generate text with layout preserved
+  let text = '';
+  for (const line of lines) {
+    // Add space between words if they're separate text items
+    const lineText = line.map((item: any) => item.text).join(' ');
+    text += lineText + '\n';
+  }
+  
+  return { text, lines };
+}
+
+/**
+ * Extracts text from a PDF file (simplified version for backward compatibility)
+ * @param pdfData PDF file data as Uint8Array
+ * @returns Extracted text content
+ */
+export async function extractTextFromPdf(pdfData: Uint8Array): Promise<string> {
+  try {
+    const result = await extractTextFromPdfWithPosition(pdfData);
+    return result.text;
+  } catch (error) {
+    console.error('Error in simplified text extraction:', error);
+    return extractTextFallback(pdfData);
   }
 }
 
@@ -163,7 +288,7 @@ function extractTextFallback(pdfData: Uint8Array): string {
     const text = Array.from(pdfData)
       .map(byte => String.fromCharCode(byte))
       .join('')
-      .replace(/[^\x20-\x7E]/g, ' ')
+      .replace(/[^\x20-\x7E\u00C0-\u00FF\u0150\u0170\u0151\u0171]/g, ' ') // Include Hungarian chars
       .replace(/\s+/g, ' ');
     
     // Try to extract common bill-related information using regex
@@ -178,26 +303,26 @@ function extractTextFallback(pdfData: Uint8Array): string {
 
 /**
  * Attempts to extract bill-related information from raw text
+ * Extended with Hungarian-specific patterns
  * @param text Raw text to extract from
  * @returns Formatted extracted information or empty string if nothing found
  */
 function extractBillInfoFromRawText(text: string): string {
-  // Common patterns in bills/invoices
+  // Common patterns in bills/invoices including Hungarian patterns
   const patterns = [
-    { pattern: /invoice\s*#?:?\s*([A-Z0-9\-]+)/i, label: 'Invoice Number' },
-    { pattern: /date:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4})/i, label: 'Date' },
-    { pattern: /due\s*date:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4})/i, label: 'Due Date' },
-    { pattern: /amount\s*due:?\s*[\$€£]?\s*(\d+[,\.]?\d*)/i, label: 'Amount Due' },
-    { pattern: /total:?\s*[\$€£]?\s*(\d+[,\.]?\d*)/i, label: 'Total' },
-    { pattern: /from:?\s*([^,\n]+)/, label: 'From' },
-    { pattern: /to:?\s*([^,\n]+)/, label: 'To' },
-    { pattern: /bill\s*to:?\s*([^,\n]+)/, label: 'Bill To' },
-    // Hungarian patterns
+    // Hungarian patterns (prioritized)
     { pattern: /számla\s*szám:?\s*([A-Z0-9\-\/]+)/i, label: 'Számla szám' },
-    { pattern: /dátum:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4})/i, label: 'Dátum' },
-    { pattern: /fizetési\s*határidő:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4})/i, label: 'Fizetési határidő' },
-    { pattern: /összesen:?\s*[\$€£]?\s*(\d+[,\.]?\d*)/i, label: 'Összesen' },
-    { pattern: /fizetendő:?\s*[\$€£]?\s*(\d+[,\.]?\d*)/i, label: 'Fizetendő' }
+    { pattern: /dátum:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Dátum' },
+    { pattern: /fizetési\s*határidő:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Fizetési határidő' },
+    { pattern: /összesen:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Összesen' },
+    { pattern: /fizetendő:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Fizetendő' },
+    { pattern: /fizetendő\s+összeg:?\s*([\d\s]+[,\.][\d]+)/i, label: 'Fizetendő összeg' },
+    // English patterns (fallback)
+    { pattern: /invoice\s*#?:?\s*([A-Z0-9\-]+)/i, label: 'Invoice Number' },
+    { pattern: /date:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Date' },
+    { pattern: /due\s*date:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Due Date' },
+    { pattern: /amount\s*due:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Amount Due' },
+    { pattern: /total:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Total' }
   ];
   
   const extractedItems: string[] = [];
@@ -219,209 +344,249 @@ function extractBillInfoFromRawText(text: string): string {
 }
 
 /**
- * Extracts text from a base64 encoded PDF
+ * Extracts text from a base64 encoded PDF with enhanced positional data
+ * @param base64Data Base64 encoded PDF
+ * @returns Extracted text and positional data
+ */
+export async function extractTextFromBase64PdfWithPosition(base64Data: string): Promise<any> {
+  try {
+    console.log('Extracting text with position from base64 PDF data');
+    
+    // Check if we have data
+    if (!base64Data) {
+      console.error('Empty base64 data provided');
+      throw new Error('No PDF data provided');
+    }
+    
+    // Convert base64 to binary
+    const pdfData = await normalizePdfData(base64Data);
+    
+    // Extract text with position from the binary data
+    return await extractTextFromPdfWithPosition(pdfData);
+  } catch (error) {
+    console.error('Error extracting text with position from base64 PDF:', error);
+    throw error;
+  }
+}
+
+/**
+ * Extracts text from a base64 encoded PDF (simplified for backward compatibility)
  * @param base64Data Base64 encoded PDF
  * @returns Extracted text
  */
 export async function extractTextFromBase64Pdf(base64Data: string): Promise<string> {
   try {
-    console.log('Extracting text from base64 PDF data');
-    
-    // Check if we have data
-    if (!base64Data) {
-      console.error('Empty base64 data provided');
-      return '[No PDF data provided]';
-    }
-    
-    // Convert base64 to binary
-    const pdfData = base64ToUint8Array(base64Data);
-    
-    // Extract text from the binary data
-    return await extractTextFromPdf(pdfData);
+    const result = await extractTextFromBase64PdfWithPosition(base64Data);
+    return result.text;
   } catch (error) {
-    console.error('Error extracting text from base64 PDF:', error);
+    console.error('Error in simplified base64 text extraction:', error);
     
     // Try basic character extraction as a last resort
     try {
       return base64Decode(base64Data)
-        .replace(/[^\x20-\x7E]/g, ' ')
+        .replace(/[^\x20-\x7E\u00C0-\u00FF\u0150\u0170\u0151\u0171]/g, ' ') // Include Hungarian chars
         .replace(/\s+/g, ' ')
         .trim();
     } catch (decodeError) {
+      console.error('Base64 decode fallback failed:', decodeError);
       return '[PDF extraction failed]';
     }
   }
 }
 
 /**
- * Converts base64 string to Uint8Array
- * @param base64 Base64 string
- * @returns Uint8Array
- */
-function base64ToUint8Array(base64: string): Uint8Array {
-  // Remove data URL prefix if present
-  const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '');
-  
-  // Convert base64 to binary string
-  const binaryString = atob(cleanBase64);
-  const length = binaryString.length;
-  
-  // Convert binary string to Uint8Array
-  const bytes = new Uint8Array(length);
-  for (let i = 0; i < length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  
-  return bytes;
-}
-
-/**
- * Simple base64 decode function
+ * Decode base64 to string
  * @param base64 Base64 string
  * @returns Decoded string
  */
 function base64Decode(base64: string): string {
-  try {
-    // Remove data URL prefix if present
-    const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '');
-    
-    // Standard base64 decode
-    return atob(cleanBase64);
-  } catch (error) {
-    console.error('Error decoding base64:', error);
-    return '';
-  }
+  // Clean the base64 string
+  const cleanBase64 = base64.replace(/[^A-Za-z0-9+/=]/g, '');
+  // Decode
+  return atob(cleanBase64);
 }
 
 /**
- * Extract Hungarian text with special considerations
+ * Enhanced extraction for Hungarian text
+ * @param text Text to process
+ * @returns Processed text with Hungarian-specific optimizations
  */
 export function extractHungarianText(text: string): string {
-  // Hungarian-specific keywords to look for
-  const hungarianKeywords = [
-    'számla', 'fizetendő', 'összeg', 'fizetési', 'határidő',
-    'bruttó', 'nettó', 'áfa', 'teljesítés', 'dátum',
-    'vevő', 'eladó', 'adószám', 'bankszámla', 'forint'
-  ];
+  // Enhance text with Hungarian-specific processing
+  const enhancedText = text
+    // Replace common OCR errors in Hungarian text
+    .replace(/0/g, 'O') // Replace 0 with O to fix common OCR error
+    .replace(/l/g, '1') // Replace l with 1 to fix common OCR error
+    // Add Hungarian-specific keyword highlighting
+    .replace(/([Ff]izetendő)/g, '>>>$1<<<')
+    .replace(/([Öö]sszesen)/g, '>>>$1<<<')
+    .replace(/([Hh]atáridő)/g, '>>>$1<<<');
   
-  // Check if we found any Hungarian keywords
-  const foundKeywords = hungarianKeywords.filter(keyword => 
-    text.toLowerCase().includes(keyword.toLowerCase())
-  );
-  
-  console.log(`Found ${foundKeywords.length} Hungarian keywords in extracted text`);
-  
-  return text;
+  return enhancedText;
 }
 
 /**
- * Extracts text from a base64 encoded PDF with detailed logging
+ * Extract text from base64 PDF with customizations for language
+ * @param base64String Base64 encoded PDF
+ * @param language Language code ('en' or 'hu')
+ * @returns Extracted text with language-specific enhancements
  */
 export const extractTextFromBase64PdfWithDetails = async (
   base64String: string,
   language = 'en'
 ): Promise<string> => {
   try {
-    console.log(`Extracting text from PDF (language: ${language})`);
+    console.log(`Extracting text with ${language} language focus`);
     
-    // Check if we have a valid base64 string
-    if (!base64String || typeof base64String !== 'string') {
-      console.error('Invalid base64 string for PDF extraction');
-      return '';
+    // Get text with positional data
+    const extractionResult = await extractTextFromBase64PdfWithPosition(base64String);
+    let text = extractionResult.text;
+    
+    // Apply language-specific enhancements
+    if (language === 'hu') {
+      console.log('Applying Hungarian-specific optimizations');
+      text = extractHungarianText(text);
     }
     
-    // Try to extract text using PDF.js
-    try {
-      const pdfDataArray = base64ToUint8Array(base64String);
+    // Extract bill data from structured text
+    if (extractionResult.pages && extractionResult.pages.length > 0) {
+      const billData = extractStructuredBillData(extractionResult, language);
       
-      // Try to use PDF.js first (this will use our simplified implementation)
-      const extractedText = await extractTextFromPdf(pdfDataArray);
-      
-      if (extractedText && extractedText.length > 10) {
-        console.log(`Successfully extracted ${extractedText.length} characters of text with PDF.js`);
+      // Add structured data to the output if found
+      if (Object.keys(billData).length > 0) {
+        const structuredDataText = Object.entries(billData)
+          .map(([key, value]) => `${key}: ${value}`)
+          .join('\n');
         
-        // Apply language-specific post-processing
-        if (language === 'hu') {
-          return extractHungarianText(extractedText);
-        }
-        
-        return extractedText;
-      } else {
-        console.warn('PDF.js extraction returned insufficient text, falling back...');
+        text = `${text}\n\n[Structured Data]\n${structuredDataText}`;
       }
-    } catch (pdfJsError) {
-      console.error('Error using PDF.js extraction:', pdfJsError);
     }
     
-    // If we're here, PDF.js extraction failed or returned insufficient text
-    console.log('Using fallback text extraction method');
-    
-    // Very simple alternative approach - try to extract text from PDF binary data
-    // This isn't reliable but might catch simple text in PDFs
-    try {
-      const pdfDataArray = base64ToUint8Array(base64String);
-      const textDecoder = new TextDecoder();
-      const rawText = textDecoder.decode(pdfDataArray);
-      
-      // Apply some basic cleaning to extract readable text
-      const cleanedText = rawText
-        .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Remove control chars
-        .replace(/[^\x20-\x7E\xA0-\xFF\u0100-\u017F\u0180-\u024F\u0300-\u036F]/g, ' ') // Keep Latin chars
-        .replace(/\s+/g, ' ') // Normalize whitespace
-        .trim();
-      
-      if (cleanedText.length > 20) {
-        console.log(`Fallback extraction found ${cleanedText.length} characters`);
-        
-        // Apply language-specific post-processing
-        if (language === 'hu') {
-          return extractHungarianText(cleanedText);
-        }
-        
-        return cleanedText;
-      }
-    } catch (fallbackError) {
-      console.error('Fallback extraction also failed:', fallbackError);
-    }
-    
-    // Last resort - notify the user we couldn't extract text
-    console.error('All PDF text extraction methods failed');
-    return '';
+    return text;
   } catch (error) {
-    console.error('Error in PDF text extraction:', error);
-    return '';
+    console.error('Error in detailed text extraction:', error);
+    
+    // Try to use the simplified method as fallback
+    try {
+      return await extractTextFromBase64Pdf(base64String);
+    } catch (fallbackError) {
+      console.error('Even fallback extraction failed:', fallbackError);
+      return '[PDF extraction failed]';
+    }
   }
 };
 
 /**
- * Extracts text from a PDF using pdf.js
- * @param pdfBuffer - ArrayBuffer of the PDF file
- * @returns Extracted text from all pages
+ * Extract structured bill data from position-aware PDF extraction
+ * @param extractionResult Result from positional extraction
+ * @param language Language code
+ * @returns Structured bill data
  */
-export async function extractTextFromPDF(pdfBuffer: ArrayBuffer): Promise<string> {
-  // Load PDF document
-  const pdf = await pdfjsLib.getDocument({ data: pdfBuffer }).promise;
+function extractStructuredBillData(extractionResult: any, language: string): Record<string, any> {
+  const result: Record<string, any> = {};
   
-  let fullText = '';
-  
-  // Process each page
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const strings = content.items.map((item: any) => item.str);
-    fullText += strings.join(' ') + '\n';
+  try {
+    // If data already extracted by the worker, use it
+    if (extractionResult.extractedFields) {
+      console.log('Using pre-extracted fields from PDF worker');
+      
+      // Map the fields from the worker output
+      if (extractionResult.extractedFields.amount) {
+        result.amount = extractionResult.extractedFields.amount;
+      }
+      
+      if (extractionResult.extractedFields.dueDate) {
+        result.dueDate = extractionResult.extractedFields.dueDate;
+      }
+      
+      if (extractionResult.extractedFields.accountNumber) {
+        result.accountNumber = extractionResult.extractedFields.accountNumber;
+      }
+      
+      if (extractionResult.extractedFields.vendor) {
+        result.vendor = extractionResult.extractedFields.vendor;
+      }
+      
+      if (extractionResult.extractedFields.category) {
+        result.category = extractionResult.extractedFields.category;
+      }
+      
+      return result;
+    }
+    
+    // Otherwise, try to extract from the text using regex patterns
+    const text = extractionResult.text;
+    
+    // Use language-specific patterns for extraction
+    if (language === 'hu') {
+      // Amount
+      const amountMatch = text.match(/(?:Fizetendő|Összesen)(?:\s+(?:összeg|összesen))?:?(?:\s*Ft\.?|\s*HUF)?(?:\s*:?)\s*([\d\s]+[.,][\d]+)/i);
+      if (amountMatch && amountMatch[1]) {
+        const amountStr = amountMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '.');
+        result.amount = parseFloat(amountStr);
+      }
+      
+      // Due date
+      const dueDateMatch = text.match(/Fizetési\s+határidő(?:\s*:?)\s*(\d{4}[.\\/-]\d{1,2}[.\\/-]\d{1,2}|\d{1,2}[.\\/-]\d{1,2}[.\\/-]\d{4})/i);
+      if (dueDateMatch && dueDateMatch[1]) {
+        result.dueDate = dueDateMatch[1];
+      }
+      
+      // Account number
+      const accountMatch = text.match(/(?:ügyfél|fogyasztó)\s*(?:azonosító|szám)(?:\s*:?)\s*([A-Za-z0-9\-]+)/i);
+      if (accountMatch && accountMatch[1]) {
+        result.accountNumber = accountMatch[1].trim();
+      }
+      
+      // Vendor detection
+      if (text.match(/mvm/i)) {
+        result.vendor = 'MVM Next Energiakereskedelmi Zrt.';
+      } else if (text.match(/e\.on|eon/i)) {
+        result.vendor = 'E.ON Energiakereskedelmi Kft.';
+      }
+    } else {
+      // English patterns
+      const amountMatch = text.match(/amount\s*due:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i);
+      if (amountMatch && amountMatch[1]) {
+        const amountStr = amountMatch[1].replace(/\s+/g, '').replace(/,/g, '');
+        result.amount = parseFloat(amountStr);
+      }
+      
+      const dueDateMatch = text.match(/due\s*date:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i);
+      if (dueDateMatch && dueDateMatch[1]) {
+        result.dueDate = dueDateMatch[1];
+      }
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error extracting structured bill data:', error);
+    return {};
   }
-  
-  return fullText;
 }
 
 /**
- * Processes a PDF file and extracts bill data
- * @param file - PDF file object
- * @param userId - User ID for fetching field mappings
- * @param supabase - Supabase client
- * @param language - Document language
- * @returns Structured bill data
+ * Process a PDF file directly from ArrayBuffer
+ * @param pdfBuffer PDF file as ArrayBuffer
+ * @returns Extracted text
+ */
+export async function extractTextFromPDF(pdfBuffer: ArrayBuffer): Promise<string> {
+  try {
+    const result = await extractTextFromPdfWithPosition(new Uint8Array(pdfBuffer));
+    return result.text;
+  } catch (error) {
+    console.error('Error extracting text from PDF buffer:', error);
+    throw error;
+  }
+}
+
+/**
+ * Process a bill PDF file for extraction
+ * @param file PDF file
+ * @param userId User ID for field mappings
+ * @param supabase Supabase client
+ * @param language Language code
+ * @returns Extracted bill data
  */
 export async function processBillPdf(
   file: File,
@@ -429,71 +594,256 @@ export async function processBillPdf(
   supabase: any,
   language: string = 'en'
 ): Promise<Record<string, any>> {
-  // Convert file to ArrayBuffer
-  const arrayBuffer = await fileToArrayBuffer(file);
-  
-  // Extract text from PDF
-  const fullText = await extractTextFromPDF(arrayBuffer);
-  
-  // Process text with user's field mappings
-  return extractBillDataWithUserMappings(fullText, userId, supabase, language);
+  try {
+    // Convert file to ArrayBuffer
+    const buffer = await fileToArrayBuffer(file);
+    
+    // Extract text with positional data
+    const extractionResult = await extractTextFromPdfWithPosition(new Uint8Array(buffer));
+    
+    // Extract structured bill data
+    const billData = await extractBillDataWithUserMappings(
+      extractionResult.text,
+      userId,
+      supabase,
+      language
+    );
+    
+    return billData;
+  } catch (error) {
+    console.error('Error processing bill PDF:', error);
+    throw error;
+  }
 }
 
 /**
- * Converts a File to ArrayBuffer
- * @param file - File object
- * @returns Promise with ArrayBuffer
+ * Convert a File to ArrayBuffer
+ * @param file File to convert
+ * @returns ArrayBuffer representation
  */
 export function fileToArrayBuffer(file: File): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
+    
     reader.onload = () => {
       if (reader.result instanceof ArrayBuffer) {
         resolve(reader.result);
       } else {
-        reject(new Error('FileReader did not return an ArrayBuffer'));
+        reject(new Error('Failed to convert file to ArrayBuffer'));
       }
     };
-    reader.onerror = () => reject(reader.error);
+    
+    reader.onerror = () => {
+      reject(reader.error || new Error('Unknown error reading file'));
+    };
+    
     reader.readAsArrayBuffer(file);
   });
 }
 
 /**
- * Converts a base64 string to ArrayBuffer
- * @param base64 - Base64 string (with or without data URL prefix)
+ * Convert base64 to ArrayBuffer
+ * @param base64 Base64 string
  * @returns ArrayBuffer
  */
 export function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  // Remove data URL prefix if present (e.g., "data:application/pdf;base64,")
-  const base64Content = base64.includes(',') 
-    ? base64.split(',')[1] 
-    : base64;
+  // Clean the base64 string
+  const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '');
   
-  // Decode base64
-  const binaryString = atob(base64Content);
-  const bytes = new Uint8Array(binaryString.length);
+  // Convert base64 to binary string
+  const binaryString = atob(cleanBase64);
   
-  // Convert to byte array
+  // Create ArrayBuffer from binary string
+  const buffer = new ArrayBuffer(binaryString.length);
+  const bytes = new Uint8Array(buffer);
+  
   for (let i = 0; i < binaryString.length; i++) {
     bytes[i] = binaryString.charCodeAt(i);
   }
   
-  return bytes.buffer;
+  return buffer;
 }
 
 /**
- * Converts ArrayBuffer to base64 string
- * @param buffer - ArrayBuffer to convert
+ * Convert ArrayBuffer to base64
+ * @param buffer ArrayBuffer to convert
  * @returns Base64 string
  */
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  let binary = '';
   const bytes = new Uint8Array(buffer);
+  let binary = '';
   
   for (let i = 0; i < bytes.byteLength; i++) {
     binary += String.fromCharCode(bytes[i]);
   }
   
   return btoa(binary);
+}
+
+/**
+ * Extract text from PDF with unified position-aware approach
+ * This is the recommended method for all PDF extraction
+ * @param pdfData PDF data in any format (will be normalized)
+ * @returns Promise resolving to extracted text with position data
+ */
+export async function extractPdfContent(pdfData: ArrayBuffer | string): Promise<any> {
+  try {
+    console.log('Using unified PDF extraction with position data');
+    
+    // Validate input
+    if (!pdfData) {
+      throw new Error('No PDF data provided');
+    }
+    
+    // Normalize data to ArrayBuffer format
+    const normalizedData = await normalizePdfData(pdfData).catch(error => {
+      console.error('Data normalization failed:', error);
+      throw new Error(`Failed to normalize PDF data: ${error.message}`);
+    });
+    
+    // Extract text and position data directly
+    const result = await extractTextFromPdfWithPosition(normalizedData).catch(error => {
+      console.error('Position-aware extraction failed:', error);
+      throw new Error(`Position-aware extraction failed: ${error.message}`);
+    });
+    
+    // Check if we got meaningful results
+    if (!result || !result.text || result.text.length < 10) {
+      console.warn('Extraction produced insufficient text');
+      result.warning = 'Extraction produced limited text content';
+    }
+    
+    // Process the result to add structured field extraction
+    try {
+      if (result.text) {
+        const extractedFields = extractStructuredBillData(result, 'auto');
+        
+        // Add extracted fields to result
+        result.extractedFields = extractedFields;
+      }
+    } catch (fieldExtractionError: any) {
+      console.error('Field extraction failed:', fieldExtractionError);
+      result.fieldExtractionError = fieldExtractionError.message;
+      // Continue with the extraction result even if field extraction fails
+    }
+    
+    return result;
+  } catch (error: any) {
+    console.error('Error in unified PDF extraction:', error);
+    
+    // Attempt fallback extraction if the main method fails
+    try {
+      console.log('Attempting fallback extraction method');
+      return await fallbackPdfExtraction(pdfData);
+    } catch (fallbackError: any) {
+      console.error('Fallback extraction also failed:', fallbackError);
+      // Throw a combined error to provide maximum context
+      throw new Error(`PDF extraction failed: ${error.message}. Fallback also failed: ${fallbackError.message}`);
+    }
+  }
+}
+
+/**
+ * Fallback PDF extraction for when the main method fails
+ * Uses simplified approach with less position data
+ * @param pdfData PDF data in any format
+ * @returns Basic extraction result
+ */
+async function fallbackPdfExtraction(pdfData: ArrayBuffer | string): Promise<any> {
+  try {
+    // Normalize data
+    const normalizedData = await normalizePdfData(pdfData);
+    
+    // Try to get PDF.js library
+    const pdfjsLib = await ensurePdfjsLoaded().catch(() => {
+      throw new Error('Failed to load PDF.js library');
+    });
+    
+    // Load the PDF document with minimal options
+    const pdfDocument = await pdfjsLib.getDocument({
+      data: normalizedData,
+      disableFontFace: true, // Can help with problematic fonts
+      cMapUrl: undefined,    // Don't try to load CMap
+      standardFontDataUrl: undefined // Skip font data loading
+    }).promise;
+    
+    // Extract just the text content without worrying about position
+    let extractedText = '';
+    
+    for (let i = 1; i <= pdfDocument.numPages; i++) {
+      try {
+        const page = await pdfDocument.getPage(i);
+        const content = await page.getTextContent();
+        
+        // Simple text extraction
+        const pageText = content.items
+          .map((item: any) => item.str)
+          .join(' ');
+        
+        extractedText += pageText + '\n\n';
+      } catch (pageError) {
+        console.error(`Error extracting page ${i}:`, pageError);
+        // Continue with next page
+      }
+    }
+    
+    return {
+      success: true,
+      text: extractedText,
+      isFromFallback: true,
+      pages: []  // No position data in fallback mode
+    };
+  } catch (error) {
+    console.error('Fallback extraction failed:', error);
+    
+    // Last resort: try character-by-character extraction
+    if (typeof pdfData === 'string') {
+      try {
+        // If it's base64, try to extract ASCII characters as last resort
+        const text = atob(pdfData.replace(/^data:.*?;base64,/, '').replace(/\s/g, ''))
+          .replace(/[^\x20-\x7E\u00C0-\u00FF\u0150\u0170\u0151\u0171]/g, ' ') // Include Hungarian chars
+          .replace(/\s+/g, ' ')
+          .trim();
+        
+        return {
+          success: true, 
+          text,
+          isFromFallback: true,
+          isLastResort: true
+        };
+      } catch (e) {
+        // If even this fails, give up
+        throw new Error('All extraction methods failed');
+      }
+    }
+    
+    throw error; // Re-throw if we can't do character extraction
+  }
+}
+
+/**
+ * Log PDF extraction errors for later analysis
+ * @param error The error that occurred
+ * @param context Additional context about the extraction
+ */
+export function logExtractionError(error: any, context: Record<string, any> = {}): void {
+  const errorLog = {
+    timestamp: new Date().toISOString(),
+    message: error.message || 'Unknown error',
+    stack: error.stack,
+    ...context
+  };
+  
+  console.error('PDF Extraction Error:', errorLog);
+  
+  // In a production app, you could send this to your backend
+  // Or store in local storage for later reporting
+  try {
+    // Store in session storage for debugging
+    const existingLogs = JSON.parse(sessionStorage.getItem('pdfExtractionErrors') || '[]');
+    existingLogs.push(errorLog);
+    sessionStorage.setItem('pdfExtractionErrors', JSON.stringify(existingLogs.slice(-10))); // Keep only last 10
+  } catch (e) {
+    // Ignore storage errors
+  }
 } 

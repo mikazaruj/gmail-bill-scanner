@@ -2,24 +2,172 @@
  * PDF Processor for background script
  * 
  * Handles PDF extraction requests from content scripts
+ * Standardized on ArrayBuffer approach for PDF processing
  * 
- * NOTE: There may be some duplication with functions in index.ts. The architecture is
- * gradually migrating to this module-based approach, where all PDF processing should
- * eventually be handled here rather than in index.ts. When refactoring, ensure that
- * only one copy of the PDF processing functions is used, preferably from this module.
+ * IMPORTANT: This module-based approach is now the recommended way to handle PDF processing.
+ * The duplicate functions in index.ts are being deprecated and should be phased out.
+ * Any new PDF processing functionality should be added here rather than in index.ts.
+ * 
+ * Key features:
+ * - Uses offscreen document when available (preferred method)
+ * - Enhanced PDF extraction with positional data
+ * - Optimized for Hungarian utility bills
+ * - Extracts structured bill data based on layout
+ * - Supports field extraction with user mappings from Supabase
+ * - Supports efficient chunked PDF transfer to avoid message size limits
  */
 
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.entry';
 import { extractBillDataWithUserMappings } from '../services/pdf/billFieldExtractor';
-import { base64ToArrayBuffer, extractTextFromPDF, extractTextFromBase64PdfWithDetails } from '../services/pdf/pdfService';
+import { 
+  base64ToArrayBuffer, 
+  extractPdfContent,
+  normalizePdfData,
+  logExtractionError
+} from '../services/pdf/pdfService';
 import { getSupabaseClient } from '../services/supabase/client';
 
 // Configure worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
+// Map to track chunked PDF transfers
+interface PdfTransfer {
+  chunks: Uint8Array[];
+  metadata: {
+    fileName: string;
+    totalChunks: number;
+    fileSize: number;
+    language: string;
+    userId?: string;
+    extractFields: boolean;
+  } | null;
+  isComplete: boolean;
+}
+
+const pdfTransfers = new Map<string, PdfTransfer>();
+
+/**
+ * Initialize handlers for PDF processing
+ * Call this during extension setup to register message handlers
+ */
+export function initializePdfProcessingHandlers() {
+  // Listen for connection from content scripts
+  chrome.runtime.onConnect.addListener(port => {
+    console.log('Connection established with port name:', port.name);
+    
+    if (port.name === 'pdf_processing') {
+      // Create a transfer object to track chunks
+      const transferId = Date.now().toString();
+      const transfer: PdfTransfer = {
+        chunks: [],
+        metadata: null,
+        isComplete: false
+      };
+      
+      pdfTransfers.set(transferId, transfer);
+      
+      // Set up message listener
+      port.onMessage.addListener(async (message) => {
+        try {
+          if (message.type === 'INIT_PDF_TRANSFER') {
+            console.log(`Initializing PDF transfer: ${message.fileName} (${message.fileSize} bytes in ${message.totalChunks} chunks)`);
+            
+            // Store metadata
+            transfer.metadata = {
+              fileName: message.fileName,
+              totalChunks: message.totalChunks,
+              fileSize: message.fileSize,
+              language: message.language || 'en',
+              userId: message.userId,
+              extractFields: message.extractFields !== false
+            };
+            
+            // Initialize array to store chunks
+            transfer.chunks = new Array(message.totalChunks).fill(null);
+            
+          } else if (message.type === 'PDF_CHUNK') {
+            // Store the chunk
+            if (!transfer.metadata) {
+              throw new Error('Received PDF chunk before initialization');
+            }
+            
+            const { chunkIndex, chunk } = message;
+            if (chunkIndex >= 0 && chunkIndex < transfer.metadata.totalChunks) {
+              // Convert array back to Uint8Array
+              transfer.chunks[chunkIndex] = new Uint8Array(chunk);
+              console.log(`Received chunk ${chunkIndex + 1}/${transfer.metadata.totalChunks}`);
+            } else {
+              throw new Error(`Invalid chunk index: ${chunkIndex}`);
+            }
+            
+          } else if (message.type === 'COMPLETE_PDF_TRANSFER') {
+            // Check if all chunks received
+            if (!transfer.metadata) {
+              throw new Error('PDF transfer not properly initialized');
+            }
+            
+            const missingChunks = transfer.chunks.findIndex(chunk => chunk === null);
+            
+            if (missingChunks >= 0) {
+              throw new Error(`Incomplete PDF transfer: missing chunk ${missingChunks}`);
+            }
+            
+            // Process the complete PDF data
+            console.log('PDF transfer complete, processing data...');
+            transfer.isComplete = true;
+            
+            // Combine chunks into a single Uint8Array
+            const totalLength = transfer.chunks.reduce((length, chunk) => length + chunk.byteLength, 0);
+            const combinedBuffer = new Uint8Array(totalLength);
+            
+            let offset = 0;
+            for (const chunk of transfer.chunks) {
+              combinedBuffer.set(chunk, offset);
+              offset += chunk.byteLength;
+            }
+            
+            // Process the PDF
+            const result = await processPdfData(
+              combinedBuffer.buffer,
+              transfer.metadata.language,
+              transfer.metadata.userId,
+              transfer.metadata.extractFields
+            );
+            
+            // Send response back through port
+            port.postMessage(result);
+            
+            // Clean up transfer data
+            pdfTransfers.delete(transferId);
+          }
+        } catch (error) {
+          console.error('Error processing PDF transfer:', error);
+          port.postMessage({
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error in PDF transfer'
+          });
+          
+          // Clean up on error
+          pdfTransfers.delete(transferId);
+        }
+      });
+      
+      // Handle disconnect
+      port.onDisconnect.addListener(() => {
+        // Clean up if the transfer wasn't completed
+        if (pdfTransfers.has(transferId) && !pdfTransfers.get(transferId)?.isComplete) {
+          console.log('Port disconnected before PDF transfer completed, cleaning up');
+          pdfTransfers.delete(transferId);
+        }
+      });
+    }
+  });
+}
+
 /**
  * Process a PDF extraction request from the content script
+ * Using standardized ArrayBuffer approach
  * @param message Message containing PDF data and options
  * @param sendResponse Function to send response back to content script
  */
@@ -27,7 +175,12 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
   console.log('Processing PDF extraction request');
   
   try {
-    const { base64String, language = 'en', userId, extractFields = true } = message;
+    const { 
+      base64String, 
+      language = 'en', 
+      userId, 
+      extractFields = true
+    } = message;
     
     if (!base64String) {
       console.error('No PDF data provided');
@@ -57,188 +210,173 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
           console.log('Offscreen document created for PDF processing');
         }
         
-        // Send message to offscreen document
+        // Convert base64 to ArrayBuffer for consistent processing
+        let pdfData: ArrayBuffer;
+        try {
+          console.log('Converting base64 to ArrayBuffer for consistent processing');
+          pdfData = await base64ToArrayBuffer(base64String);
+        } catch (conversionError) {
+          console.error('Error converting PDF data:', conversionError);
+          pdfData = base64String; // Fall back to using base64 string directly
+        }
+        
+        // Send message to offscreen document using standardized format
         const response = await chrome.runtime.sendMessage({
           target: 'offscreen',
           type: 'extractTextFromPdf',
-          base64String,
+          pdfData,
           language
         });
         
-        // If the offscreen document successfully processed the PDF, use its result
         if (response && response.success) {
-          // If field extraction is not requested, just return the text
-          if (!extractFields) {
-            console.log('Field extraction not requested, returning raw text only');
-            sendResponse({ success: true, text: response.text });
-            return;
-          }
+          console.log('Offscreen document successfully extracted PDF text');
           
-          // If userId is provided, extract structured data with field mappings
-          if (userId) {
-            try {
-              console.log(`Extracting bill data for user ${userId} with language ${language}`);
-              
-              // Get Supabase client for field mapping data
-              const supabase = await getSupabaseClient();
-              
-              // Extract bill data using user's field mappings
-              const billData = await extractBillDataWithUserMappings(
-                response.text,
-                userId,
-                supabase,
-                language
-              );
-              
-              // Return both the raw text and the structured bill data
-              sendResponse({
-                success: true,
-                text: response.text,
-                billData
-              });
-              return;
-            } catch (extractionError) {
-              console.error('Error extracting bill data:', extractionError);
-              // Still return the text even if field extraction fails
-              sendResponse({
-                success: true,
-                text: response.text,
-                error: extractionError instanceof Error ? extractionError.message : 'Field extraction failed'
-              });
-              return;
-            }
-          } else {
-            // No userId provided, just return the text
-            sendResponse({ success: true, text: response.text });
-            return;
-          }
+          // Extract fields if requested for authenticated users
+          const result = await processExtractedText(
+            response.text,
+            language,
+            userId,
+            extractFields
+          );
+          
+          // Send back the extracted text and any extracted fields
+          sendResponse({
+            success: true,
+            text: response.text,
+            billData: result.billData,
+            positionalData: response.pages
+          });
+          return;
+        } else {
+          console.warn('Offscreen document failed to extract PDF text:', response?.error);
+          // Fall through to direct extraction
         }
-      } catch (offscreenError) {
-        console.error('Error with offscreen document:', offscreenError);
-        // Fall back to direct processing if offscreen fails
+      } catch (error) {
+        console.error('Error using offscreen document for PDF extraction:', error);
+        // Fall through to direct extraction
       }
     }
     
-    // If offscreen processing failed or isn't available, try the direct approach
+    // If offscreen processing failed or isn't available, process directly
     try {
-      // For direct processing, first try to use extractTextFromPDF
-      // Convert base64 to ArrayBuffer
-      const pdfBuffer = base64ToArrayBuffer(base64String);
+      // Convert base64 to ArrayBuffer if needed
+      let pdfData: string | ArrayBuffer = base64String;
       
-      // Extract text from PDF
-      const extractedText = await extractTextFromPDF(pdfBuffer);
-      
-      // If field extraction is not requested, just return the text
-      if (!extractFields) {
-        console.log('Field extraction not requested, returning raw text only');
-        sendResponse({ success: true, text: extractedText });
-        return;
+      if (base64String.startsWith('data:')) {
+        // Convert base64 to ArrayBuffer
+        console.log('Converting base64 to ArrayBuffer for direct processing');
+        pdfData = await base64ToArrayBuffer(base64String);
       }
       
-      // If userId is provided, extract structured data with field mappings
-      if (userId) {
-        try {
-          console.log(`Extracting bill data for user ${userId} with language ${language}`);
-          
-          // Get Supabase client for field mapping data
-          const supabase = await getSupabaseClient();
-          
-          // Extract bill data using user's field mappings
-          const billData = await extractBillDataWithUserMappings(
-            extractedText,
-            userId,
-            supabase,
-            language
-          );
-          
-          // Return both the raw text and the structured bill data
-          sendResponse({
-            success: true,
-            text: extractedText,
-            billData
-          });
-        } catch (extractionError) {
-          console.error('Error extracting bill data:', extractionError);
-          // Still return the text even if field extraction fails
-          sendResponse({
-            success: true,
-            text: extractedText,
-            error: extractionError instanceof Error ? extractionError.message : 'Field extraction failed'
-          });
-        }
-      } else {
-        // No userId provided, just return the text
-        console.log('No userId provided, returning raw text only');
-        sendResponse({ success: true, text: extractedText });
-      }
-    } catch (directProcessingError) {
-      console.error('Direct PDF processing failed, trying fallback method:', directProcessingError);
+      // Process the PDF data
+      const result = await processPdfData(pdfData, language, userId, extractFields);
       
-      // Try the base64 detailed extraction as final fallback
-      try {
-        // Use the base64 extraction method as fallback
-        const extractedText = await extractTextFromBase64PdfWithDetails(base64String, language);
-        
-        if (!extractedText || extractedText.length < 10) {
-          sendResponse({
-            success: false,
-            error: 'Insufficient text extracted from PDF'
-          });
-          return;
-        }
-        
-        // If field extraction is not requested, just return the text
-        if (!extractFields) {
-          sendResponse({ success: true, text: extractedText });
-          return;
-        }
-        
-        // If userId is provided, extract structured data with field mappings
-        if (userId) {
-          try {
-            // Get Supabase client for field mapping data
-            const supabase = await getSupabaseClient();
-            
-            // Extract bill data using user's field mappings
-            const billData = await extractBillDataWithUserMappings(
-              extractedText,
-              userId,
-              supabase,
-              language
-            );
-            
-            // Return both the raw text and the structured bill data
-            sendResponse({
-              success: true,
-              text: extractedText,
-              billData
-            });
-          } catch (extractionError) {
-            console.error('Error extracting bill data with fallback method:', extractionError);
-            // Still return the text even if field extraction fails
-            sendResponse({
-              success: true,
-              text: extractedText,
-              error: extractionError instanceof Error ? extractionError.message : 'Field extraction failed'
-            });
-          }
-        } else {
-          // No userId provided, just return the text
-          sendResponse({ success: true, text: extractedText });
-        }
-      } catch (fallbackError) {
-        console.error('Fallback PDF processing failed:', fallbackError);
-        sendResponse({
-          success: false,
-          error: fallbackError instanceof Error ? fallbackError.message : 'All PDF extraction methods failed'
-        });
-      }
+      // Send back the result
+      sendResponse(result);
+    } catch (error) {
+      console.error('Error processing PDF directly:', error);
+      sendResponse({
+        success: false,
+        error: error.message || 'Failed to extract text from PDF'
+      });
     }
   } catch (error) {
-    console.error('Error processing PDF:', error);
+    console.error('Unexpected error in PDF processing:', error);
     sendResponse({
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to process PDF'
+      error: 'Unexpected error processing PDF'
     });
   }
+}
+
+/**
+ * Process PDF data using unified extraction approach
+ * @param pdfData PDF data as ArrayBuffer or string
+ * @param language Language code
+ * @param userId Optional user ID for field extraction
+ * @param extractFields Whether to extract fields
+ * @returns Processing result with text and bill data
+ */
+async function processPdfData(
+  pdfData: ArrayBuffer | string,
+  language: string = 'en',
+  userId?: string,
+  extractFields: boolean = true
+): Promise<any> {
+  try {
+    console.log('Using direct unified PDF processing');
+    
+    // Extract text and position data using unified method with robust error handling
+    const extractionResult = await extractPdfContent(pdfData).catch(error => {
+      // Log the error with details for troubleshooting
+      logExtractionError(error, { 
+        type: 'pdf-processor',
+        stage: 'extraction',
+        language
+      });
+      throw new Error(`PDF extraction failed: ${error.message}`);
+    });
+    
+    // Process the extracted text to get bill data
+    const processedResult = await processExtractedText(
+      extractionResult.text,
+      language,
+      userId,
+      extractFields
+    );
+    
+    // Combine results
+    return {
+      success: true,
+      text: extractionResult.text,
+      billData: processedResult.billData,
+      positionalData: extractionResult.pages
+    };
+  } catch (error) {
+    console.error('Error processing PDF data:', error);
+    throw error;
+  }
+}
+
+/**
+ * Process extracted text to extract bill data using user mappings
+ * @param text Extracted text from PDF
+ * @param language Language code
+ * @param userId Optional user ID for field extraction
+ * @param extractFields Whether to extract fields
+ */
+async function processExtractedText(
+  text: string,
+  language: string = 'en',
+  userId?: string,
+  extractFields: boolean = true
+): Promise<any> {
+  // Extract fields if requested for authenticated users
+  let billData = null;
+  if (extractFields && userId && text) {
+    try {
+      const supabase = await getSupabaseClient();
+      
+      // Get user's field mappings
+      const { data: userMappings } = await supabase
+        .from('field_mappings')
+        .select('*')
+        .eq('user_id', userId);
+      
+      if (userMappings && userMappings.length > 0) {
+        // Extract bill data using user's mappings
+        billData = extractBillDataWithUserMappings(
+          text,
+          userMappings,
+          language
+        );
+        console.log('Successfully extracted field data using user mappings');
+      }
+    } catch (error) {
+      console.error('Error extracting bill fields:', error);
+      // Continue with extraction result even if field extraction fails
+    }
+  }
+  
+  return { billData };
 } 

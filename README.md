@@ -122,6 +122,45 @@ npm run diff-schema
 
 The schema files are stored in the `schema/` directory and automatically checked during commits. See [Schema Management Documentation](./schema/README.md) for more details.
 
+## Enhanced PDF Processing
+
+The extension now supports improved PDF processing with the following features:
+
+### ArrayBuffer-Based Processing
+
+- All PDF processing now uses ArrayBuffer as the standard format
+- Eliminated inconsistencies between base64 and ArrayBuffer approaches
+- Better memory efficiency and performance
+- Reduced encoding/decoding overhead
+
+### Chunked Data Transfer
+
+- Large PDFs are transferred in 1MB chunks to avoid message size limits
+- Chrome port-based communication for efficient transfers
+- Progress tracking during transmission
+- Graceful error handling and cleanup on connection issues
+
+### Position-Aware Extraction
+
+- PDF text extraction now preserves positional data
+- Enables more accurate field detection for structured documents
+- Better support for multi-column layouts common in utility bills
+- Enhanced support for Hungarian utility bills with specialized patterns
+
+### Testing Tools
+
+- Added test page at `chrome-extension://<extension-id>/test/pdf-test.html`
+- Compare performance between legacy and enhanced methods
+- Supports both Hungarian and English test documents
+- Visual output of extraction results
+
+### Error Handling
+
+- Multi-layered error handling at each stage of processing
+- Fallback mechanisms for different extraction methods
+- Detailed error logging for troubleshooting
+- Type-safe implementation with proper TypeScript types
+
 ## License
 
 MIT

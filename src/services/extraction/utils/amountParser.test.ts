@@ -53,11 +53,10 @@ describe('parseHungarianAmount', () => {
     expect(parseHungarianAmount('Fizetendő: 123.456')).toBe(123456);
   });
 
-  test('handles special cases with small amounts that need adjustment', () => {
-    // These should be multiplied by 1000 since they're likely missing thousands
-    expect(parseHungarianAmount('123.45')).toBe(123.45); // Normal case, no adjustment
-    expect(parseHungarianAmount('123.456')).toBe(123456); // Needs adjustment (dot as thousands)
-    expect(parseHungarianAmount('123,456')).toBe(123456); // Needs adjustment (comma as thousands)
+  test('preserves small amounts without adjustment', () => {
+    expect(parseHungarianAmount('9')).toBe(9); // Small amount remains as is
+    expect(parseHungarianAmount('7')).toBe(7); // Small amount remains as is
+    expect(parseHungarianAmount('3.45')).toBe(3.45); // Decimal remains as is
   });
 
   test('handles invalid inputs gracefully', () => {

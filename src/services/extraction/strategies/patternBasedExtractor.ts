@@ -179,22 +179,19 @@ export class PatternBasedExtractor implements ExtractionStrategy {
   async extractFromPdf(context: PdfExtractionContext): Promise<BillExtractionResult> {
     try {
       const { pdfData, messageId, attachmentId, fileName, language } = context;
-      
-      // Get the appropriate language patterns
       const inputLanguage = language || 'en';
-      console.log(`Pattern-based PDF extractor using language: ${inputLanguage}`);
       
-      // Check if we have data
       if (!pdfData) {
         return {
           success: false,
           bills: [],
-          confidence: 0,
           error: 'No PDF data provided'
         };
       }
       
-      // Extract text from PDF
+      console.log(`Pattern-based PDF extractor using language: ${inputLanguage}`);
+      
+      // Extract text from PDF data
       let extractedText = '';
       try {
         // Check if we're in a service worker context
@@ -203,13 +200,38 @@ export class PatternBasedExtractor implements ExtractionStrategy {
                                typeof window.document.createElement === 'undefined';
         
         if (isServiceWorker) {
-          // Use basic extraction in service worker context
           console.log('Running in service worker context, using fallback PDF extraction');
-          extractedText = this.basicTextExtraction(pdfData);
+          
+          // Use standardized approach - normalize data first
+          try {
+            const { normalizePdfData } = await import('../../../services/pdf/pdfService');
+            
+            // Only use basicTextExtraction if we have string input, as it requires base64
+            if (typeof pdfData === 'string') {
+              extractedText = this.basicTextExtraction(pdfData);
+            } else {
+              // For ArrayBuffer/Uint8Array, run normalized processing
+              const normalizedData = await normalizePdfData(pdfData);
+              // Create a fake base64 for basic extraction
+              const tempBase64 = Array.from(normalizedData)
+                .map(byte => String.fromCharCode(byte))
+                .join('');
+              extractedText = this.basicTextExtraction(tempBase64);
+            }
+          } catch (error) {
+            console.error('Error normalizing data or extracting text:', error);
+            // Fallback to direct extraction if string
+            if (typeof pdfData === 'string') {
+              extractedText = this.basicTextExtraction(pdfData);
+            } else {
+              throw new Error('Cannot process ArrayBuffer in this context');
+            }
+          }
         } else {
-          // Use PDF.js in browser context
-          const { extractTextFromBase64Pdf } = await import('../../../services/pdf/pdfService');
-          extractedText = await extractTextFromBase64Pdf(pdfData);
+          // In browser context, use proper PDF.js
+          const { extractPdfContent } = await import('../../../services/pdf/pdfService');
+          const result = await extractPdfContent(pdfData);
+          extractedText = result.text;
         }
         
         console.log(`Extracted ${extractedText.length} characters from PDF`);
@@ -218,7 +240,6 @@ export class PatternBasedExtractor implements ExtractionStrategy {
         return {
           success: false,
           bills: [],
-          confidence: 0,
           error: 'Failed to extract text from PDF'
         };
       }
