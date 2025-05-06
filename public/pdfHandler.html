@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PDF Handler</title>
+  <script src="pdf.js"></script>
+  <script src="pdf.worker.js"></script>
+  <script>
+    // Listen for messages from the extension
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message && message.type === 'extractTextFromPdf') {
+        handlePdfExtraction(message, sendResponse);
+        return true; // Keep the message channel open for async response
+      }
+      return false;
+    });
+
+    // Handle PDF extraction requests
+    async function handlePdfExtraction(message, sendResponse) {
+      try {
+        const { base64String, language = 'en' } = message;
+        
+        if (!base64String) {
+          sendResponse({ success: false, error: 'No PDF data provided' });
+          return;
+        }
+        
+        console.log(`Processing PDF extraction (language: ${language})`);
+        
+        // Clean the base64 string if needed
+        const cleanBase64 = base64String.replace(/^data:application\/pdf;base64,/, '');
+        
+        // Convert base64 to Uint8Array
+        const binaryString = atob(cleanBase64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        
+        // Process with PDF.js
+        try {
+          const pdfDocument = await pdfjsLib.getDocument({ data: bytes }).promise;
+          let extractedText = '';
+          
+          // Process each page
+          for (let i = 1; i <= pdfDocument.numPages; i++) {
+            const page = await pdfDocument.getPage(i);
+            const content = await page.getTextContent();
+            
+            // Concatenate the text items
+            const pageText = content.items
+              .map(item => item.str)
+              .join(' ');
+              
+            extractedText += pageText + '\n';
+          }
+          
+          console.log(`Extracted ${extractedText.length} characters from PDF`);
+          sendResponse({ success: true, text: extractedText });
+        } catch (pdfError) {
+          console.error('PDF.js extraction error:', pdfError);
+          sendResponse({ 
+            success: false, 
+            error: pdfError instanceof Error ? pdfError.message : 'PDF processing failed' 
+          });
+        }
+      } catch (error) {
+        console.error('Error in PDF handler:', error);
+        sendResponse({ 
+          success: false, 
+          error: error instanceof Error ? error.message : 'Unknown error' 
+        });
+      }
+    }
+    
+    // Initialize PDF.js
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.js';
+    
+    // Signal that the handler is ready
+    console.log('PDF Handler initialized and ready');
+  </script>
+</head>
+<body>
+  <div id="pdf-handler">PDF extraction handler</div>
+</body>
+</html> 

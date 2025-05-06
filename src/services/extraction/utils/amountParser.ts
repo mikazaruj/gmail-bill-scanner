@@ -30,78 +30,82 @@ export function parseHungarianAmount(amountStr: string): number {
     
     console.log('After removing currency symbols:', cleanedAmount);
     
-    // Step 2: Identify the format based on patterns
-    // Hungarian typically uses spaces or dots as thousands separators
+    // Step 1: Identify format patterns
     const hasThousandDots = /\d{1,3}[.]\d{3}/.test(cleanedAmount);
     const hasThousandSpaces = /\d{1,3}\s\d{3}/.test(cleanedAmount);
-    const endsWithCommaDecimals = /,\d{1,2}$/.test(cleanedAmount);
-    const hasCommaDecimals = /,\d{1,2}/.test(cleanedAmount);
-    
-    // Additional patterns to detect Hungarian format
-    const looksLikeHungarianThousands = /\d{1,3}[.]\d{3}(?:[.,\s]\d{3})*$/.test(cleanedAmount);
+    const hasCommaDecimals = /,\d{1,2}$/.test(cleanedAmount);
     
     console.log('Format analysis:', { 
       hasThousandDots, 
       hasThousandSpaces,
-      endsWithCommaDecimals,
-      hasCommaDecimals,
-      looksLikeHungarianThousands
+      hasCommaDecimals
     });
     
-    // Step 3: Handle Hungarian number format (e.g., "175.945" or "175 945")
-    if (hasThousandDots || hasThousandSpaces || looksLikeHungarianThousands) {
-      // Save original cleaned amount for comparison later
-      const originalAmount = cleanedAmount;
-      
-      // Remove thousand separators (spaces or dots)
-      cleanedAmount = cleanedAmount
-        .replace(/\s/g, '')  // Remove spaces
-        .replace(/\.(?=\d{3})/g, ''); // Remove dots before exactly 3 digits
-      
-      console.log('After removing thousand separators:', cleanedAmount);
-      
-      // If it ends with a comma followed by digits, convert to decimal point
-      if (hasCommaDecimals) {
-        cleanedAmount = cleanedAmount.replace(/,(\d{1,3})$/, '.$1');
-        console.log('After converting decimal comma to dot:', cleanedAmount);
+    // Step 2: Process Hungarian-style amount
+    // Keep track of original amount to help diagnose parsing issues
+    const originalAmount = cleanedAmount;
+    
+    // Case 1: Number with thousand dots (e.g., 10.000 or 175.945)
+    if (hasThousandDots) {
+      // Check if it's actually a number with a decimal point (e.g., 123.45)
+      const decimalDotPattern = /^\d{1,3}[.]\d{1,2}$/;
+      if (!decimalDotPattern.test(cleanedAmount)) {
+        // It's a Hungarian format with dots as thousand separators
+        cleanedAmount = cleanedAmount.replace(/[.]/g, '');
+        console.log('Removed thousand dots:', cleanedAmount);
       }
-      
-      // Special case: If originalAmount had a "." and was likely a Hungarian format with thousands,
-      // but no comma decimal part, it's likely a whole number. Make sure we parse it correctly.
-      if (!hasCommaDecimals && hasThousandDots) {
-        // Count the number of dots, if all dots are thousand separators, the number is a whole number
-        const dotPositions = originalAmount.split('').map((char, idx) => char === '.' ? idx : -1).filter(idx => idx !== -1);
-        const allDotsAreThousandSeparators = dotPositions.every(pos => {
-          const charsAfterDot = originalAmount.length - pos - 1;
-          return charsAfterDot % 3 === 0;
-        });
-        
-        if (allDotsAreThousandSeparators) {
-          console.log('All dots appear to be thousand separators, treating as whole number');
-        }
-      }
-    } 
-    // Handle format like "175,95" where comma is used as decimal
-    else if (cleanedAmount.includes(',') && !cleanedAmount.includes('.')) {
-      cleanedAmount = cleanedAmount.replace(/,(\d{1,3})$/, '.$1');
-      console.log('Converted comma to decimal point:', cleanedAmount);
+    }
+    
+    // Case 2: Number with thousand spaces (e.g., 10 000 or 175 945)
+    if (hasThousandSpaces) {
+      cleanedAmount = cleanedAmount.replace(/\s/g, '');
+      console.log('Removed thousand spaces:', cleanedAmount);
+    }
+    
+    // Case 3: Number with comma as decimal separator (e.g., 175,95)
+    if (hasCommaDecimals) {
+      cleanedAmount = cleanedAmount.replace(/,(\d{1,2})$/, '.$1');
+      console.log('Converted decimal comma to dot:', cleanedAmount);
+    } else if (cleanedAmount.includes(',')) {
+      // If comma is not decimal, it might be a thousand separator
+      cleanedAmount = cleanedAmount.replace(/,/g, '');
+      console.log('Removed thousand commas:', cleanedAmount);
     }
     
     // Parse the cleaned amount string
     let amount = parseFloat(cleanedAmount);
     
     if (isNaN(amount)) {
+      console.log('Failed to parse amount, returning 0');
       return 0;
     }
     
-    console.log('Parsed amount:', amount);
+    console.log('Parsed amount before adjustments:', amount);
     
-    // If the amount seems suspiciously small but the original string was longer,
-    // it's likely we're dealing with a thousand separator issue
-    if (amount < 100 && amountStr.replace(/[^\d]/g, '').length >= 5) {
-      console.log('Amount seems suspiciously small compared to original string length, multiplying by 1000');
+    // Step 3: Handle Specific Edge Cases
+    
+    // Case: Small amounts that should be larger
+    const originalDigitCount = originalAmount.replace(/[^\d]/g, '').length;
+    
+    // If we have a very small number (under 100) but the original number had many digits (5+)
+    // This is likely a PDF parsing error where thousand separators were lost
+    if (amount < 100 && originalDigitCount >= 5) {
+      console.log(`Potential parsing error detected: small amount (${amount}) with many original digits (${originalDigitCount})`);
+      
+      // Check if multiplying by 1000 would give a more reasonable result
+      // Common in Hungarian bills to have amounts like 7 that should be 7000
+      if (originalDigitCount >= 4 && originalDigitCount <= 6) {
+        amount = amount * 1000;
+        console.log('Adjusted amount by multiplying by 1000:', amount);
+      }
+    }
+    
+    // Hungarian amounts for bills are very rarely below 1000 HUF
+    // This helps catch cases where the PDF parser missed thousand separators
+    if (amount > 0 && amount < 10) {
+      // For extremely small values below 10, it's almost certainly missing thousands
       amount = amount * 1000;
-      console.log('Adjusted amount:', amount);
+      console.log('Extremely small amount detected, multiplied by 1000:', amount);
     }
     
     return amount;

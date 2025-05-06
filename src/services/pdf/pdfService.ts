@@ -5,7 +5,14 @@
  * Properly integrates PDF.js library
  */
 
-// Dynamically load PDF.js if it's not already available
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.entry';
+import { extractBillDataWithUserMappings } from './billFieldExtractor';
+
+// Configure worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
+// Promise to track PDF.js loading
 let pdfjsLibPromise: Promise<any> | null = null;
 
 /**
@@ -384,4 +391,109 @@ export const extractTextFromBase64PdfWithDetails = async (
     console.error('Error in PDF text extraction:', error);
     return '';
   }
-}; 
+};
+
+/**
+ * Extracts text from a PDF using pdf.js
+ * @param pdfBuffer - ArrayBuffer of the PDF file
+ * @returns Extracted text from all pages
+ */
+export async function extractTextFromPDF(pdfBuffer: ArrayBuffer): Promise<string> {
+  // Load PDF document
+  const pdf = await pdfjsLib.getDocument({ data: pdfBuffer }).promise;
+  
+  let fullText = '';
+  
+  // Process each page
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const strings = content.items.map((item: any) => item.str);
+    fullText += strings.join(' ') + '\n';
+  }
+  
+  return fullText;
+}
+
+/**
+ * Processes a PDF file and extracts bill data
+ * @param file - PDF file object
+ * @param userId - User ID for fetching field mappings
+ * @param supabase - Supabase client
+ * @param language - Document language
+ * @returns Structured bill data
+ */
+export async function processBillPdf(
+  file: File,
+  userId: string,
+  supabase: any,
+  language: string = 'en'
+): Promise<Record<string, any>> {
+  // Convert file to ArrayBuffer
+  const arrayBuffer = await fileToArrayBuffer(file);
+  
+  // Extract text from PDF
+  const fullText = await extractTextFromPDF(arrayBuffer);
+  
+  // Process text with user's field mappings
+  return extractBillDataWithUserMappings(fullText, userId, supabase, language);
+}
+
+/**
+ * Converts a File to ArrayBuffer
+ * @param file - File object
+ * @returns Promise with ArrayBuffer
+ */
+export function fileToArrayBuffer(file: File): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) {
+        resolve(reader.result);
+      } else {
+        reject(new Error('FileReader did not return an ArrayBuffer'));
+      }
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+/**
+ * Converts a base64 string to ArrayBuffer
+ * @param base64 - Base64 string (with or without data URL prefix)
+ * @returns ArrayBuffer
+ */
+export function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  // Remove data URL prefix if present (e.g., "data:application/pdf;base64,")
+  const base64Content = base64.includes(',') 
+    ? base64.split(',')[1] 
+    : base64;
+  
+  // Decode base64
+  const binaryString = atob(base64Content);
+  const bytes = new Uint8Array(binaryString.length);
+  
+  // Convert to byte array
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  
+  return bytes.buffer;
+}
+
+/**
+ * Converts ArrayBuffer to base64 string
+ * @param buffer - ArrayBuffer to convert
+ * @returns Base64 string
+ */
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  
+  return btoa(binary);
+} 

@@ -46,7 +46,11 @@
     {
       "resources": [
         "popup.html",
-        "pdf.worker.min.js"
+        "pdf.worker.min.js",
+        "pdfHandler.html",
+        "pdf.js",
+        "pdf.worker.js",
+        "pdfWorker.js"
       ],
       "matches": [
         "https://mail.google.com/*",

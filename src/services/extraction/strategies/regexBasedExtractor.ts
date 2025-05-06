@@ -278,11 +278,12 @@ export class RegexBasedExtractor implements ExtractionStrategy {
       // If we got here, we'll try to extract bill information using language-specific patterns
       
       // Extract required fields using language patterns
-      const amountStr = extractBillField(extractedText, 'amount', inputLanguage as 'en' | 'hu');
+      let amountStr = extractBillField(extractedText, 'amount', inputLanguage as 'en' | 'hu');
       const dueDateStr = extractBillField(extractedText, 'dueDate', inputLanguage as 'en' | 'hu');
       const billingDateStr = extractBillField(extractedText, 'billingDate', inputLanguage as 'en' | 'hu');
       const vendorStr = extractBillField(extractedText, 'vendor', inputLanguage as 'en' | 'hu');
       const accountNumberStr = extractBillField(extractedText, 'accountNumber', inputLanguage as 'en' | 'hu');
+      const invoiceNumberStr = extractBillField(extractedText, 'invoiceNumber', inputLanguage as 'en' | 'hu');
       
       console.log(`Extracted amount: ${amountStr}`);
       console.log(`Extracted due date: ${dueDateStr}`);
@@ -291,6 +292,59 @@ export class RegexBasedExtractor implements ExtractionStrategy {
       // Service type detection
       const serviceTypeInfo = detectServiceType(extractedText, inputLanguage as 'en' | 'hu');
       console.log(`Detected service type: ${serviceTypeInfo?.type || 'unknown'}`);
+      
+      // Special handling for MVM bills or other Hungarian utility bills
+      // These often have special formatting with highlighted sections that may be missed by regular patterns
+      if (inputLanguage === 'hu' && (extractedText.toLowerCase().includes('mvm') || 
+          fileName.toLowerCase().includes('mvm') || 
+          vendorStr?.toLowerCase().includes('mvm'))) {
+        
+        console.log('Detected MVM bill - applying special extraction logic for MVM bills');
+        
+        // Get MVM specific amount patterns
+        const pdfSettings = getPdfExtractionSettings('hu');
+        const mvmSettings = pdfSettings?.specialCompanyPatterns?.mvm || { defaultCategory: "Utilities", defaultCurrency: "HUF" };
+        // Safely access amountPatterns or use fallback patterns
+        const mvmAmountPatterns = (mvmSettings as any)?.amountPatterns || [
+          "Fizetendő összeg:?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+          "Fizetendő összeg:\\s*(\\d+\\s*\\d+)\\s*Ft"
+        ];
+        
+        // Try to find the amount in the highlighted section (typically in MVM bills)
+        for (const pattern of mvmAmountPatterns) {
+          const regex = new RegExp(pattern, 'i');
+          const match = extractedText.match(regex);
+          
+          if (match && match[1]) {
+            const highlightedAmount = match[1].trim();
+            console.log(`Found MVM-specific highlighted amount: ${highlightedAmount}`);
+            
+            // If we didn't find an amount with the standard patterns or the highlighted amount is larger
+            if (!amountStr || (parseHungarianAmount(highlightedAmount) > parseHungarianAmount(amountStr))) {
+              amountStr = highlightedAmount;
+              console.log(`Using highlighted amount from MVM bill: ${amountStr}`);
+            }
+            
+            break;
+          }
+        }
+        
+        // Check for the "Fizetendő összeg" highlighted box in the orange section
+        // This is typically formatted as "121.975 Ft" in MVM bills
+        const orangeHighlightPattern = /fizetendő\s+összeg:?\s*([\d\s.,]+)\s*(?:Ft|HUF)/i;
+        const orangeMatch = extractedText.match(orangeHighlightPattern);
+        
+        if (orangeMatch && orangeMatch[1]) {
+          const highlightedAmount = orangeMatch[1].trim();
+          console.log(`Found amount in highlighted box: ${highlightedAmount}`);
+          
+          // If we still don't have an amount or this one is larger, use it
+          if (!amountStr || (parseHungarianAmount(highlightedAmount) > parseHungarianAmount(amountStr))) {
+            amountStr = highlightedAmount;
+            console.log(`Using amount from highlighted box: ${amountStr}`);
+          }
+        }
+      }
       
       // Parse amount
       let amount = 0;
@@ -829,12 +883,14 @@ export class RegexBasedExtractor implements ExtractionStrategy {
       ];
       
       let hasAmountPatterns = false;
+      let foundAmounts: string[] = [];
+      
       for (const pattern of amountPatterns) {
         const matches = base64Data.match(pattern);
         if (matches && matches.length > 0) {
+          foundAmounts = [...foundAmounts, ...matches];
           console.log(`Found amount patterns: ${matches.slice(0, 3).join(', ')}${matches.length > 3 ? '...' : ''}`);
           hasAmountPatterns = true;
-          break;
         }
       }
       
@@ -854,10 +910,62 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         }
       }
       
+      // Enhanced extraction for highlighted total amounts (common in utility bills)
+      // These are often in distinct sections or highlighted areas
+      let totalAmountText = '';
+      
+      // These patterns specifically look for "total amount", "payable amount" etc. and the nearby numbers
+      const totalAmountPatterns = language === 'hu' ? [
+        // Hungarian patterns
+        /fizetendő\s+(?:összeg|összesen)?:?\s*(?:\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)\s*(?:Ft|HUF)?/gi,
+        /összesen:?\s*(?:\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)\s*(?:Ft|HUF)?/gi,
+        /végösszeg:?\s*(?:\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)\s*(?:Ft|HUF)?/gi,
+        /fizetendő\s+(?:összeg|összesen)?:?\s*(?:Ft|HUF)?\s*(?:\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/gi,
+      ] : [
+        // English patterns
+        /total\s+(?:amount|due):?\s*(?:\$|€|£|USD|EUR|GBP)?\s*(?:\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/gi,
+        /amount\s+due:?\s*(?:\$|€|£|USD|EUR|GBP)?\s*(?:\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/gi,
+        /total:?\s*(?:\$|€|£|USD|EUR|GBP)?\s*(?:\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/gi,
+      ];
+      
+      // Look for utility bill total amount patterns in the text
+      for (const pattern of totalAmountPatterns) {
+        const matches = extractedText.match(pattern) || base64Data.match(pattern) || [];
+        if (matches.length > 0) {
+          console.log(`Found total amount sections: ${matches.join(', ')}`);
+          totalAmountText += ' ' + matches.join(' ');
+        }
+      }
+      
+      // Extract key information from potential MVM bills (or similar utility providers)
+      // This looks for typical information in highlighted boxes
+      if (language === 'hu' && (extractedText.includes('MVM') || extractedText.includes('mvm'))) {
+        console.log('MVM bill detected, applying specialized extraction for highlighted sections');
+        
+        // MVM specific patterns - these patterns match the highlighted sections common in MVM bills
+        const mvmPatterns = [
+          /elszámolási\s+időszak:?\s*\d{4}[.\/]\d{2}[.\/]\d{2}[-–]\d{4}[.\/]\d{2}[.\/]\d{2}/gi,
+          /fizetendő\s+összeg:?\s*(?:\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)\s*(?:Ft|HUF)?/gi,
+          /fizetési\s+határidő:?\s*\d{4}[.\/]\d{2}[.\/]\d{2}/gi,
+          // The pattern below specifically targets the highlighted "Fizetendő összeg: XXX.YYY Ft" box in MVM bills
+          /fizetendő\s+összeg:?\s*(?:\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)\s*(?:Ft|HUF)/gi,
+        ];
+        
+        for (const pattern of mvmPatterns) {
+          const matches = extractedText.match(pattern) || base64Data.match(pattern) || [];
+          if (matches.length > 0) {
+            console.log(`Found MVM specific sections: ${matches.join(', ')}`);
+            totalAmountText += ' ' + matches.join(' ');
+          }
+        }
+      }
+      
       // Combine extraction results
       const combinedText = [
         extractedText,
-        billKeywordMatches.join(' ')
+        billKeywordMatches.join(' '),
+        totalAmountText, // Add the specially extracted total amount sections
+        foundAmounts.join(' ') // Add all found amounts for better detection
       ]
         .filter(text => text.length > 0)
         .join(' ')
