@@ -8,7 +8,10 @@
 
 // Import core dependencies and types
 import { getEmailContent, getAttachments } from '../services/gmail/gmailApi';
-import { createSpreadsheet, appendBillData } from '../services/sheets/sheetsApi';
+import { 
+  createSpreadsheet as createSheetsSpreadsheet, 
+  appendBillData
+} from '../services/sheets/sheetsApi';
 import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../types/Message';
 import { 
   isAuthenticated,
@@ -25,8 +28,10 @@ import { handleError } from '../services/error/errorService';
 import { buildBillSearchQuery } from '../services/gmailSearchBuilder';
 import { Bill } from '../types/Bill';
 import { getUserSettings } from '../services/settings';
-// Using different import name to avoid conflict with dynamically imported function
-import { initializePdfProcessingHandlers } from './pdfProcessor';
+// Import the new PDF processing handlers
+import { initializePdfProcessingHandlers } from './handlers/pdfProcessingHandler';
+// Add FieldMapping import at the top level
+import type { FieldMapping } from '../types/FieldMapping';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -654,67 +659,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             
             try {
               // Create a new spreadsheet using Sheets API
-              const response = await fetch(
-                'https://sheets.googleapis.com/v4/spreadsheets',
-                {
-                  method: 'POST',
-                  headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                    properties: {
-                      title: name || 'Bills Tracker',
-                    },
-                    sheets: [
-                      {
-                        properties: {
-                          title: 'Bills',
-                          gridProperties: {
-                            frozenRowCount: 1,
-                          },
-                        },
-                      },
-                    ],
-                  }),
-                }
-              );
-              
-              if (!response.ok) {
-                const error = await response.json();
-                throw new Error(`Sheets API error: ${error.error?.message || 'Unknown error'}`);
-              }
-              
-              const data = await response.json();
-              const spreadsheetId = data.spreadsheetId;
-              
-              // Initialize the spreadsheet with headers
-              const headerResponse = await fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Bills!A1:I1?valueInputOption=RAW`,
-                {
-                  method: 'PUT',
-                  headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                    range: 'Bills!A1:I1',
-                    majorDimension: 'ROWS',
-                    values: [
-                      ['Date', 'Merchant', 'Amount', 'Currency', 'Category', 'Due Date', 'Paid', 'Notes', 'Source']
-                    ],
-                  }),
-                }
-              );
-              
-              if (!headerResponse.ok) {
-                console.warn('Failed to initialize headers, but spreadsheet was created');
-              }
+              const spreadsheet = await createSheetsSpreadsheet(token, name || 'Bills Tracker');
               
               // Return the spreadsheet ID and name
               sendResponse({ 
                 success: true, 
-                spreadsheetId,
+                spreadsheetId: spreadsheet.spreadsheetId,
                 spreadsheetName: name || 'Bills Tracker'
               });
             } catch (error) {
@@ -2236,298 +2186,281 @@ async function handleExportToSheets(
   sendResponse: (response: { success: boolean, error?: string, spreadsheetUrl?: string }) => void
 ) {
   try {
-    console.log('Export to sheets request received:', payload);
+    const { bills, spreadsheetId: requestedSpreadsheetId, autoExportToSheets } = payload;
     
-    // Check if we have bills data
-    const bills = payload.bills || [];
-    
-    if (bills.length === 0) {
-      console.log('No bills to export');
-      sendResponse({
+    if (!bills || bills.length === 0) {
+      return sendResponse({
         success: false,
-        error: 'No bills to export'
+        error: 'No bills provided for export'
       });
-      return;
     }
     
+    console.log(`Export to sheets request received: ${JSON.stringify(payload)}`);
     console.log(`Found ${bills.length} bills to export`);
     
-    // Get access token for Google Sheets API
-    let token;
-    try {
-      token = await getAccessToken();
-      
-      if (!token) {
-        throw new Error('Not authenticated for Google Sheets');
-      }
-    } catch (authError) {
-      console.error('Authentication error:', authError);
-      sendResponse({
-        success: false,
-        error: 'Authentication failed: ' + (authError instanceof Error ? authError.message : String(authError))
-      });
-      return;
-    }
-    
-    // Get spreadsheet ID from payload or settings
-    let spreadsheetId = payload.spreadsheetId;
-    
-    // If no spreadsheet ID in payload, try to get from settings
-    if (!spreadsheetId) {
-      try {
-        // Get current user ID from storage
-        const userData = await chrome.storage.local.get(['supabase_user_id', 'google_user_id']);
-        const userId = userData.supabase_user_id || userData.google_user_id;
-        
-        if (userId) {
-          const userSettings = await getUserSettings(userId);
-          console.log('User settings retrieved:', {
-            has_settings: !!userSettings,
-            sheet_id_exists: !!userSettings?.sheet_id,
-            found_spreadsheet_id: userSettings?.sheet_id || '(none)'
-          });
-          
-          spreadsheetId = userSettings?.sheet_id || '';
-          console.log('Got spreadsheet ID from settings:', spreadsheetId);
-        } else {
-          console.log('No user ID found to fetch settings');
+    // Get Google token for Sheets API
+    const token = await new Promise<string>((resolve, reject) => {
+      chrome.identity.getAuthToken({ interactive: true }, (token) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
         }
-      } catch (settingsError) {
-        console.error('Error getting user settings:', settingsError);
-      }
-    }
+        
+        // Add null check to handle undefined token
+        if (!token) {
+          reject(new Error('Failed to get auth token'));
+          return;
+        }
+        
+        resolve(token);
+      });
+    });
     
-    // If we still don't have a spreadsheet ID, check if we have a cached one
+    // Get spreadsheet ID from settings
+    let spreadsheetId = requestedSpreadsheetId;
+    let newSpreadsheetCreated = false;
+    
     if (!spreadsheetId) {
       try {
-        const localData = await chrome.storage.local.get(['spreadsheetId']);
-        spreadsheetId = localData.spreadsheetId;
-        console.log('Got spreadsheet ID from local storage:', spreadsheetId);
-      } catch (storageError) {
-        console.error('Error accessing local storage:', storageError);
+        // Identify the user first - needed for settings
+        const { resolveUserIdentity } = await import('../services/identity/userIdentityService');
+        const identity = await resolveUserIdentity();
+        
+        // Only proceed if we have a Supabase user ID
+        if (!identity?.supabaseId) {
+          return sendResponse({
+            success: false,
+            error: 'User not authenticated'
+          });
+        }
+        
+        // Get user settings from Supabase
+        const { getUserSettings } = await import('../services/settings');
+        const settings = await getUserSettings(identity.supabaseId);
+        
+        const hasSettings = !!settings;
+        const sheetIdExists = settings && !!settings.sheet_id;
+        const foundSpreadsheetId = settings?.sheet_id || '';
+        
+        console.log(`User settings retrieved: ${JSON.stringify({
+          has_settings: hasSettings,
+          sheet_id_exists: sheetIdExists,
+          found_spreadsheet_id: foundSpreadsheetId
+        })}`);
+        
+        if (sheetIdExists && foundSpreadsheetId) {
+          console.log(`Got spreadsheet ID from settings: ${foundSpreadsheetId}`);
+          spreadsheetId = foundSpreadsheetId;
+        } else {
+          // Create a new spreadsheet
+          console.log('No spreadsheet ID found in settings, creating a new one');
+          
+          const newSpreadsheet = await createNewSpreadsheet(token);
+          spreadsheetId = newSpreadsheet.spreadsheetId;
+          newSpreadsheetCreated = true;
+          
+          // Save the new spreadsheet ID to user settings
+          if (identity.supabaseId) {
+            await updateSettingsInSupabase(identity.supabaseId, { 
+              sheet_id: spreadsheetId 
+            });
+            console.log(`Saved new spreadsheet ID to user settings: ${spreadsheetId}`);
+          }
+        }
+      } catch (error) {
+        console.error('Error getting spreadsheet ID from settings:', error);
+        return sendResponse({
+          success: false,
+          error: 'Could not get or create spreadsheet'
+        });
       }
-    }
-    
-    // If we still don't have a spreadsheet ID, don't create a new one - inform user to set one up in settings
-    if (!spreadsheetId) {
-      const errorMsg = 'No spreadsheet configured. Please set up a Google Sheet in the Settings menu first.';
-      console.log(errorMsg);
-      sendResponse({
-        success: false,
-        error: errorMsg
-      });
-      return;
     }
     
     console.log(`Using spreadsheet ID: ${spreadsheetId}`);
     
-    // Now that we have a spreadsheet ID, append the bill data
+    // Fetch user's field mappings if available
+    // Import the FieldMapping type
+    const { getFieldMappings } = await import('../services/fieldMapping');
+    
+    // Initialize with correct type
+    let userFieldMappings: FieldMapping[] = [];
+    
     try {
-      console.log(`Exporting ${bills.length} bills to spreadsheet ${spreadsheetId}...`);
+      // Identify the user
+      const { resolveUserIdentity } = await import('../services/identity/userIdentityService');
+      const identity = await resolveUserIdentity();
+      userId = identity?.supabaseId;
       
-      // Try direct API approach first - this avoids document issues in service workers
-      try {
-        console.log('Using direct API approach for export...');
-        
-        // Pre-process bill data to ensure it's clean and has all required fields
-        const processedBills = bills.map(bill => {
-          // Create a fresh object with only the fields we need
-          return {
-            vendor: bill.vendor || bill.issuer_name || 'Unknown',
-            amount: typeof bill.amount === 'number' ? bill.amount : 
-                    bill.total_amount ? parseFloat(String(bill.total_amount)) : 0,
-            date: bill.date || bill.invoice_date || new Date(),
-            dueDate: bill.dueDate || bill.due_date,
-            accountNumber: bill.accountNumber || bill.account_number || '',
-            paid: !!bill.isPaid,
-            category: bill.category || bill.bill_category || 'Other',
-            currency: bill.currency || 'USD',
-            emailId: bill.emailId || '',
-            attachmentId: bill.attachmentId || ''
-          };
-        });
-        
-        // Prepare simple data rows with basic fields
-        const simpleRows = processedBills.map(bill => {
-          return [
-            bill.vendor || '',                      // A: Vendor
-            String(bill.amount || '0'),             // B: Amount
-            formatDateForSheet(bill.date),          // C: Date
-            formatDateForSheet(bill.dueDate),       // D: Due Date
-            bill.accountNumber || '',               // E: Account Number
-            bill.paid ? 'Yes' : 'No',               // F: Paid
-            bill.category || '',                    // G: Category
-            bill.currency || 'USD',                 // H: Currency
-            bill.emailId || '',                     // I: Email ID
-            bill.attachmentId || ''                 // J: Attachment ID
-          ];
-        });
-        
-        console.log(`Attempting direct append of ${simpleRows.length} rows to sheet...`);
-        console.log('Sample row data:', simpleRows[0]);
-        
-        // First, check if the sheet exists and has headers
-        try {
-          const checkResponse = await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=false`,
-            {
-              method: 'GET',
-              headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-              }
-            }
-          );
-          
-          const sheetInfo = await checkResponse.json();
-          console.log('Sheet info:', sheetInfo.sheets ? sheetInfo.sheets.length : 'No sheets found');
-          
-          // Check if Bills sheet exists
-          const billsSheet = sheetInfo.sheets ? 
-            sheetInfo.sheets.find((s: any) => s.properties.title === 'Bills') : 
-            null;
-            
-          if (!billsSheet) {
-            console.log('Bills sheet not found, creating it');
-            
-            // Create Bills sheet with headers
-            const headers = [
-              'Vendor', 'Amount', 'Date', 'Due Date', 'Account Number', 
-              'Paid', 'Category', 'Currency', 'Email ID', 'Attachment ID'
-            ];
-            
-            // Create new sheet
-            await fetch(
-              `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
-              {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  requests: [
-                    {
-                      addSheet: {
-                        properties: {
-                          title: 'Bills',
-                        }
-                      }
-                    }
-                  ]
-                })
-              }
-            );
-            
-            // Add headers
-            await fetch(
-              `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Bills!A1:J1?valueInputOption=USER_ENTERED`,
-              {
-                method: 'UPDATE',
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  values: [headers]
-                })
-              }
-            );
-            
-            console.log('Created Bills sheet with headers');
-          }
-        } catch (checkError) {
-          console.error('Error checking/creating sheet:', checkError);
-          // Continue anyway, hoping the sheet exists
-        }
-        
-        // Direct API call to append values - this works in service workers
-        const appendRange = 'Bills!A2:J';
-        const response = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${appendRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              values: simpleRows,
-            }),
-          }
-        );
-        
-        // Check for response errors
-        if (!response.ok) {
-          const responseText = await response.text();
-          console.error('Direct append failed with status:', response.status);
-          console.error('Response text:', responseText);
-          
-          let errorData;
-          try {
-            errorData = JSON.parse(responseText);
-          } catch (e) {
-            errorData = { error: { message: responseText } };
-          }
-          
-          throw new Error(`Sheets API error: ${errorData.error?.message || responseText || 'Unknown error'}`);
-        }
-        
-        console.log('Successfully exported bills to spreadsheet using direct API approach');
-        
-        // Generate spreadsheet URL for response - make sure this works in service worker context
-        const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-        
-        // In a service worker context, we might not be able to access document
-        try {
-          sendResponse({
-            success: true,
-            spreadsheetUrl
-          });
-          
-          console.log('==== EXPORT TO SHEETS - SUCCESS ====');
-          return;
-        } catch (responseError) {
-          console.error('Error in sendResponse:', responseError);
-          // Try a simpler response without spreadsheetUrl if we're in a service worker
-          sendResponse({
-            success: true
-          });
-          console.log('==== EXPORT TO SHEETS - SUCCESS (SIMPLIFIED RESPONSE) ====');
-          return;
-        }
-      } catch (directApiError) {
-        // Log the error but continue to try the legacy approach
-        console.error('Direct API approach failed:', directApiError);
-        
-        // Try the imported sheetsApi function as a fallback
-        const { appendBillData } = await import('../services/sheets/sheetsApi');
-        
-        await appendBillData(token, spreadsheetId, bills);
-        
-        // This would only be reached if appendBillData succeeds
-          const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-          
-            sendResponse({
-              success: true,
-              spreadsheetUrl
-            });
-            
-        console.log('==== EXPORT TO SHEETS - SUCCESS (LEGACY APPROACH) ====');
-            return;
+      if (userId) {
+        // Get field mappings from Supabase
+        userFieldMappings = await getFieldMappings(userId);
+        console.log(`Fetched ${userFieldMappings?.length || 0} field mappings for user ${userId}`);
       }
-    } catch (exportError) {
-      console.error('Export failed:', exportError);
+    } catch (error) {
+      console.warn('Could not fetch field mappings:', error);
+      // Continue without mappings
+    }
+    
+    // Export bills
+    console.log(`Exporting ${bills.length} bills to spreadsheet ${spreadsheetId}...`);
+    
+    // If this is a new spreadsheet, set up the headers first
+    if (newSpreadsheetCreated) {
+      console.log('Setting up headers in new spreadsheet');
+      
+      // Use user field mappings for headers if available
+      let headers: string[] = [];
+      
+      if (userFieldMappings && userFieldMappings.length > 0) {
+        // Sort by display_order
+        const sortedMappings = [...userFieldMappings]
+          .filter(mapping => mapping.is_enabled)
+          .sort((a, b) => a.display_order - b.display_order);
+        
+        // Use display names for headers
+        headers = sortedMappings.map(mapping => mapping.display_name);
+        console.log(`Using custom field headers: ${headers.join(', ')}`);
+      } else {
+        // Default headers
+        headers = [
+          'Vendor', 'Amount', 'Date', 'Due Date', 'Category', 
+          'Paid', 'Account Number', 'Currency', 'Message ID', 'Attachment ID'
+        ];
+      }
+      
+      // Add headers to spreadsheet
+      try {
+        await appendToSheet(token, spreadsheetId, [headers], 'RAW');
+        console.log('Successfully added headers to spreadsheet');
+      } catch (headerError) {
+        console.error('Error adding headers to spreadsheet:', headerError);
+        // Continue anyway
+      }
+    }
+    
+    // Try using direct API approach
+    console.log('Using direct API approach for export...');
+    
+    // Map bills to rows based on field mappings
+    const rowData = bills.map(bill => {
+      if (userFieldMappings && userFieldMappings.length > 0) {
+        // Map according to user field mappings
+        const sortedMappings = [...userFieldMappings]
+          .filter(mapping => mapping.is_enabled)
+          .sort((a, b) => a.display_order - b.display_order);
+        
+        // Create a row with values mapped to correct columns
+        return sortedMappings.map(mapping => {
+          // Get value based on field name
+          const fieldName = mapping.name;
+          
+          switch (fieldName) {
+            case 'vendor':
+              return bill.vendor || '';
+            case 'amount':
+              return bill.amount?.toString() || '';
+            case 'date':
+              return formatDateForSheet(bill.date);
+            case 'due_date':
+              return bill.dueDate ? formatDateForSheet(bill.dueDate) : '';
+            case 'category':
+              return bill.category || '';
+            case 'is_paid':
+              return bill.isPaid ? 'Yes' : 'No';
+            case 'account_number':
+              return bill.accountNumber || '';
+            case 'currency':
+              return bill.currency || '';
+            case 'source_id':
+              return bill.emailId || '';
+            case 'attachment_id':
+              return bill.attachmentId || '';
+            case 'notes':
+              return bill.notes || '';
+            default:
+              return '';
+          }
+        });
+      } else {
+        // Use default mapping
+        return [
+          bill.vendor || '',
+          bill.amount?.toString() || '',
+          formatDateForSheet(bill.date),
+          bill.dueDate ? formatDateForSheet(bill.dueDate) : '',
+          bill.category || '',
+          bill.isPaid ? 'Yes' : 'No',
+          bill.accountNumber || '',
+          bill.currency || '',
+          bill.emailId || '',
+          bill.attachmentId || ''
+        ];
+      }
+    });
+    
+    console.log(`Attempting direct append of ${rowData.length} rows to sheet...`);
+    console.log(`Sample row data: ${JSON.stringify(rowData[0])}`);
+    
+    // Direct API call to append values - this works in service workers
+    const appendRange = 'Bills!A2:J';
+    const response = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${appendRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          values: rowData,
+        }),
+      }
+    );
+    
+    // Check for response errors
+    if (!response.ok) {
+      const responseText = await response.text();
+      console.error('Direct append failed with status:', response.status);
+      console.error('Response text:', responseText);
+      
+      let errorData;
+      try {
+        errorData = JSON.parse(responseText);
+      } catch (e) {
+        errorData = { error: { message: responseText } };
+      }
+      
+      throw new Error(`Sheets API error: ${errorData.error?.message || responseText || 'Unknown error'}`);
+    }
+    
+    console.log('Successfully exported bills to spreadsheet using direct API approach');
+    
+    // Generate spreadsheet URL for response - make sure this works in service worker context
+    const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+    
+    // In a service worker context, we might not be able to access document
+    try {
       sendResponse({
-        success: false,
-        error: 'Export failed: ' + (exportError instanceof Error ? exportError.message : String(exportError))
+        success: true,
+        spreadsheetUrl
       });
+      
+      console.log('==== EXPORT TO SHEETS - SUCCESS ====');
+      return;
+    } catch (responseError) {
+      console.error('Error in sendResponse:', responseError);
+      // Try a simpler response without spreadsheetUrl if we're in a service worker
+      sendResponse({
+        success: true
+      });
+      console.log('==== EXPORT TO SHEETS - SUCCESS (SIMPLIFIED RESPONSE) ====');
+      return;
     }
   } catch (error) {
-    console.error('Unhandled error in export to sheets:', error);
+    console.error('Error exporting bills to sheets:', error);
     sendResponse({
       success: false,
-      error: 'Unhandled error: ' + (error instanceof Error ? error.message : String(error))
+      error: 'Error exporting bills to sheets: ' + (error instanceof Error ? error.message : String(error))
     });
   }
 }
@@ -3312,3 +3245,48 @@ async function processInBackground(message: any, sendResponse: Function) {
     });
   }
 }
+
+// Import createSpreadsheet from sheets API
+const { createSpreadsheet } = await import('../services/sheets/sheetsApi');
+
+// Create a new spreadsheet
+async function createNewSpreadsheet(token: string) {
+  return await createSpreadsheet(token, 'Gmail Bill Scanner - Bills Tracker');
+}
+
+// Update settings in Supabase
+async function updateSettingsInSupabase(userId: string, preferences: Record<string, any>) {
+  const { updateMultipleUserPreferences } = await import('../services/settings');
+  return await updateMultipleUserPreferences(userId, preferences);
+}
+
+// Function to append data to sheets
+async function appendToSheet(token: string, spreadsheetId: string, values: any[][], valueInputOption: string = 'USER_ENTERED') {
+  if (!token) {
+    throw new Error('No authentication token provided');
+  }
+  
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Bills!A2:Z:append?valueInputOption=${valueInputOption}&insertDataOption=INSERT_ROWS`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        values: values,
+      }),
+    }
+  );
+  
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(`Sheets API error: ${errorData.error?.message || 'Unknown error'}`);
+  }
+  
+  return response.json();
+}
+
+// Fix userId initialization
+let userId: string | null = null;

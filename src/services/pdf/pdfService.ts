@@ -27,34 +27,62 @@ export async function normalizePdfData(pdfData: ArrayBuffer | string): Promise<U
     return new Uint8Array(pdfData);
   }
   
-  // Assume it's base64 - clean it up and convert
-  try {
-    // Handle URL-safe base64 and optional padding
-    const cleanBase64 = (pdfData as string)
-      .replace(/^data:[^;]+;base64,/, '')
-      .replace(/-/g, '+')
-      .replace(/_/g, '/')
-      .replace(/\s/g, '');
-    
-    // Add padding if needed
-    const padding = cleanBase64.length % 4;
-    const paddedBase64 = padding ? 
-      cleanBase64 + '='.repeat(4 - padding) : 
-      cleanBase64;
-    
-    // Convert base64 to binary
-    const binary = atob(paddedBase64);
-    const bytes = new Uint8Array(binary.length);
-    
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+  // Check if we have a string that's already binary data
+  if (typeof pdfData === 'string') {
+    // If it starts with "%PDF" (common PDF header) or "JVBERi" (base64 encoded PDF header),
+    // handle it appropriately
+    if (pdfData.startsWith('%PDF')) {
+      // Already binary, convert to Uint8Array
+      const bytes = new Uint8Array(pdfData.length);
+      for (let i = 0; i < pdfData.length; i++) {
+        bytes[i] = pdfData.charCodeAt(i);
+      }
+      return bytes;
     }
     
-    return bytes;
-  } catch (error) {
-    console.error('Error converting PDF data:', error);
-    throw new Error('Failed to convert PDF data to ArrayBuffer');
+    // Handle base64 format
+    try {
+      // Handle URL-safe base64 and optional padding
+      const cleanBase64 = pdfData
+        .replace(/^data:[^;]+;base64,/, '')
+        .replace(/-/g, '+')
+        .replace(/_/g, '/')
+        .replace(/\s/g, '');
+      
+      // Add padding if needed
+      const padding = cleanBase64.length % 4;
+      const paddedBase64 = padding ? 
+        cleanBase64 + '='.repeat(4 - padding) : 
+        cleanBase64;
+      
+      // Try base64 conversion
+      try {
+        // Convert base64 to binary
+        const binary = atob(paddedBase64);
+        const bytes = new Uint8Array(binary.length);
+        
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        
+        return bytes;
+      } catch (base64Error) {
+        console.warn('Base64 conversion failed:', base64Error);
+        // If base64 fails, try treating as binary string (last resort)
+        const bytes = new Uint8Array(pdfData.length);
+        for (let i = 0; i < pdfData.length; i++) {
+          bytes[i] = pdfData.charCodeAt(i);
+        }
+        return bytes;
+      }
+    } catch (error) {
+      console.error('Error converting PDF data:', error);
+      throw new Error('Failed to convert PDF data to ArrayBuffer');
+    }
   }
+  
+  // If we get here, we have an unsupported format
+  throw new Error('Unsupported PDF data format');
 }
 
 /**
@@ -749,10 +777,19 @@ export async function extractPdfContent(pdfData: ArrayBuffer | string): Promise<
  * @param pdfData PDF data in any format
  * @returns Basic extraction result
  */
-async function fallbackPdfExtraction(pdfData: ArrayBuffer | string): Promise<any> {
+async function fallbackPdfExtraction(pdfData: ArrayBuffer | string | Uint8Array): Promise<any> {
   try {
-    // Normalize data
-    const normalizedData = await normalizePdfData(pdfData);
+    // Normalize data - handle ArrayBuffer/Uint8Array directly if that's what we have
+    let dataForPdf: Uint8Array | string;
+    
+    if (pdfData instanceof ArrayBuffer) {
+      dataForPdf = new Uint8Array(pdfData);
+    } else if (pdfData instanceof Uint8Array) {
+      dataForPdf = pdfData;
+    } else {
+      // It's a string, normalize it
+      dataForPdf = await normalizePdfData(pdfData);
+    }
     
     // Try to get PDF.js library
     const pdfjsLib = await ensurePdfjsLoaded().catch(() => {
@@ -761,7 +798,7 @@ async function fallbackPdfExtraction(pdfData: ArrayBuffer | string): Promise<any
     
     // Load the PDF document with minimal options
     const pdfDocument = await pdfjsLib.getDocument({
-      data: normalizedData,
+      data: dataForPdf,
       disableFontFace: true, // Can help with problematic fonts
       cMapUrl: undefined,    // Don't try to load CMap
       standardFontDataUrl: undefined // Skip font data loading
@@ -794,30 +831,13 @@ async function fallbackPdfExtraction(pdfData: ArrayBuffer | string): Promise<any
       pages: []  // No position data in fallback mode
     };
   } catch (error) {
-    console.error('Fallback extraction failed:', error);
-    
-    // Last resort: try character-by-character extraction
-    if (typeof pdfData === 'string') {
-      try {
-        // If it's base64, try to extract ASCII characters as last resort
-        const text = atob(pdfData.replace(/^data:.*?;base64,/, '').replace(/\s/g, ''))
-          .replace(/[^\x20-\x7E\u00C0-\u00FF\u0150\u0170\u0151\u0171]/g, ' ') // Include Hungarian chars
-          .replace(/\s+/g, ' ')
-          .trim();
-        
-        return {
-          success: true, 
-          text,
-          isFromFallback: true,
-          isLastResort: true
-        };
-      } catch (e) {
-        // If even this fails, give up
-        throw new Error('All extraction methods failed');
-      }
-    }
-    
-    throw error; // Re-throw if we can't do character extraction
+    console.error('Error in fallback PDF extraction:', error);
+    return {
+      success: false,
+      text: '',
+      error: error instanceof Error ? error.message : 'Unknown error in fallback extraction',
+      isFromFallback: true
+    };
   }
 }
 
@@ -845,5 +865,63 @@ export function logExtractionError(error: any, context: Record<string, any> = {}
     sessionStorage.setItem('pdfExtractionErrors', JSON.stringify(existingLogs.slice(-10))); // Keep only last 10
   } catch (e) {
     // Ignore storage errors
+  }
+}
+
+/**
+ * Extract text directly from PDF buffer data
+ * This is designed specifically for service worker contexts
+ * 
+ * @param pdfBuffer PDF data as ArrayBuffer or Uint8Array
+ * @returns Promise resolving to extracted text
+ */
+export async function extractTextFromPdfBuffer(pdfBuffer: ArrayBuffer | Uint8Array): Promise<string> {
+  try {
+    // Ensure PDF.js is loaded
+    await ensurePdfjsLoaded();
+    
+    // Ensure we have Uint8Array
+    const data = pdfBuffer instanceof Uint8Array ? pdfBuffer : new Uint8Array(pdfBuffer);
+    
+    // Load PDF document
+    const pdfDocument = await pdfjsLib.getDocument({
+      data,
+      disableFontFace: true, // Can help with performance in service worker
+      cMapUrl: undefined,
+      standardFontDataUrl: undefined
+    }).promise;
+    
+    // Extract text from each page
+    let fullText = '';
+    
+    for (let i = 1; i <= pdfDocument.numPages; i++) {
+      try {
+        const page = await pdfDocument.getPage(i);
+        const content = await page.getTextContent();
+        
+        // Capture text content from page preserving some layout via spaces
+        const pageText = content.items
+          .map((item: any) => item.str)
+          .join(' ');
+        
+        fullText += pageText + '\n\n';
+      } catch (pageError) {
+        console.error(`Error extracting text from page ${i}:`, pageError);
+        // Continue with next page
+      }
+    }
+    
+    return fullText;
+  } catch (error) {
+    console.error('Error extracting text from PDF buffer:', error);
+    
+    // Try fallback method using PDFWorker if available
+    try {
+      const extracted = await fallbackPdfExtraction(pdfBuffer);
+      return extracted.text || '';
+    } catch (fallbackError) {
+      console.error('Even fallback extraction failed:', fallbackError);
+      return '';
+    }
   }
 } 

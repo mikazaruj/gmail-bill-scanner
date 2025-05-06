@@ -202,21 +202,23 @@ export class PatternBasedExtractor implements ExtractionStrategy {
         if (isServiceWorker) {
           console.log('Running in service worker context, using fallback PDF extraction');
           
-          // Use standardized approach - normalize data first
+          // Improved ArryBuffer handling
           try {
             const { normalizePdfData } = await import('../../../services/pdf/pdfService');
             
-            // Only use basicTextExtraction if we have string input, as it requires base64
+            // If string, use basic text extraction
             if (typeof pdfData === 'string') {
               extractedText = this.basicTextExtraction(pdfData);
             } else {
-              // For ArrayBuffer/Uint8Array, run normalized processing
-              const normalizedData = await normalizePdfData(pdfData);
-              // Create a fake base64 for basic extraction
-              const tempBase64 = Array.from(normalizedData)
-                .map(byte => String.fromCharCode(byte))
-                .join('');
-              extractedText = this.basicTextExtraction(tempBase64);
+              // For ArrayBuffer/Uint8Array, use proper binary handling
+              // and then import text extraction service
+              const { extractTextFromPdfBuffer } = await import('../../../services/pdf/pdfService');
+              extractedText = await extractTextFromPdfBuffer(pdfData);
+              
+              // If extraction failed, try basic extraction on raw binary as fallback
+              if (!extractedText && typeof pdfData === 'string') {
+                extractedText = this.basicTextExtraction(pdfData);
+              }
             }
           } catch (error) {
             console.error('Error normalizing data or extracting text:', error);

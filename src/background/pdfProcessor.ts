@@ -273,11 +273,12 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
       
       // Send back the result
       sendResponse(result);
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Error processing PDF directly:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to extract text from PDF';
       sendResponse({
         success: false,
-        error: error.message || 'Failed to extract text from PDF'
+        error: errorMessage
       });
     }
   } catch (error) {
@@ -339,11 +340,7 @@ async function processPdfData(
 }
 
 /**
- * Process extracted text to extract bill data using user mappings
- * @param text Extracted text from PDF
- * @param language Language code
- * @param userId Optional user ID for field extraction
- * @param extractFields Whether to extract fields
+ * Process extracted text with user mappings if requested
  */
 async function processExtractedText(
   text: string,
@@ -351,32 +348,111 @@ async function processExtractedText(
   userId?: string,
   extractFields: boolean = true
 ): Promise<any> {
-  // Extract fields if requested for authenticated users
-  let billData = null;
-  if (extractFields && userId && text) {
-    try {
-      const supabase = await getSupabaseClient();
-      
-      // Get user's field mappings
-      const { data: userMappings } = await supabase
-        .from('field_mappings')
-        .select('*')
-        .eq('user_id', userId);
-      
-      if (userMappings && userMappings.length > 0) {
-        // Extract bill data using user's mappings
-        billData = extractBillDataWithUserMappings(
-          text,
-          userMappings,
-          language
-        );
-        console.log('Successfully extracted field data using user mappings');
-      }
-    } catch (error) {
-      console.error('Error extracting bill fields:', error);
-      // Continue with extraction result even if field extraction fails
-    }
+  // Only process fields if requested
+  if (!extractFields || !text) {
+    return {
+      success: true,
+      text
+    };
   }
   
-  return { billData };
+  try {
+    const supabase = await getSupabaseClient();
+    
+    // Result data that will be returned
+    let billData: Record<string, any> = {};
+    
+    // Get user mappings if userId is provided
+    if (userId) {
+      console.log(`Getting user field mappings for user ${userId}`);
+      
+      // Query field mappings directly from field_mapping_view
+      const { data: userMappings, error: mappingsError } = await supabase
+        .from('field_mapping_view')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('is_enabled', true)
+        .order('display_order');
+      
+      if (mappingsError) {
+        console.error('Error fetching field mappings:', mappingsError);
+      }
+      
+      // If we got mappings, use them for extraction
+      if (userMappings && userMappings.length > 0) {
+        console.log(`Found ${userMappings.length} field mappings for extraction`);
+        
+        try {
+          // Import the extraction module
+          const { extractBillDataWithUserMappings } = await import('../services/pdf/billFieldExtractor');
+          
+          // Extract bill data using mappings
+          billData = await extractBillDataWithUserMappings(text, userMappings, language);
+          
+          console.log('Successfully extracted field data using user mappings', billData);
+        } catch (extractionError) {
+          console.error('Error using user mappings for extraction:', extractionError);
+          // Fall back to default patterns
+          billData = await extractBillDataWithDefaultPatterns(text, language);
+        }
+      } else {
+        console.log('No user field mappings found, using default patterns');
+        // Use default patterns if no mappings
+        billData = await extractBillDataWithDefaultPatterns(text, language);
+      }
+    } else {
+      console.log('No user ID provided, using default patterns');
+      // No user ID, use default patterns
+      billData = await extractBillDataWithDefaultPatterns(text, language);
+    }
+    
+    return {
+      success: true,
+      text,
+      billData
+    };
+  } catch (error) {
+    console.error('Error processing extracted text:', error);
+    
+    // Return text but mark field extraction as failed
+    return {
+      success: true,
+      text,
+      fieldExtractionError: error instanceof Error ? error.message : 'Unknown error',
+      billData: null
+    };
+  }
+}
+
+/**
+ * Extract bill data using default patterns when user mappings unavailable
+ */
+async function extractBillDataWithDefaultPatterns(text: string, language: string): Promise<Record<string, any>> {
+  try {
+    // Default extraction logic
+    const { getDefaultPatterns } = await import('../services/extraction/patterns/patternLoader');
+    const patterns = getDefaultPatterns(language as 'en' | 'hu');
+    
+    // Result object
+    const result: Record<string, any> = {};
+    
+    // Apply patterns to extract data
+    for (const [field, pattern] of Object.entries(patterns)) {
+      if (pattern && typeof pattern === 'object' && 'regex' in pattern) {
+        // Type assertion to make TypeScript happy
+        const regexPattern = pattern.regex as string;
+        const regex = new RegExp(regexPattern, 'i');
+        const match = text.match(regex);
+        
+        if (match && match[1]) {
+          result[field] = match[1].trim();
+        }
+      }
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error extracting bill data with default patterns:', error);
+    return {};
+  }
 } 

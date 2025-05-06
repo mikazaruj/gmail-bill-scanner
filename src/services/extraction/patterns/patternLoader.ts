@@ -299,4 +299,29 @@ export function calculateConfidence(text: string, language: 'en' | 'hu' = 'en'):
   
   // Cap at 1.0
   return Math.min(1.0, confidence);
+}
+
+/**
+ * Get default extraction patterns for the specified language
+ * Used for extracting bill data with standardized field names
+ * 
+ * @param language Language code ('en' or 'hu')
+ * @returns Object with regex patterns for different fields
+ */
+export function getDefaultPatterns(language: 'en' | 'hu' = 'en'): Record<string, { regex: string }> {
+  const patterns = getLanguagePatterns(language);
+  
+  // Convert the field extractors to a format suitable for direct regex usage
+  const result: Record<string, { regex: string }> = {};
+  
+  for (const extractor of patterns.fieldExtractors) {
+    if (extractor.patterns.length > 0) {
+      // Use the first pattern from the list
+      result[extractor.fieldName] = { 
+        regex: extractor.patterns[0]
+      };
+    }
+  }
+  
+  return result;
 } 

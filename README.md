@@ -161,6 +161,37 @@ The extension now supports improved PDF processing with the following features:
 - Detailed error logging for troubleshooting
 - Type-safe implementation with proper TypeScript types
 
+## PDF Processing Consolidation Plan
+
+## Current Issues
+- Multiple implementations of PDF processing in various files
+- Inconsistent handling of binary data (mixing base64 strings and ArrayBuffer)
+- Redundant code across background and content scripts
+- Type safety issues with field mappings
+
+## Consolidated Solution
+We've created a unified approach to PDF processing with these components:
+
+1. **consolidatedPdfService.ts**: Single source of truth for PDF operations
+   - Standardized on ArrayBuffer/Uint8Array for binary data
+   - Proper chunking for large files using Transferable Objects
+   - Enhanced field extraction using field_mapping_view
+   - Position-aware text extraction
+
+2. **pdfProcessingHandler.ts**: Background script handler
+   - Processes chunked PDF transfers
+   - Handles coordination between content and background
+
+3. **FieldMapping.ts**: Common type definition
+   - Based on the actual Supabase field_mapping_view structure
+   - Helper utilities for field mapping operations
+
+## Next Steps
+1. Replace references to old PDF processing in content scripts
+2. Update background script to use the new handler
+3. Remove redundant PDF processing files once consolidated approach is proven
+4. Update bill extraction to handle field mappings consistently for both email body and PDF attachments
+
 ## License
 
 MIT
