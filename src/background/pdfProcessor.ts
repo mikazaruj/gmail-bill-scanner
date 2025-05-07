@@ -20,11 +20,11 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.entry';
 import { extractBillDataWithUserMappings } from '../services/pdf/billFieldExtractor';
-import { 
-  base64ToArrayBuffer, 
-  extractPdfContent,
+import {
+  extractPdfText,
+  processPdfFromGmailApi,
   normalizePdfData,
-  logExtractionError
+  logDiagnostics
 } from '../services/pdf/pdfService';
 import { getSupabaseClient } from '../services/supabase/client';
 
@@ -307,15 +307,20 @@ async function processPdfData(
   try {
     console.log('Using direct unified PDF processing');
     
+    // Ensure we have ArrayBuffer data
+    const normalizedPdfData = typeof pdfData === 'string' 
+      ? base64ToArrayBuffer(pdfData) 
+      : pdfData;
+    
     // Extract text and position data using unified method with robust error handling
-    const extractionResult = await extractPdfContent(pdfData).catch(error => {
+    const extractionResult = await extractPdfText(normalizedPdfData).catch(error => {
       // Log the error with details for troubleshooting
-      logExtractionError(error, { 
+      logDiagnostics(`Error in PDF extraction: ${error instanceof Error ? error.message : 'Unknown error'}`, { 
         type: 'pdf-processor',
         stage: 'extraction',
-        language
+        fileSize: normalizedPdfData.byteLength
       });
-      throw new Error(`PDF extraction failed: ${error.message}`);
+      throw error;
     });
     
     // Process the extracted text to get bill data
@@ -454,5 +459,29 @@ async function extractBillDataWithDefaultPatterns(text: string, language: string
   } catch (error) {
     console.error('Error extracting bill data with default patterns:', error);
     return {};
+  }
+}
+
+// Helper to convert base64 to array buffer for compatibility with existing code
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  try {
+    // For data URLs, extract the base64 part
+    if (base64.startsWith('data:')) {
+      const parts = base64.split(',');
+      if (parts.length > 1) {
+        base64 = parts[1];
+      }
+    }
+    
+    // Standard base64 conversion
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+  } catch (error) {
+    console.error('Error converting base64 to ArrayBuffer:', error);
+    throw error;
   }
 } 

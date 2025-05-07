@@ -17,7 +17,7 @@ import {
 import { RegexBasedExtractor } from "./strategies/regexBasedExtractor";
 import { PatternBasedExtractor } from "./strategies/patternBasedExtractor";
 import { getLanguagePatterns } from "./patterns/patternLoader";
-import { extractTextFromBase64Pdf } from '../pdf/pdfService';
+import { extractTextFromPdf } from '../pdf/pdfService';
 import { ExtractionResult } from "../../types";
 import { decodeBase64 } from '../../utils/base64Decode';
 
@@ -476,6 +476,30 @@ function preprocessPdfData(base64Pdf: string, language: string): string {
   return base64Pdf;
 }
 
+// Add a helper function to convert base64 to ArrayBuffer
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  try {
+    // For data URLs, extract the base64 part
+    if (base64.startsWith('data:')) {
+      const parts = base64.split(',');
+      if (parts.length > 1) {
+        base64 = parts[1];
+      }
+    }
+    
+    // Standard base64 conversion
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+  } catch (error) {
+    console.error('Error converting base64 to ArrayBuffer:', error);
+    throw error;
+  }
+}
+
 /**
  * Extract bill data from a PDF document
  */
@@ -502,7 +526,7 @@ export const extractFromPdf = async (
     const preprocessedData = preprocessPdfData(base64Pdf, language);
     
     // Extract text from PDF
-    const extractionResult = await extractTextFromBase64Pdf(preprocessedData, language);
+    const extractionResult = await extractTextFromPdf(base64ToArrayBuffer(preprocessedData), language);
     const extractedText = extractionResult.text;
     
     if (!extractedText || extractedText.length < 10) {

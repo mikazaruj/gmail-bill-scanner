@@ -1528,6 +1528,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return true;
           }
 
+        case 'EXTRACT_TEXT_FROM_PDF_WITH_DETAILS':
+          try {
+            // Get the language setting for extraction
+            const language = message.language || 'en';
+            const base64String = message.base64String;
+            
+            // Import the PDF service
+            const { extractTextFromPdfWithDetails } = await import('../services/pdf/pdfService');
+
+            // Convert base64 to ArrayBuffer directly inline
+            let pdfData: ArrayBuffer;
+            try {
+              // For data URLs, extract the base64 part
+              let base64 = base64String;
+              if (base64.startsWith('data:')) {
+                const parts = base64.split(',');
+                if (parts.length > 1) {
+                  base64 = parts[1];
+                }
+              }
+              
+              // Standard base64 conversion
+              const binaryString = atob(base64);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              pdfData = bytes.buffer;
+            } catch (error) {
+              console.error('Error converting base64 to ArrayBuffer:', error);
+              sendResponse({ success: false, error: 'Failed to convert PDF data' });
+              return true;
+            }
+            
+            const extractedText = await extractTextFromPdfWithDetails(pdfData, language);
+            
+            // Send back the extracted text
+            sendResponse({ success: true, text: extractedText });
+          } catch (error) {
+            console.error('Error extracting text from PDF:', error);
+            sendResponse({ success: false, error: 'Failed to extract text from PDF' });
+          }
+          return true;
+
         default:
           console.warn(`Unknown message type: ${message.type}`);
           sendResponse({ success: false, error: `Unknown message type: ${message.type}` });
@@ -2058,7 +2102,9 @@ async function handleScanEmails(
                         const bill: Bill = {
                           id: `${messageId}-${attachmentData.id}`,
                           vendor: pdfResult.billData?.vendor || 'Unknown',
-                          amount: pdfResult.billData?.amount || 0,
+                          amount: typeof pdfResult.billData?.amount === 'string' 
+                            ? parseFloat(pdfResult.billData.amount) || 0 
+                            : pdfResult.billData?.amount || 0,
                           currency: 'HUF',  // Default currency
                           date: new Date(), // Current date as fallback
                           category: pdfResult.billData?.category || 'Utility',
@@ -3390,10 +3436,38 @@ async function processInBackground(message: any, sendResponse: Function) {
     }
     
     // Import pdfService functions
-    const { extractTextFromBase64PdfWithDetails } = await import('../services/pdf/pdfService');
+    const { extractTextFromPdfWithDetails } = await import('../services/pdf/pdfService');
     
-    // Process the PDF using the service
-    const extractedText = await extractTextFromBase64PdfWithDetails(base64String, language);
+    // Convert base64 to ArrayBuffer inline (removing dependency on separate function)
+    let pdfData: ArrayBuffer;
+    try {
+      // For data URLs, extract the base64 part
+      let base64 = base64String;
+      if (base64.startsWith('data:')) {
+        const parts = base64.split(',');
+        if (parts.length > 1) {
+          base64 = parts[1];
+        }
+      }
+      
+      // Standard base64 conversion
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      pdfData = bytes.buffer;
+    } catch (conversionError) {
+      console.error('Error converting base64 to ArrayBuffer:', conversionError);
+      sendResponse({
+        success: false,
+        error: 'Failed to convert PDF data'
+      });
+      return;
+    }
+    
+    // Process the PDF using the service with ArrayBuffer data
+    const extractedText = await extractTextFromPdfWithDetails(pdfData, language);
     
     if (!extractedText || extractedText.length < 10) {
       sendResponse({
