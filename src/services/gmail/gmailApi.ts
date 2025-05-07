@@ -159,13 +159,15 @@ export async function getAttachments(token: string, messageId: string): Promise<
       extractAttachmentIds(message.payload.parts);
     }
     
-    // Fetch each attachment's data
+    // Fetch each attachment's data in binary format for better performance
     return Promise.all(
       attachments.map(async (attachment) => {
-        const fullAttachment = await fetchAttachment(token, messageId, attachment.attachmentId);
+        // Fetch the attachment in binary format
+        const fullAttachment = await fetchAttachment(token, messageId, attachment.attachmentId, 'binary');
         return {
           ...attachment,
-          data: fullAttachment.data
+          data: fullAttachment.data,
+          binaryData: fullAttachment.binaryData // Include binary data for more efficient processing
         };
       })
     );
@@ -180,22 +182,24 @@ export async function getAttachments(token: string, messageId: string): Promise<
  * @param token Access token
  * @param messageId Message ID
  * @param attachmentId Attachment ID
+ * @param format Desired format for the attachment data ('base64' or 'binary')
  * @returns Gmail attachment
  */
 export async function fetchAttachment(
   token: string,
   messageId: string, 
-  attachmentId: string
+  attachmentId: string,
+  format: 'base64' | 'binary' = 'base64'
 ): Promise<GmailAttachment> {
   try {
-    const response = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      }
-    );
+    const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`;
+    
+    // For binary data, we need to fetch the base64 first, then convert it
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
     
     if (!response.ok) {
       const error = await response.json();
@@ -204,6 +208,22 @@ export async function fetchAttachment(
     
     const data = await response.json();
     
+    // If binary format is requested, convert base64 to ArrayBuffer
+    if (format === 'binary' && data.data) {
+      // Convert base64 to binary data
+      const binaryData = Uint8Array.from(atob(data.data), c => c.charCodeAt(0)).buffer;
+      
+      return {
+        attachmentId,
+        messageId,
+        data: '',  // Empty string as we're using binaryData instead
+        binaryData,
+        size: data.size,
+        filename: `attachment-${attachmentId}.pdf` // Default filename
+      };
+    }
+    
+    // Return base64 data if requested (default)
     return {
       attachmentId,
       messageId,

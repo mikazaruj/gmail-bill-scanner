@@ -19,6 +19,7 @@ import { PatternBasedExtractor } from "./strategies/patternBasedExtractor";
 import { getLanguagePatterns } from "./patterns/patternLoader";
 import { extractTextFromBase64Pdf } from '../pdf/pdfService';
 import { ExtractionResult } from "../../types";
+import { decodeBase64 } from '../../utils/base64Decode';
 
 // Gmail message header interface
 interface GmailMessageHeader {
@@ -248,7 +249,7 @@ export class BillExtractor {
    * Extract bills from a PDF document
    */
   async extractFromPdf(
-    pdfData: string,
+    pdfData: string | ArrayBuffer,
     messageId: string,
     attachmentId: string,
     fileName: string,
@@ -275,8 +276,16 @@ export class BillExtractor {
       
       console.log(`Extracting bills from PDF with language: ${language || 'en'}`);
       
-      // Preprocess PDF data based on language
-      const processedPdfData = this.preprocessPdfData(pdfData, language);
+      // For ArrayBuffer, we can skip preprocessing since it's already binary
+      let processedPdfData: string | ArrayBuffer = pdfData;
+      
+      // Only preprocess if we have a string (base64)
+      if (typeof pdfData === 'string') {
+        // Preprocess PDF data based on language
+        processedPdfData = this.preprocessPdfData(pdfData, language);
+      } else {
+        console.log('Using binary PDF data directly, skipping base64 preprocessing');
+      }
       
       // Try each strategy in order, stopping when we find bills
       let highestConfidence = 0;
@@ -381,24 +390,13 @@ export class BillExtractor {
       
       let bodyText = '';
       
-      // Browser-compatible base64 decoding function
-      const decodeBase64 = (base64Data: string): string => {
+      // Process base64 encoded content with proper handling
+      const processBase64Content = (base64Data: string): string => {
         try {
           // Replace URL-safe characters and add padding if needed
           const fixedBase64 = base64Data.replace(/-/g, '+').replace(/_/g, '/');
-          
-          // Use atob for browser environments
-          const rawString = atob(fixedBase64);
-          
-          // Handle UTF-8 encoding
-          const utf8Decoder = new TextDecoder('utf-8');
-          const bytes = new Uint8Array(rawString.length);
-          
-          for (let i = 0; i < rawString.length; i++) {
-            bytes[i] = rawString.charCodeAt(i);
-          }
-          
-          return utf8Decoder.decode(bytes);
+          // Use imported decodeBase64 function
+          return decodeBase64(fixedBase64);
         } catch (error) {
           console.error('Error decoding base64 data:', error);
           return '';
@@ -413,7 +411,7 @@ export class BillExtractor {
         // Extract part body helper
         const extractPartBody = (part: any): string => {
           if (part.body && part.body.data) {
-            return decodeBase64(part.body.data);
+            return processBase64Content(part.body.data);
           }
           
           if (part.parts && part.parts.length) {
@@ -443,7 +441,7 @@ export class BillExtractor {
         }
       } else if (payload.body && payload.body.data) {
         // Simple body
-        bodyText = decodeBase64(payload.body.data);
+        bodyText = processBase64Content(payload.body.data);
       }
       
       return bodyText;
@@ -504,7 +502,8 @@ export const extractFromPdf = async (
     const preprocessedData = preprocessPdfData(base64Pdf, language);
     
     // Extract text from PDF
-    const extractedText = await extractTextFromBase64Pdf(preprocessedData, language);
+    const extractionResult = await extractTextFromBase64Pdf(preprocessedData, language);
+    const extractedText = extractionResult.text;
     
     if (!extractedText || extractedText.length < 10) {
       console.warn('PDF extraction returned insufficient text');

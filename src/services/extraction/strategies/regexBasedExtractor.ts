@@ -21,6 +21,7 @@ import {
   getSpecialCompanyPattern
 } from "../patterns/patternLoader";
 import { parseHungarianAmount } from '../utils/amountParser';
+import { decodeBase64 } from '../../../utils/base64Decode';
 
 // Common bill-related keywords - dynamically loaded from patterns
 const getBillKeywordsForLanguage = (language: string = 'en') => {
@@ -157,345 +158,74 @@ export class RegexBasedExtractor implements ExtractionStrategy {
    */
   async extractFromPdf(context: PdfExtractionContext): Promise<BillExtractionResult> {
     try {
-      const { pdfData, messageId, attachmentId, fileName, language } = context;
-      const inputLanguage = language || 'en';
+      const fileName = context.fileName || 'unknown.pdf';
+      const language = context.language || 'en';
       
-      // Check if we have data
-      if (!pdfData) {
-        return {
-          success: false,
-          bills: [],
-          confidence: 0,
-          error: 'No PDF data provided'
-        };
-      }
+      // Enhanced logging at the start of extraction
+      console.log(`Extracting PDF text in service worker context`);
       
-      // Extract text from PDF using the real PDF service
-      let extractedText = '';
+      // Use normalizePdfData to handle both ArrayBuffer and string inputs
+      // This is where most failures happen, so we need to be careful
+      const { normalizePdfData } = await import('../../../services/pdf/pdfService');
+      
+      // Console log for diagnostics about what we're processing
+      console.debug(`PDF Processing: ${fileName}, data type: ${typeof context.pdfData}, ArrayBuffer: ${context.pdfData instanceof ArrayBuffer}`);
+      
       try {
-        // Check if we're in a service worker context first
-        const isServiceWorker = typeof window === 'undefined' || 
-                               typeof window.document === 'undefined' ||
-                               typeof window.document.createElement === 'undefined';
+        // Running in service worker context, using fallback extraction directly
+        const { extractPdfContent } = await import('../../../services/pdf/pdfService');
         
-        console.log(`Extracting PDF text in ${isServiceWorker ? 'service worker' : 'browser'} context`);
-        
-        if (isServiceWorker) {
-          // Use basic extraction in service worker context instead of trying to load PDF.js
-          console.log('Running in service worker context, using fallback extraction directly');
-          // Use normalizePdfData to handle both ArrayBuffer and string inputs
-          const { normalizePdfData } = await import('../../../services/pdf/pdfService');
-          const normalizedData = await normalizePdfData(pdfData);
-          extractedText = this.basicTextExtraction(
-            typeof pdfData === 'string' ? pdfData : '', 
-            inputLanguage
-          );
+        // If we have binary data, use it directly
+        if (context.pdfData instanceof ArrayBuffer) {
+          console.log('Using direct ArrayBuffer for PDF extraction');
         } else {
-          // Only try to use PDF.js in browser context
-          const { extractPdfContent } = await import('../../../services/pdf/pdfService');
-          const result = await extractPdfContent(pdfData);
-          extractedText = result.text;
+          console.log('Converting string data to binary for PDF extraction');
         }
         
-        console.log(`Extracted ${extractedText.length} characters from PDF attachment`);
-      } catch (pdfError) {
-        console.error('Error extracting text from PDF, trying fallback approach:', pdfError);
+        // This will normalize the data and process through PDF.js
+        const extractionResult = await extractPdfContent(context.pdfData);
+        const extractedText = extractionResult.text || '';
         
-        // Fallback to basic text extraction
-        try {
-          // Try to get some text from data as a last resort
-          extractedText = this.basicTextExtraction(
-            typeof pdfData === 'string' ? pdfData : '', 
-            inputLanguage
-          );
-          console.log(`Basic text extraction yielded ${extractedText.length} characters`);
-        } catch (fallbackError) {
-          console.error('Even fallback PDF text extraction failed:', fallbackError);
+        // Log extraction stats
+        console.debug(`PDF extraction success: extracted ${extractedText.length} characters from ${fileName}`);
+        
+        // Check for empty extraction
+        if (!extractedText || extractedText.trim().length < 10) {
+          console.log('PDF extraction produced little or no text, trying basic extraction');
+          // When PDF.js fails, we need to use basic text extraction
+          return this.basicPdfExtraction(context);
+        }
+        
+        // Process extracted text
+        const extractedBills = this.processExtractedText(extractedText, language, fileName);
+        if (extractedBills.length > 0) {
           return {
-            success: false,
-            bills: [],
-            confidence: 0,
-            error: 'Failed to extract any text from PDF'
-          };
-        }
-      }
-      
-      if (!extractedText) {
-        return {
-          success: false,
-          bills: [],
-          confidence: 0,
-          error: 'No text was extracted from PDF'
-        };
-      }
-      
-      // Use language-specific patterns to detect and extract bill data
-      console.log(`Using language-specific patterns for language: ${inputLanguage}`);
-      
-      // Check for bill indicators using language-specific patterns
-      const isLikelyBill = matchesDocumentIdentifiers(extractedText, inputLanguage as 'en' | 'hu');
-      
-      // Get confidence score using language patterns
-      const patternConfidence = calculateConfidence(extractedText, inputLanguage as 'en' | 'hu');
-      console.log(`Language pattern confidence: ${patternConfidence}`);
-      
-      // Fallback to original keyword check
-      const billKeywords = getBillKeywordsForLanguage(inputLanguage);
-      const keywordsInText = billKeywords.filter(keyword => 
-        extractedText.toLowerCase().includes(keyword.toLowerCase())
-      );
-      
-      // Enhanced debugging for all bills
-      console.log(`Keywords found in PDF: ${keywordsInText.join(', ')}`);
-      console.log(`Keywords found count: ${keywordsInText.length}`);
-      
-      // Log the first 100 characters of text for debugging
-      console.log(`PDF text sample: ${extractedText.substring(0, 100)}...`);
-      
-      // Look for bill indicators even if keywords aren't found
-      const hasBillIndicators = (
-        // Check for currency amount patterns - handles various formats
-        extractedText.match(/\d+[,. ]\d{2}[ ]?(?:Ft|HUF|EUR|\$|USD|€|£|GBP)/i) !== null ||
-        // Check for date patterns
-        extractedText.match(/\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}|\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}/i) !== null ||
-        // Check for account/customer number patterns
-        extractedText.match(/(?:account|customer|client|azonosító|ügyfél)(?:[ \.:#-]+)(\w+)/i) !== null ||
-        // Check for utility-specific words
-        extractedText.match(/(?:electric|gas|water|utility|áram|gáz|víz|közüzem)/i) !== null
-      );
-      
-      // Use email context for extraction
-      const isFromBillingSource = context.messageId && (
-        context.messageId.toLowerCase().includes('bill') || 
-        context.messageId.toLowerCase().includes('invoice') || 
-        context.messageId.toLowerCase().includes('statement') ||
-        context.messageId.toLowerCase().includes('receipt') ||
-        context.messageId.toLowerCase().includes('számla') ||
-        context.messageId.toLowerCase().includes('fizetés')
-      );
-      
-      // Skip keyword check if we have strong bill indicators from language patterns
-      if (!isLikelyBill && patternConfidence < 0.4 && keywordsInText.length < 2 && !hasBillIndicators && !isFromBillingSource) {
-        console.log('Not enough bill indicators found in PDF content');
-        return {
-          success: false,
-          bills: [],
-          confidence: 0.1,
-          error: 'Not enough bill-related indicators found'
-        };
-      }
-      
-      // If we got here, we'll try to extract bill information using language-specific patterns
-      
-      // Extract required fields using language patterns
-      let amountStr = extractBillField(extractedText, 'amount', inputLanguage as 'en' | 'hu');
-      const dueDateStr = extractBillField(extractedText, 'dueDate', inputLanguage as 'en' | 'hu');
-      const billingDateStr = extractBillField(extractedText, 'billingDate', inputLanguage as 'en' | 'hu');
-      const vendorStr = extractBillField(extractedText, 'vendor', inputLanguage as 'en' | 'hu');
-      const accountNumberStr = extractBillField(extractedText, 'accountNumber', inputLanguage as 'en' | 'hu');
-      const invoiceNumberStr = extractBillField(extractedText, 'invoiceNumber', inputLanguage as 'en' | 'hu');
-      
-      console.log(`Extracted amount: ${amountStr}`);
-      console.log(`Extracted due date: ${dueDateStr}`);
-      console.log(`Extracted vendor: ${vendorStr}`);
-      
-      // Service type detection
-      const serviceTypeInfo = detectServiceType(extractedText, inputLanguage as 'en' | 'hu');
-      console.log(`Detected service type: ${serviceTypeInfo?.type || 'unknown'}`);
-      
-      // Special handling for MVM bills or other Hungarian utility bills
-      // These often have special formatting with highlighted sections that may be missed by regular patterns
-      if (inputLanguage === 'hu' && (extractedText.toLowerCase().includes('mvm') || 
-          fileName.toLowerCase().includes('mvm') || 
-          vendorStr?.toLowerCase().includes('mvm'))) {
-        
-        console.log('Detected MVM bill - applying special extraction logic for MVM bills');
-        
-        // Get MVM specific amount patterns
-        const pdfSettings = getPdfExtractionSettings('hu');
-        const mvmSettings = pdfSettings?.specialCompanyPatterns?.mvm || { defaultCategory: "Utilities", defaultCurrency: "HUF" };
-        // Safely access amountPatterns or use fallback patterns
-        const mvmAmountPatterns = (mvmSettings as any)?.amountPatterns || [
-          "Fizetendő összeg:?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
-          "Fizetendő összeg:\\s*(\\d+\\s*\\d+)\\s*Ft"
-        ];
-        
-        // Try to find the amount in the highlighted section (typically in MVM bills)
-        for (const pattern of mvmAmountPatterns) {
-          const regex = new RegExp(pattern, 'i');
-          const match = extractedText.match(regex);
-          
-          if (match && match[1]) {
-            const highlightedAmount = match[1].trim();
-            console.log(`Found MVM-specific highlighted amount: ${highlightedAmount}`);
-            
-            // If we didn't find an amount with the standard patterns or the highlighted amount is larger
-            if (!amountStr || (parseHungarianAmount(highlightedAmount) > parseHungarianAmount(amountStr))) {
-              amountStr = highlightedAmount;
-              console.log(`Using highlighted amount from MVM bill: ${amountStr}`);
+            success: true,
+            bills: extractedBills,
+            debug: {
+              strategy: this.name,
+              extractionMethod: 'pdf.js',
+              confidence: 0.8
             }
-            
-            break;
-          }
-        }
-        
-        // Check for the "Fizetendő összeg" highlighted box in the orange section
-        // This is typically formatted as "121.975 Ft" in MVM bills
-        const orangeHighlightPattern = /fizetendő\s+összeg:?\s*([\d\s.,]+)\s*(?:Ft|HUF)/i;
-        const orangeMatch = extractedText.match(orangeHighlightPattern);
-        
-        if (orangeMatch && orangeMatch[1]) {
-          const highlightedAmount = orangeMatch[1].trim();
-          console.log(`Found amount in highlighted box: ${highlightedAmount}`);
-          
-          // If we still don't have an amount or this one is larger, use it
-          if (!amountStr || (parseHungarianAmount(highlightedAmount) > parseHungarianAmount(amountStr))) {
-            amountStr = highlightedAmount;
-            console.log(`Using amount from highlighted box: ${amountStr}`);
-          }
-        }
-      }
-      
-      // Parse amount
-      let amount = 0;
-      try {
-        if (amountStr) {
-          console.log('Attempting to parse amount:', amountStr);
-          amount = parseHungarianAmount(amountStr);
-        } else {
-          console.error('No amount string to parse');
-          return {
-            success: false,
-            bills: [],
-            confidence: patternConfidence,
-            error: 'No amount string found'
           };
         }
-      } catch (error) {
-        console.error('Failed to parse amount:', error);
-        return {
-          success: false,
-          bills: [],
-          confidence: patternConfidence,
-          error: 'Failed to parse amount'
-        };
-      }
-      
-      if (!amount || amount <= 0) {
-        return {
-          success: false,
-          bills: [],
-          confidence: 0.3,
-          error: 'Could not extract valid amount'
-        };
-      }
-      
-      // Determine currency from content
-      let currency = inputLanguage === 'hu' ? "HUF" : "USD"; // Default currency based on language
-      
-      // Check for specific currency indicators in the text
-      if (inputLanguage === 'hu' || 
-          extractedText.toLowerCase().includes('huf') || 
-          extractedText.toLowerCase().includes('ft') || 
-          extractedText.toLowerCase().includes('forint')) {
-        currency = "HUF";
-      } else if (extractedText.includes('€') || extractedText.toLowerCase().includes('eur')) {
-        currency = "EUR";
-      } else if (extractedText.includes('£') || extractedText.toLowerCase().includes('gbp')) {
-        currency = "GBP";
-      }
-      
-      // Parse dates - use the extracted ones from patterns if available
-      const date = billingDateStr ? new Date(billingDateStr) : new Date();
-      const dueDate = dueDateStr ? new Date(dueDateStr) : undefined;
-      
-      // Determine vendor
-      const vendor = vendorStr || this.extractVendorFromFileName(fileName);
-      
-      // Determine category - use service type if available
-      const category = serviceTypeInfo?.category || this.categorize(vendor, fileName, extractedText, inputLanguage);
-      
-      // Get account number
-      const accountNumber = accountNumberStr || this.extractAccountNumber(extractedText);
-      
-      // Check if this is a special company like MVM that needs custom handling
-      const specialCompany = getSpecialCompanyPattern(vendor, inputLanguage as 'en' | 'hu');
-      const isSpecialCompany = !!specialCompany;
-      
-      // Special company matching in text content
-      const specialCompanyInText = !specialCompany && extractedText.toLowerCase().includes('mvm') 
-        ? getSpecialCompanyPattern('mvm', inputLanguage as 'en' | 'hu')
-        : null;
-      
-      if (isSpecialCompany || specialCompanyInText) {
-        const companyData = specialCompany || specialCompanyInText;
-        console.log(`Detected special company bill: ${vendor}, applying custom handling`);
         
-        // Apply special company settings 
-        const customCategory = companyData.defaultCategory || category;
-        const customCurrency = companyData.defaultCurrency || currency;
-        
-        // Create the bill with special company-specific settings
-        const bill = createBill({
-          id: `pdf-${messageId}-${attachmentId}`,
-          vendor: vendor, // Keep the original vendor or use a fixed one if needed
-          amount,
-          currency: customCurrency,
-          date,
-          category: customCategory,
-          dueDate,
-          accountNumber,
-          source: {
-            type: 'pdf',
-            messageId,
-            attachmentId,
-            fileName
-          },
-          extractionMethod: this.name,
-          language: inputLanguage,
-          extractionConfidence: Math.max(0.7, patternConfidence)
-        });
-        
-        return {
-          success: true,
-          bills: [bill],
-          confidence: Math.max(0.7, patternConfidence)
-        };
+        // If we get here, the PDF.js extraction didn't find any bills, try basic extraction
+        return this.basicPdfExtraction(context);
+      } catch (pdfjsError) {
+        console.warn(`PDF.js extraction failed: ${(pdfjsError as Error).message || 'Unknown error'}`);
+        // PDF.js extraction failed, try basic extraction
+        return this.basicPdfExtraction(context);
       }
-      
-      // Create the bill using extracted data
-      const bill = createBill({
-        id: `pdf-${messageId}-${attachmentId}`,
-        vendor,
-        amount,
-        currency,
-        date,
-        category,
-        dueDate,
-        accountNumber,
-        source: {
-          type: 'pdf',
-          messageId,
-          attachmentId,
-          fileName
-        },
-        extractionMethod: this.name,
-        language: inputLanguage,
-        extractionConfidence: patternConfidence > 0.4 ? patternConfidence : 0.6
-      });
-      
-      return {
-        success: true,
-        bills: [bill],
-        confidence: patternConfidence > 0.4 ? patternConfidence : 0.6
-      };
     } catch (error) {
-      console.error('Error in regex-based PDF extraction:', error);
+      console.error('PDF extraction error:', (error as Error).message || 'Unknown error');
       return {
         success: false,
         bills: [],
-        confidence: 0,
-        error: error instanceof Error ? error.message : 'Unknown error'
+        debug: {
+          strategy: this.name,
+          error: (error as Error).message || 'Unknown error'
+        }
       };
     }
   }
@@ -825,7 +555,7 @@ export class RegexBasedExtractor implements ExtractionStrategy {
       // First try: Check if it's valid PDF base64 and attempt to decode it
       try {
         // Decode base64
-        const raw = atob(base64Data.replace(/-/g, '+').replace(/_/g, '/'));
+        const raw = decodeBase64(base64Data.replace(/-/g, '+').replace(/_/g, '/'));
         
         // Look for text markers in the PDF content
         const pdfTextRegex = /\(([^\)]{4,})\)/g;
@@ -996,6 +726,213 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         .replace(/[^A-Za-z0-9\s]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
+    }
+  }
+
+  // New method specifically for basic text extraction without PDF.js
+  private async basicPdfExtraction(context: PdfExtractionContext): Promise<BillExtractionResult> {
+    try {
+      const language = context.language || 'en';
+      const fileName = context.fileName || 'unknown.pdf';
+      
+      console.log('Running in service worker context, using basic PDF text extraction');
+      
+      let extractedText = '';
+      
+      // Try direct ArrayBuffer-based extraction first if available
+      if (context.pdfData instanceof ArrayBuffer) {
+        console.log('Using ArrayBuffer directly for basic extraction');
+        
+        // Convert ArrayBuffer to Uint8Array
+        const dataView = new Uint8Array(context.pdfData);
+        
+        // Look for text segments in the raw PDF data (common technique for PDFs)
+        // This tries to find text within () brackets, which is how text is stored in PDF
+        let textSegments: string[] = [];
+        
+        // Get the first portion to search for text markers
+        const sampleSize = Math.min(dataView.length, 50000);
+        const sampleBuffer = dataView.slice(0, sampleSize);
+        const sampleString = String.fromCharCode.apply(null, Array.from(sampleBuffer));
+        
+        // Look for text markers in the PDF
+        const textMarkerMatches = sampleString.match(/\(([^\)]{4,})\)/g);
+        
+        if (textMarkerMatches && textMarkerMatches.length > 0) {
+          console.log(`Found ${textMarkerMatches.length} text markers in PDF data`);
+          textSegments = textMarkerMatches.map(match => match.slice(1, -1));
+          extractedText = textSegments.join(' ');
+        } else {
+          // If no text markers found, try extracting readable characters directly
+          console.log('No text markers found, attempting direct character extraction');
+          extractedText = Array.from(dataView.slice(0, 10000))
+            .map(byte => byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : ' ')
+            .join('')
+            .replace(/\s+/g, ' ')
+            .trim();
+        }
+      } else if (typeof context.pdfData === 'string') {
+        // If we have a string (potentially base64), use our basic text extraction
+        extractedText = this.basicTextExtraction(context.pdfData, language);
+      }
+      
+      console.log(`Basic text extraction yielded ${extractedText.length} characters`);
+      
+      // Process the extracted text to find bills
+      const extractedBills = this.processExtractedText(extractedText, language, fileName);
+      
+      if (extractedBills.length > 0) {
+        return {
+          success: true,
+          bills: extractedBills,
+          debug: {
+            strategy: this.name,
+            extractionMethod: 'basic-extraction',
+            confidence: 0.6
+          }
+        };
+      }
+      
+      // No bills found
+      return {
+        success: false,
+        bills: [],
+        debug: {
+          strategy: this.name,
+          extractionMethod: 'basic-extraction',
+          reason: 'No bills found in extracted text'
+        }
+      };
+    } catch (error) {
+      console.error('Basic PDF extraction error:', (error as Error).message || 'Unknown error');
+      return {
+        success: false,
+        bills: [],
+        debug: {
+          strategy: this.name,
+          error: (error as Error).message || 'Unknown error'
+        }
+      };
+    }
+  }
+
+  // Process extracted text to find bill data
+  private processExtractedText(text: string, language: string, fileName: string): Bill[] {
+    try {
+      // Using language-specific patterns
+      const patterns = getCategoryPatternsForLanguage(language);
+      const currencySymbols = getCurrencySymbolsWithDefaults(language);
+      
+      console.log(`Using language-specific patterns for language: ${language}`);
+      
+      // First, look for patterns that indicate this is a bill
+      const billPatterns = [
+        /invoice/i, /bill/i, /payment/i, /receipt/i, /total/i, /amount due/i,
+        /számla/i, /fizetés/i, /fizetendő/i, /összeg/i, /díj/i,
+        /factur[ae]/i, /pago/i, /importe/i, /recibo/i, /total/i,
+        /rechnung/i, /zahlung/i, /betrag/i, /summe/i, /gesamt/i
+      ];
+      
+      // Score the text based on how many bill indicators we find
+      let patternConfidence = 0;
+      const keywordsFound: string[] = [];
+      
+      for (const pattern of billPatterns) {
+        const matches = text.match(pattern);
+        if (matches && matches.length > 0) {
+          patternConfidence += 0.1 * Math.min(matches.length, 3); // Cap at 0.3 per pattern
+          keywordsFound.push(...matches);
+        }
+      }
+      
+      patternConfidence = Math.min(patternConfidence, 1); // Cap at 1.0
+      
+      console.log(`Language pattern confidence: ${patternConfidence}`);
+      console.log(`Keywords found in PDF: ${keywordsFound.join(', ')}`);
+      console.log(`Keywords found count: ${keywordsFound.length}`);
+      
+      // Keep a small sample of the text for diagnostics
+      const textSample = text.substring(0, 100);
+      console.log(`PDF text sample: ${textSample}...`);
+      
+      // If we don't have enough confidence, return empty
+      if (patternConfidence < 0.2 && keywordsFound.length < 3) {
+        console.log(`Not enough bill indicators found in PDF content`);
+        return [];
+      }
+      
+      // Look for amounts with currency
+      const amountPatterns = [
+        // With currency symbol
+        new RegExp(`(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*(?:${currencySymbols})`, 'g'),
+        // Currency symbol first
+        new RegExp(`(?:${currencySymbols})\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)`, 'g'),
+        // Just numbers that look like monetary amounts
+        /(\d{1,3}(?:[., ]\d{3})*[.,]\d{2})/g
+      ];
+      
+      let amounts: number[] = [];
+      let processedAmountStrings: Set<string> = new Set();
+      
+      // Extract all possible amounts from text
+      for (const pattern of amountPatterns) {
+        const matches = text.matchAll(pattern);
+        for (const match of Array.from(matches)) {
+          // Get amount from group 1 if it exists, otherwise use the full match
+          const amountStr = match[1] || match[0];
+          
+          // Skip if we've already processed this string
+          if (processedAmountStrings.has(amountStr)) continue;
+          processedAmountStrings.add(amountStr);
+          
+          // Parse amount string to number
+          try {
+            // Clean up the string - remove non-numeric except for decimal separator
+            const cleanAmount = amountStr
+              .replace(/[^\d.,]/g, '')
+              .replace(/,/g, '.');
+            
+            // Convert to number
+            const amount = parseFloat(cleanAmount);
+            if (!isNaN(amount) && amount > 0) {
+              amounts.push(amount);
+            }
+          } catch (e) {
+            // Skip invalid amounts
+          }
+        }
+      }
+      
+      // Sort amounts in descending order (usually the largest amount is the total)
+      amounts.sort((a, b) => b - a);
+      
+      // If we found amounts, create a bill
+      if (amounts.length > 0) {
+        console.log(`Found ${amounts.length} potential amounts in PDF: ${amounts.slice(0, 3).join(', ')}${amounts.length > 3 ? '...' : ''}`);
+        
+        // Usually the largest amount is the total
+        const billAmount = amounts[0];
+        
+        // Get vendor from filename or "Unknown"
+        const vendor = this.extractVendorFromFileName(fileName);
+        
+        return [{
+          id: `pdf-${fileName}-${Date.now()}`,
+          vendor: vendor,
+          amount: billAmount,
+          date: new Date(), // Use current date as fallback
+          invoiceNumber: 'N/A',
+          currency: language === 'hu' ? 'HUF' : 'USD', // Default currency based on language
+          category: this.categorize(vendor, '', text, language),
+          confidence: patternConfidence
+        }];
+      }
+      
+      console.log(`No valid amounts found in PDF content`);
+      return [];
+    } catch (error) {
+      console.error('Error processing extracted text:', (error as Error).message || 'Unknown error');
+      return [];
     }
   }
 } 

@@ -9,6 +9,8 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.entry';
 import { extractBillDataWithUserMappings } from './billFieldExtractor';
+import { decodeBase64 } from "../../utils/base64Decode";
+import { directBase64ToUint8Array } from "../../utils/base64Decode";
 
 // Configure worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -16,73 +18,169 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 // Promise to track PDF.js loading
 let pdfjsLibPromise: Promise<any> | null = null;
 
+// Configure diagnostics
+const ENABLE_DIAGNOSTICS = true;
+const MAX_DIAGNOSTIC_SAMPLE = 100;
+
+/**
+ * Helper function to log PDF processing diagnostics
+ */
+function logDiagnostics(message: string, data?: any): void {
+  if (!ENABLE_DIAGNOSTICS) return;
+  
+  console.debug(`[PDF-DIAGNOSTICS] ${message}`);
+  if (data) {
+    if (typeof data === 'string' && data.length > MAX_DIAGNOSTIC_SAMPLE) {
+      console.debug(`[PDF-DIAGNOSTICS] Sample: ${data.substring(0, MAX_DIAGNOSTIC_SAMPLE)}...`);
+    } else {
+      console.debug(`[PDF-DIAGNOSTICS]`, data);
+    }
+  }
+}
+
 /**
  * Convert any PDF data to ArrayBuffer format
+ * Enhanced version with improved diagnostic logging and error handling
  * @param pdfData Data in either ArrayBuffer or base64 string
  * @returns Promise resolving to a Uint8Array
  */
 export async function normalizePdfData(pdfData: ArrayBuffer | string): Promise<Uint8Array> {
-  // If already ArrayBuffer, just return a Uint8Array view
-  if (pdfData instanceof ArrayBuffer) {
-    return new Uint8Array(pdfData);
-  }
+  // Track processing time for diagnostics
+  const startTime = Date.now();
   
-  // Check if we have a string that's already binary data
-  if (typeof pdfData === 'string') {
-    // If it starts with "%PDF" (common PDF header) or "JVBERi" (base64 encoded PDF header),
-    // handle it appropriately
-    if (pdfData.startsWith('%PDF')) {
-      // Already binary, convert to Uint8Array
-      const bytes = new Uint8Array(pdfData.length);
-      for (let i = 0; i < pdfData.length; i++) {
-        bytes[i] = pdfData.charCodeAt(i);
-      }
-      return bytes;
+  try {
+    // If already ArrayBuffer, just return a Uint8Array view
+    if (pdfData instanceof ArrayBuffer) {
+      const result = new Uint8Array(pdfData);
+      logDiagnostics(`ArrayBuffer processed directly: ${result.length} bytes`, {
+        type: 'ArrayBuffer',
+        byteLength: result.length,
+        processingTime: Date.now() - startTime
+      });
+      return result;
     }
     
-    // Handle base64 format
-    try {
-      // Handle URL-safe base64 and optional padding
-      const cleanBase64 = pdfData
-        .replace(/^data:[^;]+;base64,/, '')
-        .replace(/-/g, '+')
-        .replace(/_/g, '/')
-        .replace(/\s/g, '');
+    // Check if we have a string that's already binary data
+    if (typeof pdfData === 'string') {
+      // Let's gather diagnostics about this string
+      logDiagnostics(`Processing string data: ${pdfData.length} characters`, {
+        firstBytes: pdfData.substring(0, 20),
+        containsPdfHeader: pdfData.includes('%PDF'),
+        containsBase64Header: pdfData.includes('JVBERi'),
+        stringLength: pdfData.length
+      });
       
-      // Add padding if needed
-      const padding = cleanBase64.length % 4;
-      const paddedBase64 = padding ? 
-        cleanBase64 + '='.repeat(4 - padding) : 
-        cleanBase64;
-      
-      // Try base64 conversion
-      try {
-        // Convert base64 to binary
-        const binary = atob(paddedBase64);
-        const bytes = new Uint8Array(binary.length);
-        
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        
-        return bytes;
-      } catch (base64Error) {
-        console.warn('Base64 conversion failed:', base64Error);
-        // If base64 fails, try treating as binary string (last resort)
+      // If it starts with "%PDF" (common PDF header) or "JVBERi" (base64 encoded PDF header),
+      // handle it appropriately
+      if (pdfData.startsWith('%PDF')) {
+        // Already binary, convert to Uint8Array
         const bytes = new Uint8Array(pdfData.length);
         for (let i = 0; i < pdfData.length; i++) {
           bytes[i] = pdfData.charCodeAt(i);
         }
+        logDiagnostics(`Processed PDF binary string: ${bytes.length} bytes`);
         return bytes;
       }
-    } catch (error) {
-      console.error('Error converting PDF data:', error);
-      throw new Error('Failed to convert PDF data to ArrayBuffer');
+      
+      // Handle base64 format - USING DIRECT BINARY CONVERSION
+      try {
+        // Handle URL-safe base64 and optional padding
+        const cleanBase64 = pdfData
+          .replace(/^data:[^;]+;base64,/, '')
+          .replace(/-/g, '+')
+          .replace(/_/g, '/')
+          .replace(/\s/g, '');
+        
+        logDiagnostics(`Cleaned base64 data: ${cleanBase64.length} chars`);
+        
+        // Add padding if needed
+        const padding = cleanBase64.length % 4;
+        const paddedBase64 = padding ? 
+          cleanBase64 + '='.repeat(4 - padding) : 
+          cleanBase64;
+        
+        // Try using direct Uint8Array conversion without string intermediates
+        try {
+          // Check if we're in a service worker context
+          if (isServiceWorkerContext()) {
+            logDiagnostics('Service worker context detected, using direct binary handling');
+            
+            // Use our enhanced direct method without string intermediate
+            const bytes = directBase64ToUint8Array(paddedBase64);
+            
+            logDiagnostics(`Direct binary conversion complete: ${bytes.length} bytes`);
+            return bytes;
+          }
+          
+          // Standard conversion for main thread
+          const bytes = directBase64ToUint8Array(paddedBase64);
+          
+          // Validate result has PDF header
+          const hasPdfHeader = checkForPdfHeader(bytes);
+          logDiagnostics(`Direct conversion result: ${bytes.length} bytes, valid PDF: ${hasPdfHeader}`, {
+            processingTime: Date.now() - startTime
+          });
+          
+          return bytes;
+        } catch (conversionError) {
+          logDiagnostics(`Direct conversion failed: ${conversionError.message}`);
+          
+          // If we detect PDF data directly in the string, try to extract it
+          if (pdfData.includes('%PDF-')) {
+            logDiagnostics('PDF header detected in string, extracting directly');
+            
+            const startIndex = pdfData.indexOf('%PDF-');
+            const pdfString = pdfData.substring(startIndex);
+            const bytes = new Uint8Array(pdfString.length);
+            
+            for (let i = 0; i < pdfString.length; i++) {
+              bytes[i] = pdfString.charCodeAt(i);
+            }
+            
+            return bytes;
+          }
+          
+          // Last resort - treat as binary string directly
+          const bytes = new Uint8Array(pdfData.length);
+          for (let i = 0; i < pdfData.length; i++) {
+            bytes[i] = pdfData.charCodeAt(i);
+          }
+          
+          logDiagnostics(`Fallback direct string processing: ${bytes.length} bytes`);
+          return bytes;
+        }
+      } catch (error) {
+        logDiagnostics(`Error converting PDF data: ${error.message}`, error);
+        throw new Error('Failed to convert PDF data to ArrayBuffer');
+      }
     }
+    
+    // If we get here, we have an unsupported format
+    throw new Error('Unsupported PDF data format');
+  } catch (error) {
+    logDiagnostics(`PDF normalization failed: ${error.message}`, {
+      inputType: typeof pdfData,
+      isArrayBuffer: pdfData instanceof ArrayBuffer,
+      processingTime: Date.now() - startTime
+    });
+    throw error;
   }
+}
+
+/**
+ * Helper function to check if a Uint8Array starts with a PDF header
+ * @param data Uint8Array to check
+ * @returns boolean indicating if the data has a PDF header
+ */
+function checkForPdfHeader(data: Uint8Array): boolean {
+  if (data.length < 5) return false;
   
-  // If we get here, we have an unsupported format
-  throw new Error('Unsupported PDF data format');
+  // Check for %PDF- header
+  return data[0] === 0x25 && // %
+         data[1] === 0x50 && // P
+         data[2] === 0x44 && // D
+         data[3] === 0x46 && // F
+         data[4] === 0x2D;   // -
 }
 
 /**
@@ -400,38 +498,111 @@ export async function extractTextFromBase64PdfWithPosition(base64Data: string): 
 /**
  * Extracts text from a base64 encoded PDF (simplified for backward compatibility)
  * @param base64Data Base64 encoded PDF
- * @returns Extracted text
+ * @returns Extracted text with position data
  */
-export async function extractTextFromBase64Pdf(base64Data: string): Promise<string> {
+export async function extractTextFromBase64Pdf(base64Pdf: string, language?: string): Promise<{
+  success: boolean;
+  text: string;
+  pages: Array<{
+    pageNumber: number;
+    text: string;
+    items: any[];
+    lines: any[];
+    width: number;
+    height: number;
+  }>;
+}> {
   try {
-    const result = await extractTextFromBase64PdfWithPosition(base64Data);
-    return result.text;
-  } catch (error) {
-    console.error('Error in simplified base64 text extraction:', error);
-    
-    // Try basic character extraction as a last resort
-    try {
-      return base64Decode(base64Data)
-        .replace(/[^\x20-\x7E\u00C0-\u00FF\u0150\u0170\u0151\u0171]/g, ' ') // Include Hungarian chars
-        .replace(/\s+/g, ' ')
-        .trim();
-    } catch (decodeError) {
-      console.error('Base64 decode fallback failed:', decodeError);
-      return '[PDF extraction failed]';
+    const pdfjsLib = await ensurePdfjsLoaded();
+
+    // In service worker context, we need to be careful with atob
+    // First, clean up the base64 string and make it compatible
+    let paddedBase64 = base64Pdf;
+    if (base64Pdf.indexOf('data:') === 0) {
+      paddedBase64 = base64Pdf.split(',')[1];
     }
+
+    // Add padding if needed
+    const padding = paddedBase64.length % 4;
+    if (padding > 0) {
+      paddedBase64 += '='.repeat(4 - padding);
+    }
+
+    // Use direct conversion with decodeBase64
+    const uint8Array = await base64ToUint8Array(paddedBase64);
+    const pdfDocument = await pdfjsLib.getDocument({ data: uint8Array }).promise;
+
+    let extractedText = '';
+    const pages: Array<{
+      pageNumber: number;
+      text: string;
+      items: any[];
+      lines: any[];
+      width: number;
+      height: number;
+    }> = [];
+
+    for (let i = 1; i <= pdfDocument.numPages; i++) {
+      const page = await pdfDocument.getPage(i);
+      const content = await page.getTextContent();
+      
+      // Extract items with position
+      const items = content.items.map((item: any) => ({
+        text: item.str,
+        x: item.transform[4],
+        y: item.transform[5],
+        width: item.width,
+        height: item.height || 0,
+        fontName: item.fontName,
+        fontSize: item.fontSize || 0
+      }));
+      
+      // Process items to maintain layout
+      const { text, lines } = processPageItems(items, page.view);
+      extractedText += text + '\n\n';
+      
+      // Store page data with layout information
+      pages.push({
+        pageNumber: i,
+        text,
+        items,
+        lines,
+        width: page.view[2],
+        height: page.view[3]
+      });
+    }
+
+    return {
+      success: true,
+      text: extractedText,
+      pages
+    };
+  } catch (error) {
+    console.error('Error extracting text from base64 PDF:', error);
+    throw error;
   }
 }
 
-/**
- * Decode base64 to string
- * @param base64 Base64 string
- * @returns Decoded string
- */
-function base64Decode(base64: string): string {
-  // Clean the base64 string
-  const cleanBase64 = base64.replace(/[^A-Za-z0-9+/=]/g, '');
-  // Decode
-  return atob(cleanBase64);
+// Helper function to decode base64 to uint8array
+export async function base64ToUint8Array(base64: string): Promise<Uint8Array> {
+  // Clean up base64
+  const cleanBase64 = base64.replace(/\s/g, '');
+  
+  try {
+    // Use the utility function for decoding
+    const binaryString = decodeBase64(cleanBase64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    
+    return bytes;
+  } catch (error) {
+    console.error('Error converting base64 to array buffer:', error);
+    throw error;
+  }
 }
 
 /**
@@ -467,7 +638,7 @@ export const extractTextFromBase64PdfWithDetails = async (
     console.log(`Extracting text with ${language} language focus`);
     
     // Get text with positional data
-    const extractionResult = await extractTextFromBase64PdfWithPosition(base64String);
+    const extractionResult = await extractTextFromBase64Pdf(base64String, language);
     let text = extractionResult.text;
     
     // Apply language-specific enhancements
@@ -496,7 +667,8 @@ export const extractTextFromBase64PdfWithDetails = async (
     
     // Try to use the simplified method as fallback
     try {
-      return await extractTextFromBase64Pdf(base64String);
+      const result = await extractTextFromBase64Pdf(base64String, language);
+      return result.text;
     } catch (fallbackError) {
       console.error('Even fallback extraction failed:', fallbackError);
       return '[PDF extraction failed]';
@@ -670,29 +842,6 @@ export function fileToArrayBuffer(file: File): Promise<ArrayBuffer> {
 }
 
 /**
- * Convert base64 to ArrayBuffer
- * @param base64 Base64 string
- * @returns ArrayBuffer
- */
-export function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  // Clean the base64 string
-  const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '');
-  
-  // Convert base64 to binary string
-  const binaryString = atob(cleanBase64);
-  
-  // Create ArrayBuffer from binary string
-  const buffer = new ArrayBuffer(binaryString.length);
-  const bytes = new Uint8Array(buffer);
-  
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  
-  return buffer;
-}
-
-/**
  * Convert ArrayBuffer to base64
  * @param buffer ArrayBuffer to convert
  * @returns Base64 string
@@ -709,65 +858,123 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 /**
- * Extract text from PDF with unified position-aware approach
- * This is the recommended method for all PDF extraction
- * @param pdfData PDF data in any format (will be normalized)
- * @returns Promise resolving to extracted text with position data
+ * Extract content from a PDF document
+ * Comprehensive function to process PDFs regardless of data type
+ * @param pdfData PDF data in either ArrayBuffer or string format
+ * @param language Language code for text processing
+ * @param userId User ID for mapping bill fields
+ * @param extractFields Whether to extract fields from text
+ * @returns Extraction results including text and bill data
  */
-export async function extractPdfContent(pdfData: ArrayBuffer | string): Promise<any> {
+export async function extractPdfContent(
+  pdfData: ArrayBuffer | string | Uint8Array,
+  language: string = 'en',
+  userId?: string,
+  extractFields: boolean = false
+): Promise<any> {
   try {
-    console.log('Using unified PDF extraction with position data');
+    // Optimize for binary data and standardize to Uint8Array
+    let binaryData: Uint8Array;
     
-    // Validate input
-    if (!pdfData) {
-      throw new Error('No PDF data provided');
+    if (pdfData instanceof ArrayBuffer) {
+      console.log('Processing PDF from ArrayBuffer directly');
+      binaryData = new Uint8Array(pdfData);
+    } else if (pdfData instanceof Uint8Array) {
+      console.log('Processing PDF from Uint8Array directly');
+      binaryData = pdfData;
+    } else if (typeof pdfData === 'string') {
+      console.log('Converting string PDF data to binary');
+      // Normalize the string data to Uint8Array (handles base64 or binary string)
+      binaryData = await normalizePdfData(pdfData);
+    } else {
+      throw new Error('Unsupported PDF data format');
     }
     
-    // Normalize data to ArrayBuffer format
-    const normalizedData = await normalizePdfData(pdfData).catch(error => {
-      console.error('Data normalization failed:', error);
-      throw new Error(`Failed to normalize PDF data: ${error.message}`);
-    });
-    
-    // Extract text and position data directly
-    const result = await extractTextFromPdfWithPosition(normalizedData).catch(error => {
-      console.error('Position-aware extraction failed:', error);
-      throw new Error(`Position-aware extraction failed: ${error.message}`);
-    });
-    
-    // Check if we got meaningful results
-    if (!result || !result.text || result.text.length < 10) {
-      console.warn('Extraction produced insufficient text');
-      result.warning = 'Extraction produced limited text content';
+    // Confirm we have valid PDF data - check for PDF header
+    if (!checkForPdfHeader(binaryData)) {
+      console.warn('PDF data does not contain valid PDF header');
     }
     
-    // Process the result to add structured field extraction
+    // Extract text from PDF using position-aware extraction
     try {
-      if (result.text) {
-        const extractedFields = extractStructuredBillData(result, 'auto');
+      console.log('Using position-aware extraction');
+      const positionResult = await extractTextFromPdfWithPosition(binaryData);
+      
+      if (positionResult && positionResult.success) {
+        const extractionResult = {
+          success: true,
+          text: positionResult.text,
+          pages: positionResult.pages
+        };
         
-        // Add extracted fields to result
-        result.extractedFields = extractedFields;
+        // Extract bill data if requested
+        if (extractFields) {
+          try {
+            const billData = await extractBillDataWithUserMappings(
+              extractionResult, 
+              language, 
+              userId
+            );
+            
+            if (billData) {
+              extractionResult.billData = billData;
+            }
+          } catch (billError) {
+            console.error('Error extracting bill data:', billError);
+          }
+        }
+        
+        return extractionResult;
       }
-    } catch (fieldExtractionError: any) {
-      console.error('Field extraction failed:', fieldExtractionError);
-      result.fieldExtractionError = fieldExtractionError.message;
-      // Continue with the extraction result even if field extraction fails
+    } catch (positionError) {
+      console.error('Position-aware extraction failed:', positionError);
     }
     
-    return result;
-  } catch (error: any) {
-    console.error('Error in unified PDF extraction:', error);
-    
-    // Attempt fallback extraction if the main method fails
+    // Fallback to unified extraction without position data
     try {
-      console.log('Attempting fallback extraction method');
-      return await fallbackPdfExtraction(pdfData);
-    } catch (fallbackError: any) {
-      console.error('Fallback extraction also failed:', fallbackError);
-      // Throw a combined error to provide maximum context
-      throw new Error(`PDF extraction failed: ${error.message}. Fallback also failed: ${fallbackError.message}`);
+      console.log('Falling back to unified extraction');
+      const text = await extractTextFromPdf(binaryData);
+      
+      // Create a simple result object
+      const extractionResult = {
+        success: true,
+        text,
+        pages: [{
+          pageNumber: 1,
+          text
+        }]
+      };
+      
+      // Extract bill data if requested
+      if (extractFields) {
+        try {
+          const billData = await extractBillDataWithUserMappings(
+            { text }, 
+            language, 
+            userId
+          );
+          
+          if (billData) {
+            extractionResult.billData = billData;
+          }
+        } catch (billError) {
+          console.error('Error extracting bill data in fallback:', billError);
+        }
+      }
+      
+      return extractionResult;
+    } catch (fallbackError) {
+      console.error('Unified extraction failed:', fallbackError);
     }
+    
+    // Last resort - try basic content extraction
+    return fallbackPdfExtraction(binaryData);
+  } catch (error) {
+    console.error('PDF extraction failed:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error in PDF extraction'
+    };
   }
 }
 
@@ -876,52 +1083,98 @@ export function logExtractionError(error: any, context: Record<string, any> = {}
  * @returns Promise resolving to extracted text
  */
 export async function extractTextFromPdfBuffer(pdfBuffer: ArrayBuffer | Uint8Array): Promise<string> {
+  const startTime = Date.now();
+  let extractionMethod = 'unknown';
+  
   try {
-    // Ensure PDF.js is loaded
-    await ensurePdfjsLoaded();
+    // Convert to Uint8Array if needed
+    const pdfData = pdfBuffer instanceof ArrayBuffer ? new Uint8Array(pdfBuffer) : pdfBuffer;
     
-    // Ensure we have Uint8Array
-    const data = pdfBuffer instanceof Uint8Array ? pdfBuffer : new Uint8Array(pdfBuffer);
+    logDiagnostics(`Starting PDF extraction from ${pdfData.length} bytes`);
     
-    // Load PDF document
-    const pdfDocument = await pdfjsLib.getDocument({
-      data,
-      disableFontFace: true, // Can help with performance in service worker
-      cMapUrl: undefined,
-      standardFontDataUrl: undefined
-    }).promise;
-    
-    // Extract text from each page
-    let fullText = '';
-    
-    for (let i = 1; i <= pdfDocument.numPages; i++) {
-      try {
+    // Try PDF.js extraction first
+    try {
+      const pdfjsLib = await ensurePdfjsLoaded();
+      const pdfDocument = await pdfjsLib.getDocument({ data: pdfData }).promise;
+      
+      let fullText = '';
+      for (let i = 1; i <= pdfDocument.numPages; i++) {
         const page = await pdfDocument.getPage(i);
         const content = await page.getTextContent();
-        
-        // Capture text content from page preserving some layout via spaces
-        const pageText = content.items
-          .map((item: any) => item.str)
-          .join(' ');
-        
+        const pageText = content.items.map((item: any) => item.str).join(' ');
         fullText += pageText + '\n\n';
-      } catch (pageError) {
-        console.error(`Error extracting text from page ${i}:`, pageError);
-        // Continue with next page
       }
+      
+      extractionMethod = 'pdf.js';
+      
+      logDiagnostics(`PDF.js extraction successful: ${fullText.length} characters in ${Date.now() - startTime}ms`);
+      return fullText;
+    } catch (pdfjsError) {
+      logDiagnostics(`PDF.js extraction failed: ${pdfjsError.message}, trying fallback...`);
+      
+      // PDF.js failed, try direct extraction from binary
+      let text = '';
+      
+      // Check for PDF signatures and extract text between markers
+      const pdfString = String.fromCharCode.apply(null, Array.from(pdfData.slice(0, 5000)));
+      const textMarkers = pdfString.match(/\(([^\)]{4,})\)/g);
+      
+      if (textMarkers && textMarkers.length > 0) {
+        text = textMarkers.join(' ');
+        extractionMethod = 'markers';
+      } else {
+        // Last resort: try to extract readable characters
+        text = Array.from(pdfData)
+          .map(byte => byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : ' ')
+          .join('')
+          .replace(/\s+/g, ' ')
+          .trim();
+        extractionMethod = 'raw-bytes';
+      }
+      
+      logDiagnostics(`Fallback extraction (${extractionMethod}) produced ${text.length} characters`);
+      return text;
     }
-    
-    return fullText;
   } catch (error) {
-    console.error('Error extracting text from PDF buffer:', error);
-    
-    // Try fallback method using PDFWorker if available
-    try {
-      const extracted = await fallbackPdfExtraction(pdfBuffer);
-      return extracted.text || '';
-    } catch (fallbackError) {
-      console.error('Even fallback extraction failed:', fallbackError);
-      return '';
-    }
+    logDiagnostics(`PDF extraction failed: ${error.message}`, {
+      extractionMethod,
+      duration: Date.now() - startTime
+    });
+    return '';
   }
+}
+
+/**
+ * Decode base64 to string
+ * @param base64 Base64 string
+ * @returns Decoded string
+ */
+function base64Decode(base64: string): string {
+  // Clean the base64 string
+  const cleanBase64 = base64.replace(/[^A-Za-z0-9+/=]/g, '');
+  // Use the decodeBase64 utility function instead of atob
+  return decodeBase64(cleanBase64);
+}
+
+/**
+ * Convert base64 to ArrayBuffer
+ * @param base64 Base64 string
+ * @returns ArrayBuffer
+ */
+export function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  // Clean the base64 string
+  const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '');
+  
+  // Convert base64 to binary string
+  const binaryString = decodeBase64(cleanBase64);
+  
+  // Create ArrayBuffer from binary string
+  const buffer = new ArrayBuffer(binaryString.length);
+  const bytes = new Uint8Array(buffer);
+  
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  
+  return buffer;
 } 

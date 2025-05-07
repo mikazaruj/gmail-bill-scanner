@@ -484,6 +484,14 @@ export interface Database {
           successful_items: number | null
         }
       }
+      google_identity_map_view: {
+        Row: {
+          supabase_user_id: string
+          google_user_id: string
+          created_at: string
+          updated_at: string
+        }
+      }
       trusted_sources_view: {
         Row: {
           id: string

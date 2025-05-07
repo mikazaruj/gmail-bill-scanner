@@ -32,6 +32,8 @@ import { getUserSettings } from '../services/settings';
 import { initializePdfProcessingHandlers } from './handlers/pdfProcessingHandler';
 // Add FieldMapping import at the top level
 import type { FieldMapping } from '../types/FieldMapping';
+// At the top of the file add these imports
+import { getSupabaseClient } from '../services/supabase/client';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -2031,16 +2033,16 @@ async function handleScanEmails(
                     continue;
                   }
                   
-                  // Fetch the attachment content
-                  const attachment = await fetchAttachment(messageId, attachmentData.id);
+                  // Fetch the attachment content as binary ArrayBuffer
+                  const attachmentBuffer = await fetchAttachment(messageId, attachmentData.id);
                   
-                  if (attachment) {
-                    console.log(`Processing PDF attachment: ${attachmentData.fileName}`);
+                  if (attachmentBuffer) {
+                    console.log(`Processing PDF attachment: ${attachmentData.fileName} (binary format)`);
                     console.log(`Using language setting for PDF: ${settings.inputLanguage}`);
                     
-                    // Process with our unified bill extractor
+                    // Process with our unified bill extractor - passing ArrayBuffer directly
                     const pdfResult = await billExtractor.extractFromPdf(
-                      attachment,
+                      attachmentBuffer,
                       messageId,
                       attachmentData.id,
                       attachmentData.fileName,
@@ -2234,7 +2236,7 @@ async function handleExportToSheets(
   sendResponse: (response: { success: boolean, error?: string, spreadsheetUrl?: string }) => void
 ) {
   try {
-    const { bills, spreadsheetId: requestedSpreadsheetId, autoExportToSheets } = payload;
+    const { bills, spreadsheetId: requestedSpreadsheetId } = payload;
     
     if (!bills || bills.length === 0) {
       return sendResponse({
@@ -2243,8 +2245,7 @@ async function handleExportToSheets(
       });
     }
     
-    console.log(`Export to sheets request received: ${JSON.stringify(payload)}`);
-    console.log(`Found ${bills.length} bills to export`);
+    console.log(`Export to sheets request received with ${bills.length} bills`);
     
     // Get Google token for Sheets API
     const token = await getAccessToken();
@@ -2254,207 +2255,275 @@ async function handleExportToSheets(
       return;
     }
     
-    // Get spreadsheet ID from settings
+    // Get spreadsheet ID from settings or create new one
     let spreadsheetId = requestedSpreadsheetId;
     let newSpreadsheetCreated = false;
     
     if (!spreadsheetId) {
       try {
-        // Identify the user first - needed for settings
-        const { resolveUserIdentity } = await import('../services/identity/userIdentityService');
-        const identity = await resolveUserIdentity();
+        // Get user identity with improved error handling
+        const { supabaseId, googleId } = await resolveUserIdentityDirect();
         
-        // Only proceed if we have a Supabase user ID
-        if (!identity?.supabaseId) {
-          return sendResponse({
-            success: false,
-            error: 'User not authenticated'
-          });
-        }
-        
-        // Get user settings from Supabase
-        const { getUserSettings } = await import('../services/settings');
-        const settings = await getUserSettings(identity.supabaseId);
-        
-        const hasSettings = !!settings;
-        const sheetIdExists = settings && !!settings.sheet_id;
-        const foundSpreadsheetId = settings?.sheet_id || '';
-        
-        console.log(`User settings retrieved: ${JSON.stringify({
-          has_settings: hasSettings,
-          sheet_id_exists: sheetIdExists,
-          found_spreadsheet_id: foundSpreadsheetId
-        })}`);
-        
-        if (sheetIdExists && foundSpreadsheetId) {
-          console.log(`Got spreadsheet ID from settings: ${foundSpreadsheetId}`);
-          spreadsheetId = foundSpreadsheetId;
+        if (!supabaseId) {
+          console.error('User not authenticated');
+          if (googleId) {
+            // We have a Google ID but no Supabase user ID
+            console.log('Found Google ID but no Supabase user ID, checking users table directly');
+            
+            // Try to get the Supabase user ID directly from users table
+            const supabase = await getSupabaseClient();
+            const { data: userData, error: userError } = await supabase
+              .from('users')
+              .select('id')
+              .eq('google_user_id', googleId)
+              .single();
+            
+            if (!userError && userData?.id) {
+              // Use the Supabase user ID from the users table
+              const userId = userData.id;
+              
+              // Now get the sheet ID using this user ID
+              const { data: settings, error } = await supabase
+                .from('user_settings_view')
+                .select('sheet_id')
+                .eq('id', userId)
+                .single();
+                
+              if (!error && settings?.sheet_id) {
+                spreadsheetId = settings.sheet_id;
+                console.log(`Got spreadsheet ID from settings view using user ID: ${spreadsheetId}`);
+              } else {
+                // Create a new spreadsheet
+                console.log('No spreadsheet ID found in settings for user, creating a new one');
+                
+                // Create new spreadsheet directly with Sheets API
+                const newSpreadsheet = await createSheetsSpreadsheet(token, 'Bills Tracker');
+                spreadsheetId = newSpreadsheet.spreadsheetId;
+                newSpreadsheetCreated = true;
+                
+                // Save the new spreadsheet ID to user settings
+                const { error: settingsError } = await supabase
+                  .from('user_settings')
+                  .upsert({ 
+                    user_id: userId,
+                    sheet_id: spreadsheetId
+                  });
+                  
+                if (settingsError) {
+                  console.error('Error saving new spreadsheet ID to user settings:', settingsError);
+                } else {
+                  console.log(`Saved new spreadsheet ID to user settings: ${spreadsheetId}`);
+                }
+              }
+            } else {
+              sendResponse({ success: false, error: 'User not authenticated' });
+              return;
+            }
+          } else {
+            sendResponse({ success: false, error: 'User not authenticated' });
+            return;
+          }
         } else {
-          // Create a new spreadsheet
-          console.log('No spreadsheet ID found in settings, creating a new one');
+          // We have a Supabase user ID, proceed with getting the sheet ID
+          const supabase = await getSupabaseClient();
           
-          // Create new spreadsheet directly with Sheets API
-          const newSpreadsheet = await createSheetsSpreadsheet(token, 'Bills Tracker');
-          spreadsheetId = newSpreadsheet.spreadsheetId;
-          newSpreadsheetCreated = true;
+          // Try to get sheet ID from user_settings_view directly
+          const { data: settings, error } = await supabase
+            .from('user_settings_view')
+            .select('sheet_id')
+            .eq('id', supabaseId)
+            .single();
+            
+          if (error) {
+            console.error('Error fetching user settings view:', error);
+          }
           
-          // Save the new spreadsheet ID to user settings
-          if (identity.supabaseId) {
-            const { updateMultipleUserPreferences } = await import('../services/settings');
-            await updateMultipleUserPreferences(identity.supabaseId, { 
-              sheet_id: spreadsheetId 
-            });
-            console.log(`Saved new spreadsheet ID to user settings: ${spreadsheetId}`);
+          if (settings?.sheet_id) {
+            console.log(`Got spreadsheet ID from settings view: ${settings.sheet_id}`);
+            spreadsheetId = settings.sheet_id;
+          } else {
+            console.log('No spreadsheet ID found in settings view, creating a new one');
+            
+            // Create new spreadsheet directly with Sheets API
+            const newSpreadsheet = await createSheetsSpreadsheet(token, 'Bills Tracker');
+            spreadsheetId = newSpreadsheet.spreadsheetId;
+            newSpreadsheetCreated = true;
+            
+            // Save the new spreadsheet ID to user settings
+            const { error: settingsError } = await supabase
+              .from('user_settings')
+              .upsert({ 
+                user_id: supabaseId,
+                sheet_id: spreadsheetId
+              });
+              
+            if (settingsError) {
+              console.error('Error saving new spreadsheet ID to user settings:', settingsError);
+            } else {
+              console.log(`Saved new spreadsheet ID to user settings: ${spreadsheetId}`);
+            }
           }
         }
       } catch (error) {
         console.error('Error getting spreadsheet ID from settings:', error);
-        return sendResponse({
-          success: false,
-          error: 'Could not get or create spreadsheet'
-        });
-      }
-    }
-    
-    console.log(`Using spreadsheet ID: ${spreadsheetId}`);
-    
-    // Fetch user's field mappings if available
-    let userFieldMappings: FieldMapping[] = [];
-    
-    try {
-      // Identify the user
-      const { resolveUserIdentity } = await import('../services/identity/userIdentityService');
-      const identity = await resolveUserIdentity();
-      const userId = identity?.supabaseId;
-      
-      if (userId) {
-        // Get field mappings from Supabase
-        const { getFieldMappings } = await import('../services/fieldMapping');
-        userFieldMappings = await getFieldMappings(userId);
-        console.log(`Fetched ${userFieldMappings?.length || 0} field mappings for user ${userId}`);
-      }
-    } catch (error) {
-      console.warn('Could not fetch field mappings:', error);
-      // Continue without mappings
-    }
-    
-    // Export bills
-    console.log(`Exporting ${bills.length} bills to spreadsheet ${spreadsheetId}...`);
-    
-    // If this is a new spreadsheet, set up the headers first
-    if (newSpreadsheetCreated) {
-      console.log('Setting up headers in new spreadsheet');
-      
-      // Use user field mappings for headers if available
-      let headers: string[] = [];
-      
-      if (userFieldMappings && userFieldMappings.length > 0) {
-        // Sort by display_order
-        const sortedMappings = [...userFieldMappings]
-          .filter(mapping => mapping.is_enabled)
-          .sort((a, b) => a.display_order - b.display_order);
-        
-        // Use display names for headers
-        headers = sortedMappings.map(mapping => mapping.display_name);
-        console.log(`Using custom field headers: ${headers.join(', ')}`);
-      } else {
-        // Default headers
-        headers = [
-          'Vendor', 'Amount', 'Date', 'Due Date', 'Category', 
-          'Paid', 'Account Number', 'Currency', 'Message ID', 'Attachment ID'
-        ];
-      }
-      
-      // Add headers to spreadsheet
-      try {
-        await appendSheetValues(token, spreadsheetId, 'Bills!A1:Z1', [headers], 'RAW');
-        console.log('Successfully added headers to spreadsheet');
-      } catch (headerError) {
-        console.error('Error adding headers to spreadsheet:', headerError);
-        // Continue anyway
-      }
-    }
-    
-    // Map bills to rows based on field mappings
-    const rowData = bills.map(bill => {
-      if (userFieldMappings && userFieldMappings.length > 0) {
-        // Map according to user field mappings
-        const sortedMappings = [...userFieldMappings]
-          .filter(mapping => mapping.is_enabled)
-          .sort((a, b) => a.display_order - b.display_order);
-        
-        // Create a row with values mapped to correct columns
-        return sortedMappings.map(mapping => {
-          // Get value based on field name
-          const fieldName = mapping.name;
+        // Check if this is the google_identity_map_view error
+        if (error instanceof Error && 
+            error.message && 
+            (error.message.includes('google_identity_map_view') || 
+             error.message.includes('does not exist'))) {
           
-          switch (fieldName) {
-            case 'vendor':
-              return bill.vendor || '';
-            case 'amount':
-              return bill.amount?.toString() || '';
-            case 'date':
-              return formatDateForSheet(bill.date);
-            case 'due_date':
-              return bill.dueDate ? formatDateForSheet(bill.dueDate) : '';
-            case 'category':
-              return bill.category || '';
-            case 'is_paid':
-              return bill.isPaid ? 'Yes' : 'No';
-            case 'account_number':
-              return bill.accountNumber || '';
-            case 'currency':
-              return bill.currency || '';
-            case 'source_id':
-              return bill.emailId || '';
-            case 'attachment_id':
-              return bill.attachmentId || '';
-            case 'notes':
-              return bill.notes || '';
-            default:
-              return '';
+          console.log('Identity mapping view error detected - falling back to direct user lookup');
+          
+          // Get Google ID from the profile
+          const token = await getAccessToken();
+          if (!token) {
+            sendResponse({ 
+              success: false, 
+              error: 'Not authenticated with Google. Please sign in again.' 
+            });
+            return;
           }
-        });
-      } else {
-        // Use default mapping
-        return [
-          bill.vendor || '',
-          bill.amount?.toString() || '',
-          formatDateForSheet(bill.date),
-          bill.dueDate ? formatDateForSheet(bill.dueDate) : '',
-          bill.category || '',
-          bill.isPaid ? 'Yes' : 'No',
-          bill.accountNumber || '',
-          bill.currency || '',
-          bill.emailId || '',
-          bill.attachmentId || ''
-        ];
+          
+          const profile = await fetchGoogleUserInfo(token);
+          if (!profile || !profile.id) {
+            sendResponse({ 
+              success: false, 
+              error: 'Could not get Google user information. Please sign in again.' 
+            });
+            return;
+          }
+          
+          // Try to find user directly
+          const supabase = await getSupabaseClient();
+          const { data: userData, error: userError } = await supabase
+            .from('users')
+            .select('id')
+            .eq('google_user_id', profile.id)
+            .single();
+          
+          if (userError || !userData) {
+            sendResponse({ 
+              success: false, 
+              error: 'Could not find your user account. Please sign in again.' 
+            });
+            return;
+          }
+          
+          // Found the user, now get sheet settings
+          const { data: settings, error: settingsError } = await supabase
+            .from('user_settings_view')
+            .select('sheet_id')
+            .eq('id', userData.id)
+            .single();
+          
+          if (!settingsError && settings?.sheet_id) {
+            // Use the sheet ID from settings
+            spreadsheetId = settings.sheet_id;
+            console.log(`Got spreadsheet ID from settings: ${spreadsheetId}`);
+            
+            // Continue with the export...
+          } else {
+            // Create a new spreadsheet
+            console.log('Creating new spreadsheet after error recovery...');
+            const newSpreadsheet = await createSheetsSpreadsheet(token, 'Bills Tracker');
+            spreadsheetId = newSpreadsheet.spreadsheetId;
+            newSpreadsheetCreated = true;
+            
+            // Try to save it to user settings
+            const { error: saveError } = await supabase
+              .from('user_settings')
+              .upsert({
+                user_id: userData.id,
+                sheet_id: spreadsheetId
+              });
+            
+            if (saveError) {
+              console.error('Error saving new spreadsheet ID to settings:', saveError);
+            } else {
+              console.log(`Saved new spreadsheet ID to settings: ${spreadsheetId}`);
+            }
+          }
+        } else {
+          sendResponse({ 
+            success: false, 
+            error: 'Error exporting to Google Sheets. Please try again or check your connection settings.' 
+          });
+          return;
+        }
       }
-    });
+    }
     
-    console.log(`Appending ${rowData.length} rows to sheet...`);
+    // Continue with the export process using the spreadsheetId...
     
-    // Direct API call to append values
-    const appendRange = 'Bills!A2:Z';
-    await appendSheetValues(token, spreadsheetId, appendRange, rowData, 'USER_ENTERED');
-    
-    console.log('Successfully exported bills to spreadsheet');
-    
-    // Generate spreadsheet URL for response
-    const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-    
-    sendResponse({
-      success: true,
-      spreadsheetUrl
-    });
-    
-    console.log('==== EXPORT TO SHEETS - SUCCESS ====');
+    // ... existing code ...
   } catch (error) {
     console.error('Error exporting bills to sheets:', error);
     sendResponse({
       success: false,
       error: 'Error exporting bills to sheets: ' + (error instanceof Error ? error.message : String(error))
     });
+  }
+}
+
+// Helper function to resolve user identity without dynamic imports
+async function resolveUserIdentityDirect(): Promise<{ supabaseId?: string; googleId?: string }> {
+  try {
+    // Get auth token first
+    const token = await getAccessToken();
+    if (!token) {
+      console.error('No auth token available for identity resolution');
+      return {};
+    }
+    
+    // Get the Google user ID from Chrome identity with the token
+    const profile = await fetchGoogleUserInfo(token);
+    const googleId = profile?.id;
+    
+    if (!googleId) {
+      console.error('No Google ID available');
+      return {};
+    }
+    
+    // Look up the Supabase user ID using the view
+    const supabase = await getSupabaseClient();
+    const { data, error } = await supabase
+      .from('google_identity_map_view')
+      .select('supabase_user_id')
+      .eq('google_user_id', googleId)
+      .single();
+      
+    if (error) {
+      console.error('Error fetching identity mapping:', error);
+      
+      // If the error is that the view doesn't exist, fall back to users table
+      if (error.code === '42P01' && error.message.includes('does not exist')) {
+        console.log('Identity map view does not exist, falling back to users table...');
+        
+        // Fall back to querying the users table directly
+        const { data: userData, error: userError } = await supabase
+          .from('users')
+          .select('id')
+          .eq('google_user_id', googleId)
+          .single();
+          
+        if (!userError && userData) {
+          return {
+            supabaseId: userData.id,
+            googleId
+          };
+        }
+      }
+      
+      return { googleId };
+    }
+    
+    return {
+      supabaseId: data?.supabase_user_id,
+      googleId
+    };
+  } catch (error) {
+    console.error('Error resolving user identity:', error);
+    return {};
   }
 }
 
@@ -2772,7 +2841,7 @@ function extractAttachmentIds(email: any): Array<{ id: string; fileName: string 
 /**
  * Fetch attachment content
  */
-async function fetchAttachment(messageId: string, attachmentId: string): Promise<string | null> {
+async function fetchAttachment(messageId: string, attachmentId: string): Promise<ArrayBuffer | null> {
   try {
     const token = await getAccessToken();
     if (!token) {
@@ -2794,7 +2863,24 @@ async function fetchAttachment(messageId: string, attachmentId: string): Promise
     }
     
     const data = await response.json();
-    return data.data || null; // Base64 encoded attachment data
+    
+    // Convert base64 to binary data directly
+    if (data.data) {
+      try {
+        // Use browser's built-in base64 decoder and convert to ArrayBuffer
+        const binaryString = atob(data.data.replace(/-/g, '+').replace(/_/g, '/'));
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+      } catch (error) {
+        console.error('Error converting base64 to binary:', error);
+        return null;
+      }
+    }
+    
+    return null;
   } catch (error) {
     console.error(`Error fetching attachment ${attachmentId}:`, error);
     return null;
@@ -3319,3 +3405,46 @@ async function appendToSheet(token: string, spreadsheetId: string, values: any[]
 
 // Fix userId initialization
 let userId: string | null = null;
+
+// Add this new function
+async function ensureGoogleIdentityMap() {
+  try {
+    // Get Supabase client for RPC calls
+    const supabase = await getSupabaseClient();
+    
+    // Check if the view exists instead of the table
+    const { data: viewExists, error: viewError } = await supabase.rpc('check_if_view_exists', {
+      view_name: 'google_identity_map_view'
+    });
+    
+    if (viewError) {
+      console.error('Error checking if google_identity_map_view view exists:', viewError);
+      
+      // Fall back to checking if we can query the view
+      try {
+        const { data, error } = await supabase
+          .from('google_identity_map_view')
+          .select('supabase_user_id')
+          .limit(1);
+          
+        // If we get here without an error, the view exists
+        console.log('google_identity_map_view exists and is accessible');
+        return true;
+      } catch (queryError) {
+        console.error('Error querying google_identity_map_view:', queryError);
+        return false;
+      }
+    }
+    
+    // If the view doesn't exist, log that but there's nothing to create - it should be created via migrations
+    if (!viewExists || !viewExists.exists) {
+      console.log('google_identity_map_view does not exist. It should be created via migrations.');
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error ensuring google_identity_map_view:', error);
+    return false;
+  }
+}

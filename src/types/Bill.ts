@@ -18,6 +18,7 @@ export interface Bill {
   accountNumber?: string;
   isPaid?: boolean;
   notes?: string;
+  invoiceNumber?: string;
   source?: {
     type: 'email' | 'pdf' | 'manual';
     messageId?: string;
@@ -29,6 +30,7 @@ export interface Bill {
   extractionConfidence?: number;
   extractionMethod?: string;
   language?: 'en' | 'hu';
+  confidence?: number;
   
   // System fields
   createdAt?: Date;
@@ -43,4 +45,12 @@ export interface BillExtractionResult {
   bills: Bill[];
   error?: string;
   confidence?: number;
+  debug?: {
+    strategy?: string;
+    extractionMethod?: string;
+    confidence?: number;
+    error?: string;
+    reason?: string;
+    [key: string]: any;
+  };
 } 

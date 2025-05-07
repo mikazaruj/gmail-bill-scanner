@@ -7,6 +7,7 @@
 import { getAccessToken, getAccessTokenWithRefresh } from "../auth/googleAuth";
 import { Bill } from "../../types/Bill";
 import { getSharedBillExtractor } from "../extraction/extractorFactory";
+import { decodeBase64 } from "../../utils/base64Decode";
 
 // Base URL for Gmail API
 const GMAIL_API_BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -177,8 +178,9 @@ export function extractPlainTextBody(message: any): string {
     if (!part) return "";
     
     if (part.mimeType === "text/plain" && part.body && part.body.data) {
-      // Decode base64
-      return atob(part.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+      // Use decodeBase64 utility instead of atob
+      const base64Data = part.body.data.replace(/-/g, '+').replace(/_/g, '/');
+      return decodeBase64(base64Data);
     }
     
     if (part.parts && Array.isArray(part.parts)) {

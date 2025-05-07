@@ -41,6 +41,7 @@ export interface GmailAttachment {
   messageId: string;
   filename: string;
   data: string;
+  binaryData?: ArrayBuffer;  // Binary data in ArrayBuffer format
   size?: number;
 }
 

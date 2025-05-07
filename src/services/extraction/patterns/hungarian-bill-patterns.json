@@ -25,7 +25,8 @@
     "áramszámla", "gázszámla", "közüzemi", "szolgáltató", "fogyasztás", 
     "fizetendő", "összeg", "összegek", "áram", "gáz", "víz", "mvm", "energia", "szolgáltatás",
     "távhő", "távfűtés", "szemétszállítás", "hulladék", "csatorna", "szennyvíz",
-    "részletfizetés", "befizetés", "számlaérték", "előírás"
+    "részletfizetés", "befizetés", "számlaérték", "előírás",
+    "rezsikökkentett", "megatakarítás", "bruttó érték", "nettó érték", "villamosenergia"
   ],
   "utilityCompanies": [
     "mvm", "eon", "e.on", "nkm", "elmű", "émász", "tigáz", "főgáz", "digi", "digitel",
@@ -82,7 +83,15 @@
         "(?:fizetend[őo]|összesen).{1,30}?(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
         "Fizetendő összeg:?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
         "Fizetendő:?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
-        "(?:fizetési\\s+határidő).{1,50}(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft"
+        "(?:fizetési\\s+határidő).{1,50}(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+        "\\bA gyűjtőszámlán szereplő.{1,100}(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+        "Fizetendő összeg:\\s*\\n\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+        "Ön fizetési kötelezettsége.{1,150}(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+        "A számla összege.{1,50}(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+        "A számla fizetendő végösszege.{1,50}(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+        "teljes fizetendő összeg.{1,50}(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+        "Bruttó érték\\s*összesen\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+        "Fizetendő\\s*végösszeg\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)"
       ],
       "postProcessing": "removeSpaces"
     },
@@ -92,7 +101,9 @@
       "patterns": [
         "Fizetési\\s+határidő:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
         "Esedékesség:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
-        "Befizetési\\s+határidő:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})"
+        "Befizetési\\s+határidő:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
+        "Fizetési\\s+határidő:[^\\n]*\\n[^\\n]*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
+        "Fizetési határidő.{1,30}(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})"
       ]
     },
     {
@@ -103,7 +114,9 @@
         "Kelt:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
         "Kiállítás\\s+dátum:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
         "Számla\\s+kelte:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
-        "Teljesítés kelte:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})"
+        "Teljesítés kelte:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
+        "Készítés kelte:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
+        "Kibocsátás\\s+dátuma:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})"
       ]
     },
     {
@@ -116,7 +129,8 @@
         "szerz[.őÖ]\\s*szám:?\\s*([A-Za-z0-9\\-]+)",
         "(?:fogyasztási|felhasználási)\\s+hely\\s+(?:azonosító|szám):?\\s*([A-Z0-9\\-]+)",
         "Felhasználó\\s+azonosító\\s*szám:?\\s*([A-Za-z0-9\\-]+)",
-        "Felhasználási\\s+hely\\s+(?:azonosító|szám)?:?\\s*([A-Za-z0-9\\-]+)"
+        "Felhasználási\\s+hely\\s+(?:azonosító|szám)?:?\\s*([A-Za-z0-9\\-]+)",
+        "Vevő \\(Fizető\\) azonosító:\\s*([A-Za-z0-9\\-]+)"
       ]
     },
     {
@@ -125,7 +139,9 @@
       "patterns": [
         "Szolgáltató:?\\s*([^\\n]+)",
         "Kibocsátó:?\\s*([^\\n]+)",
-        "Eladó:?\\s*([^\\n]+)"
+        "Eladó:?\\s*([^\\n]+)",
+        "Számlakibocsátó neve:?\\s*([^\\n]+)",
+        "Szolgáltató neve:?\\s*([^\\n]+)"
       ]
     },
     {
@@ -135,7 +151,8 @@
         "Számla\\s+sorszáma:?\\s*([A-Za-z0-9\\-\\/]+)",
         "Sorszám:?\\s*([A-Za-z0-9\\-\\/]+)",
         "Számlaszám:?\\s*([A-Za-z0-9\\-\\/]+)",
-        "Számla\\s+azonosító:?\\s*([A-Za-z0-9\\-\\/]+)"
+        "Számla\\s+azonosító:?\\s*([A-Za-z0-9\\-\\/]+)",
+        "Számlaszám:\\s*\\n?\\s*([A-Za-z0-9\\-\\/]+)"
       ]
     }
   ],
@@ -143,37 +160,42 @@
     "electricity": {
       "category": "Utilities",
       "identifiers": [
-        "áramszámla", "villanyáram", "MVM", "E.ON", "ELMŰ", "ÉMÁSZ", "villamosenergia"
+        "áramszámla", "villanyáram", "MVM", "E.ON", "ELMŰ", "ÉMÁSZ", "villamosenergia",
+        "villamos energia", "áramdíj", "villamos szolgáltatás", "áramfogyasztás"
       ]
     },
     "gas": {
       "category": "Utilities",
       "identifiers": [
-        "gázszámla", "földgáz", "Főgáz", "Tigáz", "gázszolgáltató", "NKM"
+        "gázszámla", "földgáz", "Főgáz", "Tigáz", "gázszolgáltató", "NKM",
+        "gázmérő", "gázdíj", "gázenergia", "gázfogyasztás"
       ]
     },
     "water": {
       "category": "Utilities",
       "identifiers": [
-        "vízszámla", "vízdíj", "vízmű", "vízművek", "csatornadíj", "szennyvíz"
+        "vízszámla", "vízdíj", "vízmű", "vízművek", "csatornadíj", "szennyvíz",
+        "vízfogyasztás", "vízfelhasználás", "csatornaszolgáltatás"
       ]
     },
     "telecom": {
       "category": "Telecommunications",
       "identifiers": [
-        "telefonszámla", "mobilszámla", "internet", "Telekom", "Telenor", "Vodafone", "Yettel", "Digi", "UPC"
+        "telefonszámla", "mobilszámla", "internet", "Telekom", "Telenor", "Vodafone", "Yettel", "Digi", "UPC",
+        "telefonszolgáltatás", "internetszolgáltatás", "tv szolgáltatás", "mobiltelefon", "mobil előfizetés"
       ]
     },
     "district_heating": {
       "category": "Utilities",
       "identifiers": [
-        "távhőszámla", "távfűtés", "Főtáv", "távhőszolgáltatás"
+        "távhőszámla", "távfűtés", "Főtáv", "távhőszolgáltatás", "fűtésszámla", "központi fűtés"
       ]
     },
     "waste": {
       "category": "Utilities",
       "identifiers": [
-        "hulladék", "szemét", "szemétszállítás", "FKF", "NHKV"
+        "hulladék", "szemét", "szemétszállítás", "FKF", "NHKV", "hulladékgazdálkodás",
+        "hulladékszállítás", "kommunális hulladék"
       ]
     }
   },
@@ -192,15 +214,34 @@
         "amountPatterns": [
           "Fizetendő összeg:?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
           "Fizetendő összeg:\\s*(\\d+\\s*\\d+)\\s*Ft",
-          "Fizetendő\\s+összeg:\\s*((?:\\d{1,3}[., ])*\\d{1,3})\\s*Ft"
-        ]
+          "Fizetendő\\s+összeg:\\s*((?:\\d{1,3}[., ])*\\d{1,3})\\s*Ft",
+          "Fizetendő összeg:+\\s*([\\d\\s.,]+)\\s*Ft",
+          "Fizetendő\\s+összeg[^\\n]*\\n[^\\n]*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+          "Így az elszámolt időszakban az Ön megtakarítása:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+          "Rezsikökkentett díj nélkül az Ön fizetési kötelezettsége\\s*az elszámolt időszakban a következő összeg lett volna:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+          "Bruttó érték\\s*összesen\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+          "Fizetendő\\s*végösszeg\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)"
+        ],
+        "highlightedFields": {
+          "amount": [
+            {
+              "label": "Fizetendő összeg",
+              "valuePattern": "(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)"
+            },
+            {
+              "label": "Fizetési határidő",
+              "valuePattern": "(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})"
+            }
+          ]
+        }
       }
     }
   },
   "commonWords": [
     "számla", "fizetési", "határidő", "összeg", "fogyasztás", "szolgáltató", "díj", "értesítő",
     "egyenleg", "befizetés", "kiegyenlítés", "tartozás", "hátralék", "áram", "gáz", "víz",
-    "fogyasztási", "mérőállás", "előírás", "banki", "csekk", "átutalás"
+    "fogyasztási", "mérőállás", "előírás", "banki", "csekk", "átutalás", "rezsikökkentett",
+    "bruttó", "nettó", "villamosenergia", "megtakarítás"
   ],
   "billIndicatorThreshold": 1,
   "confidence": {
@@ -209,5 +250,15 @@
     "patternMatch": 0.2,
     "vendorMatch": 0.3,
     "fullExtraction": 0.8
+  },
+  "highlightedBoxPatterns": {
+    "amount": [
+      "Fizetendő összeg:?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+      "Fizetendő összeg:\\s*(\\d+\\s*\\d+)\\s*Ft",
+      "Fizetendő összeg:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft"
+    ],
+    "dueDate": [
+      "Fizetési határidő:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})"
+    ]
   }
 } 

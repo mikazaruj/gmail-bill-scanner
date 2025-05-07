@@ -17,6 +17,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.entry';
 import { getSupabaseClient } from '../supabase/client';
 import type { FieldMapping } from '../../types/FieldMapping';
+import { decodeBase64 } from '../../utils/base64Decode';
 
 // Configure worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -641,12 +642,12 @@ export async function normalizePdfData(pdfData: ArrayBuffer | string | Uint8Arra
     // Remove data URL prefix if present
     const base64 = pdfData.replace(/^data:[^;]+;base64,/, '');
     
-    // Convert base64 to binary
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
+    // Convert base64 to binary using the utility function
+    const binaryString = decodeBase64(base64);
+    const bytes = new Uint8Array(binaryString.length);
     
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
     }
     
     return bytes;

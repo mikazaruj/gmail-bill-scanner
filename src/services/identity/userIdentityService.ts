@@ -36,29 +36,56 @@ export async function getSupabaseUserIdFromGoogleId(googleId: string): Promise<s
     
     console.log('Looking up Supabase user ID for Google ID:', googleId);
     
-    // Query the users table to find the matching user
+    // Query the google_identity_map_view to find the matching user
     const { data, error } = await supabase
-      .from('users')
-      .select('id')
+      .from('google_identity_map_view')
+      .select('supabase_user_id')
       .eq('google_user_id', googleId)
       .single();
 
     if (error) {
-      console.error('Error fetching Supabase user ID:', error);
+      console.error('Error fetching Supabase user ID from view:', error);
+      
+      // Fall back to the users table if view doesn't exist or has an error
+      console.log('Falling back to users table lookup');
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('google_user_id', googleId)
+        .single();
+        
+      if (userError) {
+        console.error('Error fetching Supabase user ID from users table:', userError);
+        return null;
+      }
+      
+      if (userData) {
+        console.log('Found Supabase user ID from users table:', userData.id);
+        
+        // Update cache
+        identityCache[googleId] = {
+          ...identityCache[googleId],
+          supabaseId: userData.id,
+          googleId
+        };
+        
+        return userData.id;
+      }
+      
       return null;
     }
 
     if (data) {
-      console.log('Found Supabase user ID:', data.id);
+      console.log('Found Supabase user ID from view:', data.supabase_user_id);
       
       // Update cache
       identityCache[googleId] = {
         ...identityCache[googleId],
-        supabaseId: data.id,
+        supabaseId: data.supabase_user_id,
         googleId
       };
       
-      return data.id;
+      return data.supabase_user_id;
     }
     
     console.log('No Supabase user found with Google ID:', googleId);
