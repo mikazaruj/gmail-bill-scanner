@@ -2040,26 +2040,81 @@ async function handleScanEmails(
                     console.log(`Processing PDF attachment: ${attachmentData.fileName} (binary format)`);
                     console.log(`Using language setting for PDF: ${settings.inputLanguage}`);
                     
-                    // Process with our unified bill extractor - passing ArrayBuffer directly
-                    const pdfResult = await billExtractor.extractFromPdf(
-                      attachmentBuffer,
-                      messageId,
-                      attachmentData.id,
-                      attachmentData.fileName,
-                      {
-                        language: settings.inputLanguage as 'en' | 'hu' | undefined
+                    // Try to use our optimized binary PDF processor first
+                    try {
+                      // Import the processPdfFromGmailApi function
+                      const { processPdfFromGmailApi } = await import('../services/pdf/pdfService');
+                      
+                      // Process the PDF directly from binary data
+                      const pdfResult = await processPdfFromGmailApi(
+                        attachmentBuffer,
+                        settings.inputLanguage as string || 'en'
+                      );
+                      
+                      if (pdfResult.success && pdfResult.text && pdfResult.text.length > 100) {
+                        console.log(`Successfully extracted ${pdfResult.text.length} characters from PDF`);
+                        
+                        // Create a bill object that matches the Bill interface properly
+                        const bill: Bill = {
+                          id: `${messageId}-${attachmentData.id}`,
+                          vendor: pdfResult.billData?.vendor || 'Unknown',
+                          amount: pdfResult.billData?.amount || 0,
+                          currency: 'HUF',  // Default currency
+                          date: new Date(), // Current date as fallback
+                          category: pdfResult.billData?.category || 'Utility',
+                          dueDate: pdfResult.billData?.dueDate ? new Date(pdfResult.billData.dueDate) : undefined,
+                          isPaid: false,
+                          source: {
+                            type: 'pdf' as 'pdf', // Use literal type to match interface
+                            messageId,
+                            attachmentId: attachmentData.id,
+                            fileName: attachmentData.fileName
+                          },
+                          notes: pdfResult.text.slice(0, 500), // Store first 500 chars of extracted text as notes
+                          extractionMethod: 'direct-binary',
+                          language: settings.inputLanguage as 'en' | 'hu' || 'en'
+                        };
+                        
+                        // Convert Bill to BillData format
+                        const billData = transformBillToBillData(bill);
+                        
+                        // Add to bills array
+                        bills.push(billData);
+                        stats.billsFound += 1;
+                        
+                        console.log('Successfully extracted bill data from PDF attachment');
+                        continue; // Skip regular extraction since we already processed this attachment
+                      } else {
+                        console.log('Optimized PDF processing did not yield usable results, falling back to regular extractor');
                       }
-                    );
+                    } catch (optimizedPdfError) {
+                      console.warn('Optimized PDF processing failed, falling back to regular extractor:', optimizedPdfError);
+                    }
                     
-                    if (pdfResult.success && pdfResult.bills.length > 0) {
-                      // Convert each Bill to BillData
-                      const pdfBills = pdfResult.bills.map(bill => transformBillToBillData(bill));
+                    // Fall back to using the regular bill extractor if optimized extraction failed
+                    try {
+                      const pdfResult = await billExtractor.extractFromPdf(
+                        attachmentBuffer,
+                        messageId,
+                        attachmentData.id,
+                        attachmentData.fileName,
+                        {
+                          language: settings.inputLanguage as 'en' | 'hu' | undefined
+                        }
+                      );
                       
-                      // Add to bills array
-                      bills.push(...pdfBills);
-                      stats.billsFound += pdfBills.length;
-                      
-                      console.log(`Successfully extracted ${pdfBills.length} bills from PDF attachment`);
+                      if (pdfResult.success && pdfResult.bills.length > 0) {
+                        // Convert each Bill to BillData
+                        const pdfBills = pdfResult.bills.map(bill => transformBillToBillData(bill));
+                        
+                        // Add to bills array
+                        bills.push(...pdfBills);
+                        stats.billsFound += pdfBills.length;
+                        
+                        console.log(`Successfully extracted ${pdfBills.length} bills from PDF attachment`);
+                      }
+                    } catch (pdfError) {
+                      console.error(`Error processing PDF attachment ${attachmentData.id}:`, pdfError);
                     }
                   }
                 } catch (pdfError) {
@@ -2839,7 +2894,7 @@ function extractAttachmentIds(email: any): Array<{ id: string; fileName: string 
 }
 
 /**
- * Fetch attachment content
+ * Fetch attachment content directly as binary data
  */
 async function fetchAttachment(messageId: string, attachmentId: string): Promise<ArrayBuffer | null> {
   try {
@@ -3448,3 +3503,16 @@ async function ensureGoogleIdentityMap() {
     return false;
   }
 }
+
+// Helper functions for text detection
+
+/**
+ * Detect vendor from extracted text
+ * @param text Extracted text from PDF
+ * @returns Detected vendor name or undefined
+ */
+// function detectVendorFromText(text: string): string | undefined {
+//   // This function has been intentionally removed to improve robustness
+//   // Vendor detection now relies on the structured data extraction from PDF documents
+//   return undefined;
+// }

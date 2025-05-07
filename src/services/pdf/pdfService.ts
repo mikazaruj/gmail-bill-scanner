@@ -122,8 +122,9 @@ export async function normalizePdfData(pdfData: ArrayBuffer | string): Promise<U
           });
           
           return bytes;
-        } catch (conversionError) {
-          logDiagnostics(`Direct conversion failed: ${conversionError.message}`);
+        } catch (conversionError: unknown) {
+          const errorMessage = conversionError instanceof Error ? conversionError.message : String(conversionError);
+          logDiagnostics(`Direct conversion failed: ${errorMessage}`);
           
           // If we detect PDF data directly in the string, try to extract it
           if (pdfData.includes('%PDF-')) {
@@ -149,16 +150,18 @@ export async function normalizePdfData(pdfData: ArrayBuffer | string): Promise<U
           logDiagnostics(`Fallback direct string processing: ${bytes.length} bytes`);
           return bytes;
         }
-      } catch (error) {
-        logDiagnostics(`Error converting PDF data: ${error.message}`, error);
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logDiagnostics(`Error converting PDF data: ${errorMessage}`, error);
         throw new Error('Failed to convert PDF data to ArrayBuffer');
       }
     }
     
     // If we get here, we have an unsupported format
     throw new Error('Unsupported PDF data format');
-  } catch (error) {
-    logDiagnostics(`PDF normalization failed: ${error.message}`, {
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logDiagnostics(`PDF normalization failed: ${errorMessage}`, {
       inputType: typeof pdfData,
       isArrayBuffer: pdfData instanceof ArrayBuffer,
       processingTime: Date.now() - startTime
@@ -188,11 +191,101 @@ function checkForPdfHeader(data: Uint8Array): boolean {
  * @returns boolean indicating if we're in a service worker context
  */
 export function isServiceWorkerContext(): boolean {
-  return (
-    typeof window === 'undefined' || 
-    typeof window.document === 'undefined' ||
-    typeof window.document.createElement === 'undefined'
-  );
+  try {
+    // Primary service worker detection
+    if (typeof self !== 'undefined' && typeof self.WorkerGlobalScope !== 'undefined' && self instanceof self.WorkerGlobalScope) {
+      return true;
+    }
+    
+    // Secondary detection method - check window/document availability
+    return (
+      typeof window === 'undefined' || 
+      typeof window.document === 'undefined' ||
+      typeof window.document.createElement === 'undefined'
+    );
+  } catch (e) {
+    // If accessing these properties causes an error, we're likely in a worker context
+    return true;
+  }
+}
+
+/**
+ * Monkeypatch the PDF.js library to remove document references
+ * This is a last resort measure for service worker compatibility
+ * @param pdfjsLib The PDF.js library instance
+ * @returns Patched PDF.js instance
+ */
+function patchPdfjsForServiceWorker(pdfjsLib: any): any {
+  // Only apply patches in service worker context
+  if (!isServiceWorkerContext()) {
+    return pdfjsLib;
+  }
+  
+  console.log('Applying service worker patches to PDF.js');
+  
+  try {
+    // Create a mock document object if needed by internal PDF.js code
+    if (typeof self !== 'undefined' && typeof (self as any).document === 'undefined') {
+      // Create a minimal mock document
+      (self as any).document = {
+        createElement: function() {
+          return {
+            style: {},
+            setAttribute: function() {},
+            appendChild: function() {},
+            removeChild: function() {},
+            querySelector: function() { return null; },
+            querySelectorAll: function() { return []; }
+          };
+        },
+        documentElement: {
+          style: {}
+        },
+        head: { 
+          appendChild: function() {} 
+        },
+        body: {
+          appendChild: function() {},
+          removeChild: function() {}
+        },
+        createElementNS: function() {
+          return this.createElement();
+        }
+      };
+      
+      // Create a minimal navigator object
+      if (typeof (self as any).navigator === 'undefined') {
+        (self as any).navigator = { 
+          userAgent: 'ServiceWorker'
+        };
+      }
+    }
+    
+    // Override problematic methods directly in the PDF.js library
+    if (pdfjsLib) {
+      // Bypass operations that require document
+      if (pdfjsLib.PDFDocumentLoadingTask) {
+        const originalOpen = pdfjsLib.PDFDocumentLoadingTask.prototype.open;
+        pdfjsLib.PDFDocumentLoadingTask.prototype.open = function() {
+          try {
+            return originalOpen.apply(this, arguments);
+          } catch (error: any) {
+            if (error.message && error.message.includes('document is not defined')) {
+              console.warn('Caught document reference error in PDFDocumentLoadingTask.open');
+              // Return a promise that will be handled upstream
+              return Promise.reject(new Error('Service worker compatibility error'));
+            }
+            throw error;
+          }
+        };
+      }
+    }
+    
+    return pdfjsLib;
+  } catch (error) {
+    console.error('Error patching PDF.js for service worker:', error);
+    return pdfjsLib; // Return original even if patching fails
+  }
 }
 
 /**
@@ -207,8 +300,36 @@ async function ensurePdfjsLoaded(): Promise<any> {
     // Try to load PDF.js in service worker context
     try {
       // Import dynamically
-      const pdfjs = await import('pdfjs-dist');
-      pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+      let pdfjs;
+      try {
+        pdfjs = await import('pdfjs-dist');
+      } catch (importError) {
+        console.error('Failed to import pdfjs-dist directly:', importError);
+        
+        // Try alternative import path
+        try {
+          pdfjs = await import('pdfjs-dist/build/pdf.js');
+        } catch (altImportError) {
+          console.error('Failed to import from alternative path:', altImportError);
+          throw new Error('Could not load PDF.js in service worker context');
+        }
+      }
+      
+      // Store service worker configuration for later use
+      (pdfjs as any).isServiceWorker = true;
+      
+      // In service worker context, we may not need a worker since we're already in a worker
+      try {
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+      } catch (workerError) {
+        console.warn('Could not set worker source in service worker context:', workerError);
+        // Continue without setting worker - we'll handle with the disableWorker option
+      }
+      
+      // Apply our service worker patches to fix document references
+      pdfjs = patchPdfjsForServiceWorker(pdfjs);
+      
+      console.log('PDF.js configured for service worker environment');
       return pdfjs;
     } catch (error) {
       console.error('Error loading PDF.js in service worker:', error);
@@ -253,6 +374,54 @@ async function ensurePdfjsLoaded(): Promise<any> {
 }
 
 /**
+ * Create PDF.js configuration options suitable for service worker environment
+ * @param data PDF data as Uint8Array
+ * @returns Configuration object for PDF.js
+ */
+function createServiceWorkerSafeConfig(data: Uint8Array): any {
+  return {
+    data,
+    // Core options to disable DOM-dependent features
+    disableFontFace: true,
+    nativeImageDecoderSupport: 'none',
+    disableCreateObjectURL: true,
+    isEvalSupported: false,
+    
+    // Disable all URL/document operations
+    useSystemFonts: false,
+    useWorkerFetch: false,
+    
+    // Disable external resource loading
+    cMapUrl: undefined,
+    standardFontDataUrl: undefined,
+    
+    // Worker handling - disable to avoid nested workers
+    disableWorker: true,
+    
+    // Disable rendering features that depend on DOM
+    disableAutoFetch: true,
+    disableStream: true,
+    disableRange: true,
+    disableCanvasRenderer: true,
+    
+    // Force certain methods to be noop to avoid document operations
+    canvasFactory: {
+      create: function() {
+        return {
+          dispose: function() {},
+          width: 0,
+          height: 0
+        };
+      }
+    },
+    
+    // Strongly signal to PDF.js we're in a worker
+    isInWebWorker: true,
+    verbosity: 0
+  };
+}
+
+/**
  * Extracts text from a PDF file with positional information
  * @param pdfData PDF file data as Uint8Array
  * @returns Extracted text content with positional data
@@ -263,8 +432,20 @@ export async function extractTextFromPdfWithPosition(pdfData: Uint8Array): Promi
     const pdfjsLib = await ensurePdfjsLoaded();
     
     try {
-      // Load the PDF document
-      const pdfDocument = await pdfjsLib.getDocument({ data: pdfData }).promise;
+      // Check if we're in service worker context
+      const isServiceWorker = isServiceWorkerContext() || (pdfjsLib as any).isServiceWorker;
+      
+      // Configure options based on environment
+      const loadingOptions = isServiceWorker 
+        ? createServiceWorkerSafeConfig(pdfData) 
+        : { data: pdfData };
+        
+      // Log what we're doing
+      console.log(`Loading PDF document with${isServiceWorker ? ' service-worker-safe' : ''} configuration`);
+      
+      // Load the PDF document with appropriate options
+      const pdfDocument = await pdfjsLib.getDocument(loadingOptions).promise;
+      
       let extractedText = '';
       const pages: Array<{
         pageNumber: number;
@@ -410,63 +591,86 @@ function extractTextFallback(pdfData: Uint8Array): string {
   try {
     console.log('Attempting basic character extraction as fallback');
     
-    // Get printable ASCII characters
-    const text = Array.from(pdfData)
-      .map(byte => String.fromCharCode(byte))
-      .join('')
-      .replace(/[^\x20-\x7E\u00C0-\u00FF\u0150\u0170\u0151\u0171]/g, ' ') // Include Hungarian chars
-      .replace(/\s+/g, ' ');
+    // First, try to extract PDF text using basic patterns
+    // Find text blocks in PDF format which are often surrounded by "(" and ")"
+    const partialString = String.fromCharCode.apply(null, Array.from(pdfData.slice(0, Math.min(pdfData.length, 10000))));
+    const textBlocks = partialString.match(/\(([^\)]{3,})\)/g);
     
-    // Try to extract common bill-related information using regex
-    const extractedInfo = extractBillInfoFromRawText(text);
+    if (textBlocks && textBlocks.length > 0) {
+      console.log(`Found ${textBlocks.length} text blocks in PDF data`);
+      
+      // Clean up the text blocks
+      const extractedText = textBlocks
+        .map(block => block.substring(1, block.length - 1)) // Remove ( and )
+        .filter(block => {
+          // Filter out blocks that are likely not text (e.g., font names, metadata)
+          return block.length > 3 && 
+                 !/^[0-9.]+$/.test(block) && // Not just numbers
+                 !/^[A-Z]{6,}$/.test(block); // Not just uppercase letters (likely font names)
+        })
+        .join(' ')
+        .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8))) // Handle octal escapes
+        .replace(/\\([nrtbf])/g, ' ') // Handle newlines and other escapes
+        .replace(/\s+/g, ' ');
+      
+      if (extractedText.length > 100) {
+        console.log(`Successfully extracted ${extractedText.length} characters using pattern matching`);
+        return extractedText;
+      }
+    }
     
-    return extractedInfo || text || '[PDF text extraction failed]';
+    // Second, try direct character extraction for readability
+    let plainText = '';
+    let consecutiveText = '';
+    let textSections: string[] = [];
+    
+    // Process the raw binary data to extract readable text
+    for (let i = 0; i < pdfData.length; i++) {
+      const byte = pdfData[i];
+      
+      // Check if character is likely readable text
+      if ((byte >= 32 && byte <= 126) || // ASCII printable
+          (byte >= 0xC0 && byte <= 0xFF)) { // Basic Latin-1 accented chars
+        const char = String.fromCharCode(byte);
+        consecutiveText += char;
+      } else if (consecutiveText.length > 5) {
+        // End of text section, save it if it's long enough
+        textSections.push(consecutiveText);
+        consecutiveText = '';
+      } else {
+        // Reset if we don't have enough consecutive text
+        consecutiveText = '';
+      }
+    }
+    
+    // Add any remaining text
+    if (consecutiveText.length > 5) {
+      textSections.push(consecutiveText);
+    }
+    
+    // Filter and join the text sections
+    plainText = textSections
+      .filter(section => {
+        // Additional filtering to remove unlikely content
+        return !/^[0-9.]+$/.test(section) && // Not just numbers
+               section.split(/\s+/).length > 2; // Has at least a few words
+      })
+      .join('\n');
+    
+    // Prefer pattern matching if it gave us something
+    return plainText.length > 100 ? plainText : (
+      // Include Hungarian-specific characters
+      Array.from(pdfData)
+        .map(byte => String.fromCharCode(byte))
+        .join('')
+        .replace(/[^\x20-\x7E\u00C0-\u00FF\u0150\u0170\u0151\u0171]/g, ' ') // Include Hungarian chars
+        .replace(/\s+/g, ' ')
+    );
   } catch (error) {
     console.error('Fallback text extraction failed:', error);
-    return '[Fallback PDF extraction failed]';
+    // Return a minimal string so processing can continue
+    return '[PDF fallback extraction failed]';
   }
-}
-
-/**
- * Attempts to extract bill-related information from raw text
- * Extended with Hungarian-specific patterns
- * @param text Raw text to extract from
- * @returns Formatted extracted information or empty string if nothing found
- */
-function extractBillInfoFromRawText(text: string): string {
-  // Common patterns in bills/invoices including Hungarian patterns
-  const patterns = [
-    // Hungarian patterns (prioritized)
-    { pattern: /számla\s*szám:?\s*([A-Z0-9\-\/]+)/i, label: 'Számla szám' },
-    { pattern: /dátum:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Dátum' },
-    { pattern: /fizetési\s*határidő:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Fizetési határidő' },
-    { pattern: /összesen:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Összesen' },
-    { pattern: /fizetendő:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Fizetendő' },
-    { pattern: /fizetendő\s+összeg:?\s*([\d\s]+[,\.][\d]+)/i, label: 'Fizetendő összeg' },
-    // English patterns (fallback)
-    { pattern: /invoice\s*#?:?\s*([A-Z0-9\-]+)/i, label: 'Invoice Number' },
-    { pattern: /date:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Date' },
-    { pattern: /due\s*date:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Due Date' },
-    { pattern: /amount\s*due:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Amount Due' },
-    { pattern: /total:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Total' }
-  ];
-  
-  const extractedItems: string[] = [];
-  
-  // Try each pattern
-  for (const { pattern, label } of patterns) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      extractedItems.push(`${label}: ${match[1].trim()}`);
-    }
-  }
-  
-  // Return formatted extracted info if we found anything
-  if (extractedItems.length > 0) {
-    return `[PDF Text Extraction - Found bill information]\n${extractedItems.join('\n')}`;
-  }
-  
-  return '';
 }
 
 /**
@@ -530,7 +734,17 @@ export async function extractTextFromBase64Pdf(base64Pdf: string, language?: str
 
     // Use direct conversion with decodeBase64
     const uint8Array = await base64ToUint8Array(paddedBase64);
-    const pdfDocument = await pdfjsLib.getDocument({ data: uint8Array }).promise;
+    
+    // Check if we're in service worker context
+    const isServiceWorker = isServiceWorkerContext() || (pdfjsLib as any).isServiceWorker;
+    
+    // Configure options based on environment
+    const loadingOptions = isServiceWorker 
+      ? createServiceWorkerSafeConfig(uint8Array) 
+      : { data: uint8Array };
+      
+    // Load the PDF document with appropriate options
+    const pdfDocument = await pdfjsLib.getDocument(loadingOptions).promise;
 
     let extractedText = '';
     const pages: Array<{
@@ -873,17 +1087,52 @@ export async function extractPdfContent(
   extractFields: boolean = false
 ): Promise<any> {
   try {
+    // If we have ArrayBuffer data (most common from Gmail API), 
+    // use our optimized Gmail API processor
+    if (pdfData instanceof ArrayBuffer) {
+      console.log('Processing PDF from ArrayBuffer using optimized service-worker-safe method');
+      
+      // Use the specially designed Gmail API processor which has enhanced service worker compatibility
+      const result = await processPdfFromGmailApi(pdfData, language);
+      
+      // If successful, return the result
+      if (result.success) {
+        console.log('Successfully processed PDF with optimized processor');
+        
+        // If we need to extract fields and they weren't extracted yet, do it now
+        if (extractFields && !result.billData) {
+          try {
+            // Extract bill data using user mappings if requested
+            if (userId) {
+              // This is a placeholder - we may need additional function here
+              // to extract structured data from the text
+            }
+          } catch (fieldError) {
+            console.error('Error extracting bill fields:', fieldError);
+          }
+        }
+        
+        return result;
+      } else {
+        console.warn('Optimized processor failed, falling back to standard method');
+        // Continue with standard processing below
+      }
+    }
+    
+    // Standard processing for other data types (string, Uint8Array)
+    // Or fallback if optimized processor failed
+    
     // Optimize for binary data and standardize to Uint8Array
     let binaryData: Uint8Array;
     
     if (pdfData instanceof ArrayBuffer) {
-      console.log('Processing PDF from ArrayBuffer directly');
+      console.log('Processing PDF from ArrayBuffer directly (preferred format)');
       binaryData = new Uint8Array(pdfData);
     } else if (pdfData instanceof Uint8Array) {
       console.log('Processing PDF from Uint8Array directly');
       binaryData = pdfData;
     } else if (typeof pdfData === 'string') {
-      console.log('Converting string PDF data to binary');
+      console.log('Converting string PDF data to binary (less efficient)');
       // Normalize the string data to Uint8Array (handles base64 or binary string)
       binaryData = await normalizePdfData(pdfData);
     } else {
@@ -892,16 +1141,46 @@ export async function extractPdfContent(
     
     // Confirm we have valid PDF data - check for PDF header
     if (!checkForPdfHeader(binaryData)) {
-      console.warn('PDF data does not contain valid PDF header');
+      console.warn('PDF data does not contain valid PDF header - may not be a valid PDF');
+    }
+    
+    // Check if we're in a service worker context for special handling
+    const isInServiceWorker = isServiceWorkerContext();
+    
+    // In service worker context, use a more aggressive approach
+    if (isInServiceWorker) {
+      console.log('Detected service worker context - using enhanced safety measures');
+      
+      try {
+        // Call our specialized function directly to bypass potential issues
+        const arrayBuffer = binaryData.buffer instanceof ArrayBuffer 
+          ? binaryData.buffer 
+          : new ArrayBuffer(binaryData.length);
+
+        // If we had to create a new buffer, copy the data
+        if (!(binaryData.buffer instanceof ArrayBuffer)) {
+          const newUint8Array = new Uint8Array(arrayBuffer);
+          newUint8Array.set(binaryData);
+        }
+
+        const serviceWorkerResult = await processPdfFromGmailApi(arrayBuffer, language);
+        
+        if (serviceWorkerResult.success) {
+          return serviceWorkerResult;
+        }
+      } catch (serviceWorkerError) {
+        console.error('Service worker specialized extraction failed:', serviceWorkerError);
+        // Continue to fallbacks
+      }
     }
     
     // Extract text from PDF using position-aware extraction
     try {
-      console.log('Using position-aware extraction');
+      console.log(`PDF extraction from ${binaryData.length} bytes`);
       const positionResult = await extractTextFromPdfWithPosition(binaryData);
       
       if (positionResult && positionResult.success) {
-        const extractionResult = {
+        const extractionResult: any = {
           success: true,
           text: positionResult.text,
           pages: positionResult.pages
@@ -910,10 +1189,13 @@ export async function extractPdfContent(
         // Extract bill data if requested
         if (extractFields) {
           try {
+            // Pass text and positional data to extractBillDataWithUserMappings
             const billData = await extractBillDataWithUserMappings(
-              extractionResult, 
+              positionResult.text,
               language, 
-              userId
+              userId,
+              'en',
+              { pages: positionResult.pages } // Pass positional data correctly
             );
             
             if (billData) {
@@ -936,7 +1218,7 @@ export async function extractPdfContent(
       const text = await extractTextFromPdf(binaryData);
       
       // Create a simple result object
-      const extractionResult = {
+      const extractionResult: any = {
         success: true,
         text,
         pages: [{
@@ -948,8 +1230,9 @@ export async function extractPdfContent(
       // Extract bill data if requested
       if (extractFields) {
         try {
+          // Only pass text since we don't have position data
           const billData = await extractBillDataWithUserMappings(
-            { text }, 
+            text,
             language, 
             userId
           );
@@ -1003,13 +1286,21 @@ async function fallbackPdfExtraction(pdfData: ArrayBuffer | string | Uint8Array)
       throw new Error('Failed to load PDF.js library');
     });
     
+    // Check if we're in service worker context
+    const isServiceWorker = isServiceWorkerContext() || (pdfjsLib as any).isServiceWorker;
+    
+    // Configure service worker safe options
+    const loadingOptions = isServiceWorker 
+      ? createServiceWorkerSafeConfig(dataForPdf) 
+      : {
+          data: dataForPdf,
+          disableFontFace: true, // Can help with problematic fonts
+          cMapUrl: undefined,    // Don't try to load CMap
+          standardFontDataUrl: undefined // Skip font data loading
+        };
+    
     // Load the PDF document with minimal options
-    const pdfDocument = await pdfjsLib.getDocument({
-      data: dataForPdf,
-      disableFontFace: true, // Can help with problematic fonts
-      cMapUrl: undefined,    // Don't try to load CMap
-      standardFontDataUrl: undefined // Skip font data loading
-    }).promise;
+    const pdfDocument = await pdfjsLib.getDocument(loadingOptions).promise;
     
     // Extract just the text content without worrying about position
     let extractedText = '';
@@ -1095,7 +1386,17 @@ export async function extractTextFromPdfBuffer(pdfBuffer: ArrayBuffer | Uint8Arr
     // Try PDF.js extraction first
     try {
       const pdfjsLib = await ensurePdfjsLoaded();
-      const pdfDocument = await pdfjsLib.getDocument({ data: pdfData }).promise;
+      
+      // Check if we're in service worker context
+      const isServiceWorker = isServiceWorkerContext() || (pdfjsLib as any).isServiceWorker;
+      
+      // Configure options based on environment
+      const loadingOptions = isServiceWorker 
+        ? createServiceWorkerSafeConfig(pdfData) 
+        : { data: pdfData };
+      
+      // Load the PDF document with appropriate options
+      const pdfDocument = await pdfjsLib.getDocument(loadingOptions).promise;
       
       let fullText = '';
       for (let i = 1; i <= pdfDocument.numPages; i++) {
@@ -1109,8 +1410,9 @@ export async function extractTextFromPdfBuffer(pdfBuffer: ArrayBuffer | Uint8Arr
       
       logDiagnostics(`PDF.js extraction successful: ${fullText.length} characters in ${Date.now() - startTime}ms`);
       return fullText;
-    } catch (pdfjsError) {
-      logDiagnostics(`PDF.js extraction failed: ${pdfjsError.message}, trying fallback...`);
+    } catch (pdfjsError: unknown) {
+      const errorMessage = pdfjsError instanceof Error ? pdfjsError.message : String(pdfjsError);
+      logDiagnostics(`PDF.js extraction failed: ${errorMessage}, trying fallback...`);
       
       // PDF.js failed, try direct extraction from binary
       let text = '';
@@ -1135,8 +1437,9 @@ export async function extractTextFromPdfBuffer(pdfBuffer: ArrayBuffer | Uint8Arr
       logDiagnostics(`Fallback extraction (${extractionMethod}) produced ${text.length} characters`);
       return text;
     }
-  } catch (error) {
-    logDiagnostics(`PDF extraction failed: ${error.message}`, {
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logDiagnostics(`PDF extraction failed: ${errorMessage}`, {
       extractionMethod,
       duration: Date.now() - startTime
     });
@@ -1177,4 +1480,231 @@ export function base64ToArrayBuffer(base64: string): ArrayBuffer {
   }
   
   return buffer;
+}
+
+/**
+ * Process PDF directly from Gmail API binary data
+ * This function is optimized for ArrayBuffer data coming directly from Gmail API
+ * @param binaryData The PDF data as ArrayBuffer
+ * @param language Language code for processing
+ * @returns Extracted text and structured data
+ */
+export async function processPdfFromGmailApi(
+  binaryData: ArrayBuffer,
+  language: string = 'en'
+): Promise<{ 
+  success: boolean; 
+  text: string; 
+  pages?: any[]; 
+  billData?: any;
+  error?: string;
+}> {
+  console.log(`Processing ${binaryData.byteLength} bytes of binary PDF data from Gmail API`);
+  
+  // Track attempts for diagnostics
+  let attempts = 0;
+  const maxAttempts = 3;
+  
+  try {
+    // Convert ArrayBuffer to Uint8Array for processing
+    const pdfData = new Uint8Array(binaryData);
+    
+    // Check if we have a valid PDF header
+    if (!checkForPdfHeader(pdfData)) {
+      console.warn('Warning: Binary data from Gmail API does not appear to be a valid PDF');
+    }
+    
+    // Detect if we're in a service worker context
+    const isInServiceWorker = isServiceWorkerContext();
+    
+    if (isInServiceWorker) {
+      console.log('Processing PDF in service worker context - using enhanced safety measures');
+    }
+    
+    // Try multiple approaches if needed
+    while (attempts < maxAttempts) {
+      attempts++;
+      console.log(`PDF processing attempt ${attempts}/${maxAttempts}`);
+      
+      try {
+        // Get the PDF.js instance with proper configuration
+        const pdfjsLib = await ensurePdfjsLoaded();
+        
+        // Configure options for loading the PDF with extra safety in service workers
+        const loadingOptions = isInServiceWorker 
+          ? createServiceWorkerSafeConfig(pdfData) 
+          : { data: pdfData };
+        
+        // Load the PDF document with appropriate options
+        console.log('Loading PDF document...');
+        const pdfDocument = await pdfjsLib.getDocument(loadingOptions).promise;
+        console.log(`PDF loaded successfully with ${pdfDocument.numPages} pages`);
+        
+        // Process the document
+        let extractedText = '';
+        const pages: Array<{
+          pageNumber: number;
+          text: string;
+          items: any[];
+          lines: any[];
+          width: number;
+          height: number;
+        }> = [];
+        
+        // Extract text from each page
+        for (let i = 1; i <= pdfDocument.numPages; i++) {
+          console.log(`Processing page ${i}/${pdfDocument.numPages}`);
+          
+          try {
+            const page = await pdfDocument.getPage(i);
+            const content = await page.getTextContent();
+            
+            // Extract positional data
+            const items = content.items.map((item: any) => ({
+              text: item.str,
+              x: item.transform[4],
+              y: item.transform[5],
+              width: item.width,
+              height: item.height || 0
+            }));
+            
+            // Process items to maintain layout
+            const { text, lines } = processPageItems(items, page.view);
+            extractedText += text + '\n\n';
+            
+            // Add page data to results
+            pages.push({
+              pageNumber: i,
+              text,
+              items,
+              lines,
+              width: page.view[2],
+              height: page.view[3]
+            });
+          } catch (pageError) {
+            console.warn(`Error processing page ${i}:`, pageError);
+            // Continue with next page instead of failing completely
+          }
+        }
+        
+        // Check if we managed to extract any text
+        if (extractedText.trim().length === 0 && pages.length === 0) {
+          console.warn('No text extracted from PDF, trying alternative methods...');
+          throw new Error('No text extracted from PDF');
+        }
+        
+        // Process bill data if there's any text to work with
+        let billData: any = undefined;
+        if (extractedText.trim().length > 0) {
+          try {
+            // extractBillInfoFromRawText returns a string or empty string
+            const extractedBillInfo = extractBillInfoFromRawText(extractedText);
+            if (extractedBillInfo && extractedBillInfo.length > 0) {
+              // If there's bill data, convert the string format to an object
+              billData = {
+                raw: extractedBillInfo,
+                extractedFromRawText: true
+              };
+            }
+          } catch (billError) {
+            console.warn('Could not extract bill data from text:', billError);
+            // Continue without bill data
+          }
+        }
+        
+        console.log(`PDF processing successful: extracted ${extractedText.length} characters`);
+        return {
+          success: true,
+          text: extractedText,
+          pages,
+          billData
+        };
+      } catch (error: any) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        
+        // Check for document-related errors that would trigger a retry with different approach
+        if (errorMessage.includes('document is not defined') || 
+            errorMessage.includes('document.') ||
+            errorMessage.includes('ReferenceError') ||
+            errorMessage.includes('Service worker compatibility error')) {
+          console.warn(`PDF.js error (attempt ${attempts}/${maxAttempts}):`, errorMessage);
+          
+          if (attempts < maxAttempts) {
+            console.log('Retrying with alternative approach...');
+            // Will retry in next loop iteration
+            continue;
+          }
+        }
+        
+        throw error; // Pass other errors to fallback handler
+      }
+    }
+    
+    // If we get here, we've exhausted all attempts
+    throw new Error(`Failed to process PDF after ${maxAttempts} attempts`);
+  } catch (error) {
+    console.error('PDF processing error:', error);
+    
+    try {
+      // Last resort: try fallback text extraction
+      console.log('Attempting fallback text extraction...');
+      const pdfData = new Uint8Array(binaryData);
+      const fallbackText = await extractTextFallback(pdfData);
+      
+      return {
+        success: fallbackText.length > 0,
+        text: fallbackText || 'Could not extract text from PDF',
+        error: error instanceof Error ? error.message : 'Unknown PDF processing error'
+      };
+    } catch (fallbackError) {
+      console.error('Even fallback extraction failed:', fallbackError);
+      return {
+        success: false,
+        text: 'PDF text extraction failed completely',
+        error: 'Multiple extraction methods failed'
+      };
+    }
+  }
+}
+
+/**
+ * Attempts to extract bill-related information from raw text
+ * Extended with Hungarian-specific patterns
+ * @param text Raw text to extract from
+ * @returns Formatted extracted information or empty string if nothing found
+ */
+function extractBillInfoFromRawText(text: string): string {
+  // Common patterns in bills/invoices including Hungarian patterns
+  const patterns = [
+    // Hungarian patterns (prioritized)
+    { pattern: /számla\s*szám:?\s*([A-Z0-9\-\/]+)/i, label: 'Számla szám' },
+    { pattern: /dátum:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Dátum' },
+    { pattern: /fizetési\s*határidő:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Fizetési határidő' },
+    { pattern: /összesen:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Összesen' },
+    { pattern: /fizetendő:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Fizetendő' },
+    { pattern: /fizetendő\s+összeg:?\s*([\d\s]+[,\.][\d]+)/i, label: 'Fizetendő összeg' },
+    // English patterns (fallback)
+    { pattern: /invoice\s*#?:?\s*([A-Z0-9\-]+)/i, label: 'Invoice Number' },
+    { pattern: /date:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Date' },
+    { pattern: /due\s*date:?\s*(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2})/i, label: 'Due Date' },
+    { pattern: /amount\s*due:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Amount Due' },
+    { pattern: /total:?\s*[\$€£]?\s*([\d\s]+[,\.][\d]+)/i, label: 'Total' }
+  ];
+  
+  const extractedItems: string[] = [];
+  
+  // Try each pattern
+  for (const { pattern, label } of patterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      extractedItems.push(`${label}: ${match[1].trim()}`);
+    }
+  }
+  
+  // Return formatted extracted info if we found anything
+  if (extractedItems.length > 0) {
+    return `[PDF Text Extraction - Found bill information]\n${extractedItems.join('\n')}`;
+  }
+  
+  return '';
 } 
