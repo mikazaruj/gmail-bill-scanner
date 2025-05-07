@@ -23,64 +23,148 @@ import {
   extractHungarianText
 } from './modules/billDataExtraction';
 
+// Worker processing support
+let workerSupported: boolean | null = null;
+
 /**
- * Process PDF directly from Gmail API binary data
- * Unified entry point for PDF processing
- * 
- * @param binaryData PDF data as ArrayBuffer
- * @param language Language code for processing
- * @returns Extracted text, pages, and structured bill data
+ * Process PDF data from Gmail API attachment
+ * @param pdfData Binary PDF data
+ * @param language Language code
+ * @returns Promise resolving to processed PDF results
  */
 export async function processPdfFromGmailApi(
-  binaryData: ArrayBuffer,
+  pdfData: ArrayBuffer,
   language: string = 'en'
-): Promise<{ 
-  success: boolean; 
-  text: string; 
-  pages?: any[]; 
-  billData?: BillData;
-  error?: string;
-}> {
+): Promise<{ text: string; pages?: any[]; billData?: BillData }> {
   try {
-    logDiagnostics('Starting PDF processing', { language });
-    
-    // Extract text from the PDF with positional data included
-    const extractionResult = await extractPdfText(binaryData, {
-      includePosition: true,
-      language,
-      disableWorker: true
-    });
-    
-    // Apply language-specific optimizations
-    if (language === 'hu' && extractionResult.text) {
-      extractionResult.text = extractHungarianText(extractionResult.text);
+    // Try processing using a dedicated worker first if supported
+    if (workerSupported === null || workerSupported === true) {
+      try {
+        console.log('Attempting to process PDF with dedicated Web Worker');
+        return await processPdfWithWorker(pdfData, language);
+      } catch (workerError) {
+        console.warn('Web Worker processing failed, falling back to in-process extraction:', workerError);
+        workerSupported = false;
+      }
     }
     
-    // Extract bill data if the extraction was successful
-    let billData: BillData | undefined;
-    if (extractionResult.success && extractionResult.text) {
-      billData = await extractBillData(extractionResult, language);
-    }
-    
-    // Return the extraction result
-    return {
-      success: extractionResult.success,
-      text: extractionResult.text,
-      pages: extractionResult.pages,
-      billData,
-      error: extractionResult.error
-    };
+    // Fall back to in-process extraction
+    return await processPdfInProcess(pdfData, language);
   } catch (error) {
-    console.error('PDF processing error:', error);
-    
-    const errorMessage = error instanceof Error ? error.message : 'Unknown PDF processing error';
-    
-    return {
-      success: false,
-      text: 'PDF processing failed',
-      error: errorMessage
-    };
+    console.error('Error in PDF processing:', error);
+    throw error;
   }
+}
+
+/**
+ * Process PDF using in-process extraction
+ * @param pdfData Binary PDF data
+ * @param language Language code
+ * @returns Promise resolving to processed PDF results
+ */
+async function processPdfInProcess(
+  pdfData: ArrayBuffer,
+  language: string = 'en'
+): Promise<{ text: string; pages?: any[]; billData?: BillData }> {
+  // First normalize the PDF data to ensure we can work with it
+  const normalizedData = await normalizePdfData(pdfData);
+  
+  // Extract text from the PDF
+  const extractionResult = await extractPdfText(normalizedData, {
+    includePosition: true,
+    language
+  });
+  
+  if (!extractionResult.success) {
+    console.error('PDF text extraction failed:', extractionResult.error);
+    return { text: '' };
+  }
+  
+  // Extract structured bill data if possible
+  const billData = await extractBillData(extractionResult, language);
+  
+  return {
+    text: extractionResult.text,
+    pages: extractionResult.pages,
+    billData
+  };
+}
+
+/**
+ * Process PDF using a dedicated Web Worker
+ * @param pdfData Binary PDF data
+ * @param language Language code
+ * @returns Promise resolving to processed PDF results
+ */
+async function processPdfWithWorker(
+  pdfData: ArrayBuffer,
+  language: string = 'en'
+): Promise<{ text: string; pages?: any[]; billData?: BillData }> {
+  return new Promise((resolve, reject) => {
+    try {
+      // Check if this environment supports workers
+      if (typeof Worker === 'undefined') {
+        workerSupported = false;
+        reject(new Error('Web Workers not supported in this environment'));
+        return;
+      }
+      
+      // Create a URL for the worker script
+      const workerUrl = chrome.runtime.getURL('pdf-worker.js');
+      
+      // Create a dedicated worker
+      const worker = new Worker(workerUrl);
+      
+      // Set up a timeout to prevent hanging
+      const timeoutId = setTimeout(() => {
+        console.warn('PDF worker timed out after 30 seconds');
+        worker.terminate();
+        reject(new Error('PDF processing in worker timed out'));
+      }, 30000);
+      
+      // Listen for results
+      worker.onmessage = (event) => {
+        clearTimeout(timeoutId);
+        
+        if (event.data.success) {
+          workerSupported = true;
+          resolve(event.data.result);
+        } else {
+          console.error('Worker reported error:', event.data.error);
+          reject(new Error(event.data.error));
+        }
+        
+        worker.terminate(); // Clean up
+      };
+      
+      // Handle errors
+      worker.onerror = (error) => {
+        clearTimeout(timeoutId);
+        console.error('PDF worker error:', error);
+        workerSupported = false;
+        reject(error);
+        worker.terminate();
+      };
+      
+      // Create transferable ArrayBuffer (improve performance)
+      const transferableData = pdfData instanceof ArrayBuffer 
+        ? pdfData 
+        : (pdfData as any).buffer;
+      
+      // Send data to worker using transferable objects (faster)
+      worker.postMessage({
+        action: 'extractText',
+        pdfData: transferableData,
+        language
+      }, [transferableData]);
+      
+      console.log('PDF data sent to worker for processing');
+    } catch (error) {
+      console.error('Error setting up PDF worker:', error);
+      workerSupported = false;
+      reject(error);
+    }
+  });
 }
 
 /**
@@ -134,14 +218,9 @@ export async function extractTextWithBillData(
  * @param pdfData PDF data as ArrayBuffer or Uint8Array
  * @param language Language code (defaults to 'en')
  */
-export async function extractTextFromPdf(
-  pdfData: ArrayBuffer | Uint8Array,
-  language: string = 'en'
-): Promise<ExtractionResult> {
-  return extractPdfText(pdfData, {
-    includePosition: false,
-    language
-  });
+export async function extractTextFromPdf(pdfData: ArrayBuffer): Promise<string> {
+  const result = await processPdfFromGmailApi(pdfData);
+  return result.text;
 }
 
 /**
@@ -150,14 +229,13 @@ export async function extractTextFromPdf(
  * @param pdfData PDF data as ArrayBuffer or Uint8Array
  * @param language Language code (defaults to 'en')
  */
-export async function extractTextFromPdfWithPosition(
-  pdfData: ArrayBuffer | Uint8Array,
-  language: string = 'en'
-): Promise<ExtractionResult> {
-  return extractPdfText(pdfData, {
-    includePosition: true,
-    language
-  });
+export async function extractTextFromPdfWithPosition(pdfData: ArrayBuffer): Promise<ExtractionResult> {
+  const result = await processPdfFromGmailApi(pdfData);
+  return {
+    success: true,
+    text: result.text,
+    pages: result.pages
+  };
 }
 
 /**
@@ -165,37 +243,12 @@ export async function extractTextFromPdfWithPosition(
  * @param pdfData The PDF data as ArrayBuffer or Uint8Array
  * @param language The language code (defaults to 'en')
  */
-export async function extractTextFromPdfWithDetails(
-  pdfData: ArrayBuffer | Uint8Array,
-  language: string = 'en'
-): Promise<string> {
-  try {
-    // Get text with bill data
-    const { text, billData } = await extractTextWithBillData(pdfData, language);
-    
-    // If we have bill data, include it in the output
-    if (billData) {
-      if (billData.raw) {
-        // It's already formatted as text
-        return `${text}\n\n${billData.raw}`;
-      } else {
-        // Format structured data
-        const structuredDataText = Object.entries(billData)
-          .filter(([key]) => key !== 'raw' && key !== 'extractedFromRawText' && key !== 'confidence')
-          .map(([key, value]) => `${key}: ${value}`)
-          .join('\n');
-        
-        if (structuredDataText) {
-          return `${text}\n\n[Structured Data]\n${structuredDataText}`;
-        }
-      }
-    }
-    
-    return text;
-  } catch (error) {
-    console.error('Error in detailed text extraction:', error);
-    return `[PDF extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}]`;
-  }
+export async function extractTextFromPdfWithDetails(pdfData: ArrayBuffer, language: string = 'en'): Promise<{ text: string; billData?: BillData }> {
+  const result = await processPdfFromGmailApi(pdfData, language);
+  return {
+    text: result.text,
+    billData: result.billData
+  };
 }
 
 // Export modular components for direct use if needed

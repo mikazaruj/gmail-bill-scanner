@@ -285,22 +285,62 @@ export function patchPdfjsForServiceWorker(pdfjsLib: any): any {
         (pdfjsLib.GlobalWorkerOptions as any).disableWorker = true;
       }
       
-      // More aggressive worker disable - override the getDocument method to bypass worker creation
+      // More aggressive worker disable - intercept calls to getDocument
       if (pdfjsLib.getDocument) {
-        const originalGetDocument = pdfjsLib.getDocument;
-        pdfjsLib.getDocument = function(params: any) {
-          // Force disable worker in all cases
-          if (typeof params === 'object') {
-            params.disableWorker = true;
-            params.useWorkerFetch = false;
-            params.CMapReaderFactory = undefined;
-            params.StandardFontDataFactory = undefined;
+        try {
+          // Store the original implementation
+          const originalGetDocument = pdfjsLib.getDocument;
+          
+          // Check if Proxy is available
+          if (typeof Proxy === 'undefined') {
+            console.warn('Proxy object not available, using fallback approach');
+            return pdfjsLib;
           }
-          return originalGetDocument.call(this, params);
-        };
+          
+          // Create a proxy handler to intercept property access
+          const handler = {
+            get(target: any, prop: string | symbol, receiver: any) {
+              if (prop === 'getDocument') {
+                // Return a wrapper function for getDocument
+                return function(params: any) {
+                  // Force disable worker in all cases
+                  if (typeof params === 'object') {
+                    params.disableWorker = true;
+                    params.useWorkerFetch = false;
+                    params.CMapReaderFactory = undefined;
+                    params.StandardFontDataFactory = undefined;
+                  }
+                  
+                  try {
+                    // Call the original method with the modified parameters
+                    return originalGetDocument.call(target, params);
+                  } catch (callError) {
+                    console.error('Error calling getDocument:', callError);
+                    return {
+                      promise: Promise.reject(new Error('Error in getDocument: ' + callError))
+                    };
+                  }
+                };
+              }
+              
+              // Pass through all other property access
+              return Reflect.get(target, prop, receiver);
+            }
+          };
+          
+          // Create the proxy
+          console.log('Creating proxy for PDF.js library');
+          const wrappedPdfjs = new Proxy(pdfjsLib, handler);
+          return wrappedPdfjs;
+        } catch (proxyError) {
+          console.error('Failed to create proxy for PDF.js:', proxyError);
+          // Return the original if proxy creation fails
+          return pdfjsLib;
+        }
       }
     }
     
+    // If we haven't returned a wrapped version, return the original
     return pdfjsLib;
   } catch (error) {
     console.error('Error patching PDF.js for service worker:', error);

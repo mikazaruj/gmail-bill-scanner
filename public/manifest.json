@@ -48,9 +48,9 @@
         "popup.html",
         "pdf.worker.min.js",
         "pdfHandler.html",
-        "pdf.js",
-        "pdf.worker.js",
-        "pdfWorker.js"
+        "pdf-worker.js",
+        "lib/pdf.js",
+        "lib/pdf.worker.js"
       ],
       "matches": [
         "https://mail.google.com/*",

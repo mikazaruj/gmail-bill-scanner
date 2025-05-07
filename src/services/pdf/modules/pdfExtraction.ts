@@ -74,11 +74,29 @@ export async function extractPdfText(
     
     // Try with optimized extraction first
     try {
-      const result = await extractWithPdfJs(normalizedData, {
+      // Add timeout for the entire extraction process
+      const extractionPromise = extractWithPdfJs(normalizedData, {
         includePosition,
         serviceWorkerOptimized,
         disableWorker
       });
+      
+      // Create a timeout promise
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('PDF extraction timed out after 30 seconds'));
+        }, 30000); // 30 second global timeout
+      });
+      
+      // Race between extraction and timeout
+      let result;
+      try {
+        result = await Promise.race([extractionPromise, timeoutPromise]);
+      } catch (timeoutError) {
+        // If we get a timeout error, log it and throw to trigger fallback
+        console.warn('PDF.js extraction timed out, using fallback extraction:', timeoutError);
+        throw new Error('PDF extraction timed out');
+      }
       
       return {
         success: true,
@@ -159,10 +177,23 @@ async function extractWithPdfJs(
         disableWorker: options.disableWorker
       };
   
-  // Load the PDF document
+  // Load the PDF document with timeout
   try {
     console.log('Loading PDF document...');
-    const pdfDocument = await pdfjsLib.getDocument(loadingOptions).promise;
+    
+    // Create a timeout promise that rejects after 15 seconds
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('PDF loading timed out after 15 seconds'));
+      }, 15000); // 15 second timeout
+    });
+    
+    // Race between loading and timeout
+    const pdfDocument = await Promise.race([
+      pdfjsLib.getDocument(loadingOptions).promise,
+      timeoutPromise
+    ]);
+    
     console.log(`PDF loaded with ${pdfDocument.numPages} pages`);
     
     // Extract text from each page
@@ -180,8 +211,21 @@ async function extractWithPdfJs(
       console.log(`Processing page ${i}/${pdfDocument.numPages}`);
       
       try {
-        const page = await pdfDocument.getPage(i);
-        const content = await page.getTextContent();
+        // Add timeout for individual page processing too
+        const pagePromise = pdfDocument.getPage(i);
+        const page = await Promise.race([
+          pagePromise,
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error(`Page ${i} processing timed out`)), 5000);
+          })
+        ]);
+        
+        const content = await Promise.race([
+          page.getTextContent(),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error(`Text content extraction for page ${i} timed out`)), 5000);
+          })
+        ]);
         
         if (options.includePosition) {
           // Extract items with position
@@ -251,63 +295,83 @@ async function extractWithPdfJs(
  */
 function extractTextFallback(pdfData: Uint8Array): string {
   try {
-    console.log('Attempting basic character extraction as fallback');
+    console.log('Starting fallback text extraction approach');
+    let extractedText = '';
     
     // Method 1: Try to extract PDF text using basic patterns
-    // Find text blocks in PDF format which are often surrounded by "(" and ")"
-    const partialString = String.fromCharCode.apply(null, Array.from(pdfData.slice(0, Math.min(pdfData.length, 15000))));
-    const textBlocks = partialString.match(/\(([^\)]{3,})\)/g);
-    
-    if (textBlocks && textBlocks.length > 0) {
-      console.log(`Found ${textBlocks.length} text blocks in PDF data`);
+    try {
+      console.log('Attempting pattern-based extraction');
+      // Find text blocks in PDF format which are often surrounded by "(" and ")"
+      // Limit to first 20000 bytes to avoid memory issues
+      const partialData = pdfData.slice(0, Math.min(pdfData.length, 20000));
+      const partialString = String.fromCharCode.apply(null, Array.from(partialData));
+      const textBlocks = partialString.match(/\(([^\)]{3,})\)/g);
       
-      // Clean up the text blocks
-      const extractedText = textBlocks
-        .map(block => block.substring(1, block.length - 1)) // Remove ( and )
-        .filter(block => {
-          // Filter out blocks that are likely not text (e.g., font names, metadata)
-          return block.length > 3 && 
-                 !/^[0-9.]+$/.test(block) && // Not just numbers
-                 !/^[A-Z]{6,}$/.test(block) && // Not just uppercase letters (likely font names)
-                 block.indexOf("\u0000") === -1; // No null bytes (likely binary data)
-        })
-        .join(' ')
-        .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8))) // Handle octal escapes
-        .replace(/\\([nrtbf])/g, ' ') // Handle newlines and other escapes
-        .replace(/\s+/g, ' ');
-      
-      if (extractedText.length > 100) {
-        console.log(`Successfully extracted ${extractedText.length} characters using pattern matching`);
-        return extractedText;
+      if (textBlocks && textBlocks.length > 0) {
+        console.log(`Found ${textBlocks.length} text blocks in PDF data`);
+        
+        // Clean up the text blocks
+        extractedText = textBlocks
+          .map(block => block.substring(1, block.length - 1)) // Remove ( and )
+          .filter(block => {
+            // Filter out blocks that are likely not text (e.g., font names, metadata)
+            return block.length > 3 && 
+                   !/^[0-9.]+$/.test(block) && // Not just numbers
+                   !/^[A-Z]{6,}$/.test(block) && // Not just uppercase letters (likely font names)
+                   block.indexOf("\u0000") === -1; // No null bytes (likely binary data)
+          })
+          .join(' ')
+          .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8))) // Handle octal escapes
+          .replace(/\\([nrtbf])/g, ' ') // Handle newlines and other escapes
+          .replace(/\s+/g, ' ');
+        
+        if (extractedText.length > 100) {
+          console.log(`Successfully extracted ${extractedText.length} characters using pattern matching`);
+          return extractedText;
+        }
       }
+    } catch (method1Error) {
+      console.warn('Method 1 (pattern-based extraction) failed:', method1Error);
     }
     
-    // Method 2: Look for common PDF text objects patterns
+    // Method 2: Look for text objects (BT/ET blocks)
     try {
-      // Get a subset of the PDF for searching to avoid memory issues
-      const pdfSubset = pdfData.slice(0, Math.min(pdfData.length, 50000));
-      const pdfText = String.fromCharCode.apply(null, Array.from(pdfSubset));
+      console.log('Attempting BT/ET text object extraction');
+      // Limit to a manageable chunk size for processing
+      const pdfSubset = pdfData.slice(0, Math.min(pdfData.length, 30000));
+      // Convert to string carefully using chunks to avoid memory issues
+      let pdfText = '';
+      const chunkSize = 5000;
+      for (let i = 0; i < pdfSubset.length; i += chunkSize) {
+        const chunk = pdfSubset.slice(i, i + chunkSize);
+        pdfText += String.fromCharCode.apply(null, Array.from(chunk));
+      }
       
       // Look for text objects in PDF format
       const textObjects = pdfText.match(/BT\s*(.*?)\s*ET/gs);
       if (textObjects && textObjects.length > 0) {
+        console.log(`Found ${textObjects.length} text objects in PDF`);
         // Extract text content from these objects
         const extractedContent = textObjects
           .map(obj => {
             // Look for text strings within text objects
-            const strings = obj.match(/\((.*?)\)|<([0-9A-Fa-f]+)>/g) || [];
+            const strings = obj.match(/\((.*?[^\\])\)|<([0-9A-Fa-f]+)>/g) || [];
             return strings
               .map(str => {
                 if (str.startsWith('(')) {
                   // Plain text string
                   return str.substring(1, str.length - 1)
-                    .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+                    .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)))
+                    .replace(/\\n/g, ' ')
+                    .replace(/\\r/g, ' ');
                 } else {
                   // Hex string
                   const hex = str.substring(1, str.length - 1);
                   let result = '';
                   for (let i = 0; i < hex.length; i += 2) {
-                    result += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+                    if (i + 1 < hex.length) {
+                      result += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+                    }
                   }
                   return result;
                 }
@@ -322,70 +386,102 @@ function extractTextFallback(pdfData: Uint8Array): string {
           return extractedContent;
         }
       }
-    } catch (error) {
-      console.warn('Error in PDF text object extraction:', error);
+    } catch (method2Error) {
+      console.warn('Method 2 (BT/ET extraction) failed:', method2Error);
     }
     
     // Method 3: Direct character extraction as last resort
-    let plainText = '';
-    let consecutiveText = '';
-    let textSections: string[] = [];
-    
-    // Process the raw binary data to extract readable text
-    for (let i = 0; i < pdfData.length; i++) {
-      const byte = pdfData[i];
+    try {
+      console.log('Attempting direct character extraction');
+      let plainText = '';
+      let consecutiveText = '';
+      let textSections: string[] = [];
       
-      // Check if character is likely readable text
-      if ((byte >= 32 && byte <= 126) || // ASCII printable
-          (byte >= 0xC0 && byte <= 0xFF)) { // Basic Latin-1 accented chars
-        const char = String.fromCharCode(byte);
-        consecutiveText += char;
-      } else if (consecutiveText.length > 5) {
-        // End of text section, save it if it's long enough
-        textSections.push(consecutiveText);
-        consecutiveText = '';
-      } else {
-        // Reset if we don't have enough consecutive text
-        consecutiveText = '';
+      // Process in chunks to avoid memory issues
+      const chunkSize = 8192;
+      for (let chunk = 0; chunk < pdfData.length; chunk += chunkSize) {
+        const end = Math.min(chunk + chunkSize, pdfData.length);
+        
+        // Process the current chunk
+        for (let i = chunk; i < end; i++) {
+          const byte = pdfData[i];
+          
+          // Check if character is likely readable text
+          if ((byte >= 32 && byte <= 126) || // ASCII printable
+              (byte >= 0xC0 && byte <= 0xFF)) { // Basic Latin-1 accented chars
+            const char = String.fromCharCode(byte);
+            consecutiveText += char;
+          } else if (consecutiveText.length > 5) {
+            // End of text section, save it if it's long enough
+            textSections.push(consecutiveText);
+            consecutiveText = '';
+          } else {
+            // Reset if we don't have enough consecutive text
+            consecutiveText = '';
+          }
+        }
       }
-    }
-    
-    // Add any remaining text
-    if (consecutiveText.length > 5) {
-      textSections.push(consecutiveText);
-    }
-    
-    // Filter and join the text sections
-    plainText = textSections
-      .filter(section => {
-        // Additional filtering to remove unlikely content
-        return !/^[0-9.]+$/.test(section) && // Not just numbers
-               section.split(/\s+/).length > 2; // Has at least a few words
-      })
-      .join('\n');
-    
-    // If we were able to extract decent text, return it
-    if (plainText.length > 100) {
-      console.log(`Extracted ${plainText.length} characters using direct character scanning`);
-      return plainText;
+      
+      // Add any remaining text
+      if (consecutiveText.length > 5) {
+        textSections.push(consecutiveText);
+      }
+      
+      // Filter and join the text sections
+      plainText = textSections
+        .filter(section => {
+          // Additional filtering to remove unlikely content
+          return !/^[0-9.]+$/.test(section) && // Not just numbers
+                section.split(/\s+/).length > 2; // Has at least a few words
+        })
+        .join('\n');
+      
+      // If we were able to extract decent text, return it
+      if (plainText.length > 100) {
+        console.log(`Extracted ${plainText.length} characters using direct character scanning`);
+        return plainText;
+      }
+    } catch (method3Error) {
+      console.warn('Method 3 (direct character extraction) failed:', method3Error);
     }
     
     // Method 4: Last desperate attempt - just convert readable characters
-    console.log('Using last-resort character conversion method');
-    return Array.from(pdfData)
-      .map(byte => 
-        (byte >= 32 && byte <= 126) || // ASCII printable
-        (byte >= 0xC0 && byte <= 0xFF) || // Basic Latin-1 accented chars
-        (byte === 0x0A || byte === 0x0D) ? // Line breaks
-          String.fromCharCode(byte) : ' '
-      )
-      .join('')
-      .replace(/\s+/g, ' ')
-      .trim();
+    try {
+      console.log('Using last-resort character conversion method');
+      
+      // Process in small chunks to avoid memory issues
+      let result = '';
+      const chunkSize = 10000;
+      
+      for (let offset = 0; offset < pdfData.length; offset += chunkSize) {
+        const chunk = pdfData.slice(offset, Math.min(offset + chunkSize, pdfData.length));
+        
+        const chunkResult = Array.from(chunk)
+          .map(byte => 
+            (byte >= 32 && byte <= 126) || // ASCII printable
+            (byte >= 0xC0 && byte <= 0xFF) || // Basic Latin-1 accented chars
+            (byte === 0x0A || byte === 0x0D) ? // Line breaks
+              String.fromCharCode(byte) : ' '
+          )
+          .join('');
+          
+        result += chunkResult;
+      }
+      
+      const finalText = result
+        .replace(/\s+/g, ' ')
+        .trim();
+        
+      console.log(`Last resort method extracted ${finalText.length} characters`);
+      return finalText;
+    } catch (method4Error) {
+      console.warn('Last resort extraction method failed:', method4Error);
+      return '[PDF extraction failed - could not extract text]';
+    }
   } catch (error) {
-    console.error('Fallback text extraction failed:', error);
+    console.error('All fallback text extraction methods failed:', error);
     // Return a minimal string so processing can continue
-    return '[PDF fallback extraction failed]';
+    return '[PDF extraction failed completely]';
   }
 }
 
@@ -494,20 +590,16 @@ export async function ensurePdfjsLoaded(): Promise<any> {
       }
       
       // Apply our service worker patches to fix document references
-      pdfjs = patchPdfjsForServiceWorker(pdfjs);
+      const patchedPdfjs = patchPdfjsForServiceWorker(pdfjs);
       
       // Create a minimal fake implementation if PDF.js fails
-      if (!pdfjs.getDocument) {
+      if (!patchedPdfjs.getDocument) {
         console.warn('PDF.js missing getDocument - providing minimal implementation');
-        pdfjs.getDocument = function() {
-          return {
-            promise: Promise.reject(new Error('PDF.js getDocument not available'))
-          };
-        };
+        return createMinimalPdfJsImplementation();
       }
       
       console.log('PDF.js configured for service worker environment');
-      return pdfjs;
+      return patchedPdfjs;
     } catch (error) {
       console.error('Error loading PDF.js in service worker:', error);
       
