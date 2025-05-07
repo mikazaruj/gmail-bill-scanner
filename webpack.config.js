@@ -24,10 +24,8 @@ module.exports = {
     options: path.join(__dirname, "src/options/index.tsx"),
     background: path.join(__dirname, "src/background/index.ts"),
     content: path.join(__dirname, "src/content/index.ts"),
-    // Add the PDF worker as a separate entry
+    // Only include pdf-worker as a separate entry point
     'pdf-worker': path.join(__dirname, "src/workers/pdf-worker.js"),
-    // Add the PDF processor UI
-    'pdf-processor-ui': path.join(__dirname, "src/js/pdf-processor-ui.js"),
   },
   output: {
     path: path.resolve(__dirname, 'dist'),
@@ -119,7 +117,10 @@ module.exports = {
         { from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', to: 'pdf.worker.min.js' },
         // Create a directory for PDF.js libraries that will be imported by the worker
         { from: 'node_modules/pdfjs-dist/build/pdf.min.js', to: 'lib/pdf.js' },
-        { from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', to: 'lib/pdf.worker.js' }
+        { from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', to: 'lib/pdf.worker.js' },
+        // Copy the PDF processor HTML and JS from public directory
+        { from: 'public/pdf-processor.html', to: 'pdf-processor.html' },
+        { from: 'public/pdf-processor-ui.js', to: 'pdf-processor-ui.js' }
       ],
     }),
     // Use HtmlWebpackPlugin to generate HTML files - use different names to avoid conflicts
@@ -134,14 +135,6 @@ module.exports = {
       template: './public/options.html',
       filename: 'options.html',
       chunks: ['options'],
-      cache: false,
-      inject: true
-    }),
-    // Add PDF processor HTML
-    new HtmlWebpackPlugin({
-      template: './src/pdf-processor.html',
-      filename: 'pdf-processor.html',
-      chunks: ['pdf-processor-ui'],
       cache: false,
       inject: true
     }),
