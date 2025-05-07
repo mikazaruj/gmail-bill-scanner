@@ -23,6 +23,11 @@ import {
   extractHungarianText
 } from './modules/billDataExtraction';
 
+// Service worker context detection
+import {
+  isServiceWorkerContext
+} from './modules/serviceWorkerCompat';
+
 // Worker processing support
 let workerSupported: boolean | null = null;
 
@@ -37,11 +42,33 @@ export async function processPdfFromGmailApi(
   language: string = 'en'
 ): Promise<{ text: string; pages?: any[]; billData?: BillData }> {
   try {
+    // Check if we're in a service worker context first
+    const inServiceWorker = isServiceWorkerContext();
+    
+    // If in service worker, don't even try the worker approach
+    if (inServiceWorker) {
+      console.log('Running in service worker context - skipping Web Worker attempt');
+      workerSupported = false;
+      return await processPdfInProcess(pdfData, language);
+    }
+    
+    // Make a clone of the buffer to avoid issues with transferables
+    // This prevents "ArrayBuffer is detached" errors from race conditions
+    let pdfDataClone: ArrayBuffer;
+    try {
+      // Create a clone of the buffer to avoid detached buffer issues
+      const u8arr = new Uint8Array(pdfData);
+      pdfDataClone = u8arr.buffer.slice(0);
+    } catch (cloneError) {
+      console.warn('Unable to clone PDF buffer, will use original:', cloneError);
+      pdfDataClone = pdfData;
+    }
+    
     // Try processing using a dedicated worker first if supported
     if (workerSupported === null || workerSupported === true) {
       try {
         console.log('Attempting to process PDF with dedicated Web Worker');
-        return await processPdfWithWorker(pdfData, language);
+        return await processPdfWithWorker(pdfDataClone, language);
       } catch (workerError) {
         console.warn('Web Worker processing failed, falling back to in-process extraction:', workerError);
         workerSupported = false;
@@ -103,9 +130,22 @@ async function processPdfWithWorker(
   return new Promise((resolve, reject) => {
     try {
       // Check if this environment supports workers
-      if (typeof Worker === 'undefined') {
+      if (typeof Worker === 'undefined' || isServiceWorkerContext()) {
         workerSupported = false;
         reject(new Error('Web Workers not supported in this environment'));
+        return;
+      }
+      
+      try {
+        // Sanity check - try creating a minimal worker
+        const testWorker = new Worker(
+          URL.createObjectURL(new Blob(['self.onmessage = () => {}'], { type: 'text/javascript' }))
+        );
+        testWorker.terminate();
+      } catch (workerError) {
+        console.warn('Worker creation test failed:', workerError);
+        workerSupported = false;
+        reject(new Error('Web Worker creation failed in this context'));
         return;
       }
       
@@ -124,6 +164,14 @@ async function processPdfWithWorker(
       
       // Listen for results
       worker.onmessage = (event) => {
+        // Handle different message types
+        if (event.data.type === 'status') {
+          // Just log status messages
+          console.log(`PDF Worker status: ${event.data.message}`);
+          return; // Continue waiting for actual results
+        }
+        
+        // Clear timeout for result or error messages
         clearTimeout(timeoutId);
         
         if (event.data.success) {
@@ -249,6 +297,164 @@ export async function extractTextFromPdfWithDetails(pdfData: ArrayBuffer, langua
     text: result.text,
     billData: result.billData
   };
+}
+
+/**
+ * Diagnose PDF processing environment capabilities
+ * This function can be called to check if the current environment supports
+ * various PDF processing mechanisms.
+ * @returns Diagnostic information about the environment
+ */
+export async function diagnosePdfEnvironment(): Promise<{
+  inServiceWorker: boolean;
+  workerSupported: boolean | null;
+  pdfJsSupported: boolean;
+  details: string;
+}> {
+  try {
+    // Check service worker context
+    const inServiceWorker = isServiceWorkerContext();
+    
+    // Test worker support if not in service worker
+    let canCreateWorker = false;
+    let workerDetails = '';
+    
+    if (!inServiceWorker) {
+      try {
+        if (typeof Worker !== 'undefined') {
+          // Try creating a minimal worker
+          const testWorkerBlob = new Blob(['self.onmessage = () => { self.postMessage("ok"); }'], 
+            { type: 'text/javascript' });
+          const testWorkerUrl = URL.createObjectURL(testWorkerBlob);
+          const testWorker = new Worker(testWorkerUrl);
+          
+          // Test communication
+          await new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              reject(new Error('Worker test timed out'));
+            }, 1000);
+            
+            testWorker.onmessage = () => {
+              clearTimeout(timeout);
+              canCreateWorker = true;
+              resolve();
+            };
+            
+            testWorker.onerror = (err) => {
+              clearTimeout(timeout);
+              workerDetails = `Worker error: ${err.message || 'Unknown error'}`;
+              reject(err);
+            };
+            
+            testWorker.postMessage('test');
+          })
+          .catch(err => {
+            workerDetails = `Worker communication failed: ${err.message}`;
+          })
+          .finally(() => {
+            testWorker.terminate();
+            URL.revokeObjectURL(testWorkerUrl);
+          });
+        } else {
+          workerDetails = 'Worker API not available';
+        }
+      } catch (workerErr: unknown) {
+        const errorMessage = workerErr instanceof Error ? workerErr.message : 'Unknown error';
+        workerDetails = `Worker creation error: ${errorMessage}`;
+      }
+    } else {
+      workerDetails = 'Service worker context - nested workers not supported';
+    }
+    
+    // Test PDF.js loading in the current context
+    let pdfJsSupported = false;
+    let pdfJsDetails = '';
+    
+    try {
+      // Create a minimal PDF to test with
+      const minimalPdf = new Uint8Array([
+        0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xc7, 0xec,
+        0x8f, 0xa2, 0x0a, 0x31, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c,
+        0x3c, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x2f, 0x43, 0x61, 0x74, 0x61, 0x6c,
+        0x6f, 0x67, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x73, 0x20, 0x32, 0x20, 0x30,
+        0x20, 0x52, 0x3e, 0x3e, 0x0a, 0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a,
+        0x32, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c, 0x3c, 0x2f, 0x54,
+        0x79, 0x70, 0x65, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x73, 0x2f, 0x4b, 0x69,
+        0x64, 0x73, 0x5b, 0x33, 0x20, 0x30, 0x20, 0x52, 0x5d, 0x2f, 0x43, 0x6f,
+        0x75, 0x6e, 0x74, 0x20, 0x31, 0x3e, 0x3e, 0x0a, 0x65, 0x6e, 0x64, 0x6f,
+        0x62, 0x6a, 0x0a, 0x33, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c,
+        0x3c, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x2f,
+        0x50, 0x61, 0x72, 0x65, 0x6e, 0x74, 0x20, 0x32, 0x20, 0x30, 0x20, 0x52,
+        0x2f, 0x52, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x73, 0x3c, 0x3c,
+        0x2f, 0x46, 0x6f, 0x6e, 0x74, 0x3c, 0x3c, 0x2f, 0x46, 0x31, 0x20, 0x34,
+        0x20, 0x30, 0x20, 0x52, 0x3e, 0x3e, 0x3e, 0x3e, 0x2f, 0x43, 0x6f, 0x6e,
+        0x74, 0x65, 0x6e, 0x74, 0x73, 0x20, 0x35, 0x20, 0x30, 0x20, 0x52, 0x3e,
+        0x3e, 0x0a, 0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a, 0x34, 0x20, 0x30,
+        0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c, 0x3c, 0x2f, 0x54, 0x79, 0x70, 0x65,
+        0x2f, 0x46, 0x6f, 0x6e, 0x74, 0x2f, 0x53, 0x75, 0x62, 0x74, 0x79, 0x70,
+        0x65, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x31, 0x2f, 0x42, 0x61, 0x73, 0x65,
+        0x46, 0x6f, 0x6e, 0x74, 0x2f, 0x48, 0x65, 0x6c, 0x76, 0x65, 0x74, 0x69,
+        0x63, 0x61, 0x3e, 0x3e, 0x0a, 0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a,
+        0x35, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c, 0x3c, 0x2f, 0x4c,
+        0x65, 0x6e, 0x67, 0x74, 0x68, 0x20, 0x34, 0x34, 0x3e, 0x3e, 0x0a, 0x73,
+        0x74, 0x72, 0x65, 0x61, 0x6d, 0x0a, 0x42, 0x54, 0x0a, 0x2f, 0x46, 0x31,
+        0x20, 0x31, 0x32, 0x20, 0x54, 0x66, 0x0a, 0x31, 0x30, 0x30, 0x20, 0x37,
+        0x30, 0x30, 0x20, 0x54, 0x64, 0x0a, 0x28, 0x48, 0x65, 0x6c, 0x6c, 0x6f,
+        0x20, 0x57, 0x6f, 0x72, 0x6c, 0x64, 0x29, 0x20, 0x54, 0x6a, 0x0a, 0x45,
+        0x54, 0x0a, 0x65, 0x6e, 0x64, 0x73, 0x74, 0x72, 0x65, 0x61, 0x6d, 0x0a,
+        0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a, 0x0a, 0x78, 0x72, 0x65, 0x66, 0x0a,
+        0x30, 0x20, 0x36, 0x0a, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+        0x30, 0x30, 0x20, 0x36, 0x35, 0x35, 0x33, 0x35, 0x20, 0x66, 0x20, 0x0a,
+        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x20, 0x30,
+        0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a, 0x30, 0x30, 0x30, 0x30,
+        0x30, 0x30, 0x30, 0x30, 0x37, 0x39, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30,
+        0x20, 0x6e, 0x20, 0x0a, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31,
+        0x37, 0x33, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a,
+        0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x33, 0x30, 0x31, 0x20, 0x30,
+        0x30, 0x30, 0x30, 0x30, 0x20, 0x6e, 0x20, 0x0a, 0x30, 0x30, 0x30, 0x30,
+        0x30, 0x30, 0x30, 0x33, 0x38, 0x30, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30,
+        0x20, 0x6e, 0x20, 0x0a, 0x74, 0x72, 0x61, 0x69, 0x6c, 0x65, 0x72, 0x0a,
+        0x3c, 0x3c, 0x2f, 0x53, 0x69, 0x7a, 0x65, 0x20, 0x36, 0x2f, 0x52, 0x6f,
+        0x6f, 0x74, 0x20, 0x31, 0x20, 0x30, 0x20, 0x52, 0x3e, 0x3e, 0x0a, 0x73,
+        0x74, 0x61, 0x72, 0x74, 0x78, 0x72, 0x65, 0x66, 0x0a, 0x35, 0x33, 0x30,
+        0x0a, 0x25, 0x25, 0x45, 0x4f, 0x46
+      ]);
+      
+      // Normalize the data
+      const normalizedData = await normalizePdfData(minimalPdf);
+      
+      // Try a minimal extraction without positional info
+      const result = await extractPdfText(normalizedData, {
+        includePosition: false,
+        language: 'en'
+      });
+      
+      pdfJsSupported = result.success;
+      pdfJsDetails = result.success 
+        ? 'PDF.js works correctly' 
+        : `PDF.js error: ${result.error || 'Unknown error'}`;
+    } catch (pdfErr: unknown) {
+      const errorMessage = pdfErr instanceof Error ? pdfErr.message : 'Unknown error';
+      pdfJsDetails = `PDF.js test failed: ${errorMessage}`;
+    }
+    
+    return {
+      inServiceWorker,
+      workerSupported: inServiceWorker ? false : (canCreateWorker ? true : null),
+      pdfJsSupported,
+      details: `Environment: ${inServiceWorker ? 'Service Worker' : 'Main Thread'}\n` +
+        `Worker support: ${canCreateWorker ? 'Yes' : 'No'} - ${workerDetails}\n` +
+        `PDF.js support: ${pdfJsSupported ? 'Yes' : 'No'} - ${pdfJsDetails}`
+    };
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return {
+      inServiceWorker: isServiceWorkerContext(),
+      workerSupported: null,
+      pdfJsSupported: false,
+      details: `Diagnostic error: ${errorMessage}`
+    };
+  }
 }
 
 // Export modular components for direct use if needed

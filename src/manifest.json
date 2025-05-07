@@ -17,7 +17,8 @@
   "permissions": [
     "storage",
     "identity",
-    "alarms"
+    "alarms",
+    "windows"
   ],
   "host_permissions": [
     "https://mail.google.com/*",
@@ -26,12 +27,17 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "pdfWorker.js"
+        "pdfWorker.js",
+        "pdf-processor.html",
+        "workers/pdf-worker.js",
+        "js/pdf-processor-ui.js",
+        "lib/pdf.js",
+        "lib/pdf.worker.js"
       ],
-      "matches": ["https://mail.google.com/*"]
+      "matches": ["https://mail.google.com/*", "<all_urls>"]
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self'"
   }
 } 

@@ -26,6 +26,8 @@ module.exports = {
     content: path.join(__dirname, "src/content/index.ts"),
     // Add the PDF worker as a separate entry
     'pdf-worker': path.join(__dirname, "src/workers/pdf-worker.js"),
+    // Add the PDF processor UI
+    'pdf-processor-ui': path.join(__dirname, "src/js/pdf-processor-ui.js"),
   },
   output: {
     path: path.resolve(__dirname, 'dist'),
@@ -132,6 +134,14 @@ module.exports = {
       template: './public/options.html',
       filename: 'options.html',
       chunks: ['options'],
+      cache: false,
+      inject: true
+    }),
+    // Add PDF processor HTML
+    new HtmlWebpackPlugin({
+      template: './src/pdf-processor.html',
+      filename: 'pdf-processor.html',
+      chunks: ['pdf-processor-ui'],
       cache: false,
       inject: true
     }),
