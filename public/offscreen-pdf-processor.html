@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Offscreen PDF Processor</title>
+  <meta charset="utf-8">
+  <script>
+    // Initialize logging
+    console.log('[Offscreen] Offscreen document loading...');
+    
+    // Log any errors that occur during page loading
+    window.addEventListener('error', function(event) {
+      console.error('[Offscreen] Error during page load:', event.error || event.message);
+    });
+    
+    // Track page lifecycle
+    document.addEventListener('DOMContentLoaded', function() {
+      console.log('[Offscreen] DOMContentLoaded event fired');
+    });
+    
+    window.addEventListener('load', function() {
+      console.log('[Offscreen] Window load event fired');
+    });
+  </script>
+  <!-- Use the correct paths to PDF.js files -->
+  <script src="lib/pdf.js"></script>
+  <script src="pdf.worker.min.js"></script>
+  <script>
+    // Initialize PDF.js
+    let pdfjsLib;
+    
+    try {
+      console.log('[Offscreen] Initializing PDF.js library');
+      
+      // Try multiple ways to access the PDF.js library
+      if (typeof window['pdfjs-dist/build/pdf'] !== 'undefined') {
+        pdfjsLib = window['pdfjs-dist/build/pdf'];
+        console.log('[Offscreen] PDF.js loaded from pdfjs-dist/build/pdf');
+      } else if (typeof window.pdfjsLib !== 'undefined') {
+        pdfjsLib = window.pdfjsLib;
+        console.log('[Offscreen] PDF.js loaded from window.pdfjsLib');
+      } else if (typeof window.PDFJS !== 'undefined') {
+        pdfjsLib = window.PDFJS;
+        console.log('[Offscreen] PDF.js loaded from window.PDFJS');
+      } else {
+        console.error('[Offscreen] Could not find PDF.js library on window object');
+        throw new Error('PDF.js library not found');
+      }
+      
+      console.log('[Offscreen] PDF.js library initialized successfully');
+    } catch (error) {
+      console.error('[Offscreen] Failed to initialize PDF.js:', error);
+    }
+
+    /**
+     * Process PDF data and extract text
+     * @param {number[]} data - PDF data as array of numbers (will be converted to Uint8Array)
+     * @param {Object} options - Processing options
+     * @returns {Promise<Object>} - Extracted text and pages
+     */
+    async function processPdf(data, options = {}) {
+      try {
+        console.log('[Offscreen] Processing PDF with options:', options);
+        
+        // Convert array of numbers back to Uint8Array
+        const pdfData = new Uint8Array(data);
+        
+        // Configure PDF.js
+        const loadingTask = pdfjsLib.getDocument({
+          data: pdfData,
+          nativeImageDecoderSupport: 'display',
+          isEvalSupported: true,
+          useSystemFonts: true,
+          disableFontFace: false,
+          verbosity: 0
+        });
+        
+        // Load the PDF document
+        const pdfDocument = await loadingTask.promise;
+        console.log('[Offscreen] PDF document loaded with', pdfDocument.numPages, 'pages');
+        
+        // Get all pages
+        const numPages = pdfDocument.numPages;
+        const pages = [];
+        let fullText = '';
+        
+        // Process each page
+        for (let i = 1; i <= numPages; i++) {
+          const page = await pdfDocument.getPage(i);
+          const content = await page.getTextContent();
+          
+          // Extract text from page
+          let pageText = '';
+          let lastY = -1;
+          
+          // Process text items
+          for (const item of content.items) {
+            if ('str' in item) {
+              // Add a newline when the y position changes significantly
+              if (lastY !== -1 && Math.abs(item.transform[5] - lastY) > 5) {
+                pageText += '\n';
+              }
+              
+              pageText += item.str + ' ';
+              lastY = item.transform[5];
+            }
+          }
+          
+          // Add page to results
+          pages.push({
+            pageNumber: i,
+            text: pageText.trim()
+          });
+          
+          fullText += pageText + '\n\n';
+          
+          // Clean up page resources
+          page.cleanup();
+        }
+        
+        console.log('[Offscreen] Successfully extracted text from all pages');
+        
+        // Return the result
+        return {
+          success: true,
+          text: fullText.trim(),
+          pages
+        };
+        
+      } catch (error) {
+        console.error('[Offscreen] Error processing PDF:', error);
+        return {
+          success: false,
+          text: '',
+          error: error.message || 'Unknown error in offscreen processor'
+        };
+      }
+    }
+    
+    // Listen for messages from the extension
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      console.log('[Offscreen] Received message:', message.type);
+      
+      if (message.type === 'PROCESS_PDF') {
+        console.log('[Offscreen] Received PDF processing request');
+        
+        // Process the PDF
+        processPdf(message.pdfData, message.options)
+          .then(result => {
+            // Send the result back to the extension
+            console.log('[Offscreen] Sending PDF processing result back');
+            chrome.runtime.sendMessage({
+              type: 'PDF_PROCESSED',
+              result,
+              messageId: message.messageId
+            }).catch(error => {
+              console.error('[Offscreen] Error sending PDF result:', error);
+            });
+          })
+          .catch(error => {
+            // Send error back to the extension
+            console.error('[Offscreen] Error during PDF processing:', error);
+            chrome.runtime.sendMessage({
+              type: 'PDF_PROCESSING_ERROR',
+              error: error.message || 'Unknown error',
+              messageId: message.messageId
+            }).catch(sendError => {
+              console.error('[Offscreen] Error sending PDF processing error:', sendError);
+            });
+          });
+        
+        return true; // Indicates we'll respond asynchronously
+      }
+    });
+    
+    console.log('[Offscreen] PDF processor initialized and ready');
+  </script>
+</head>
+<body>
+  <div id="pdfContainer" style="display: none;"></div>
+  <div id="status">Offscreen PDF processor is running</div>
+</body>
+</html> 

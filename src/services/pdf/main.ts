@@ -6,19 +6,34 @@
  */
 
 import { 
-  extractPdfText as extractPdfTextDirect, 
-  ExtractionResult 
+  extractPdfText as extractPdfTextInternal, 
+  ExtractionOptions,
+  ExtractionResult as BaseExtractionResult
 } from './modules/pdfExtraction';
 import { 
-  processPdfWithOffscreen, 
-  isOffscreenApiAvailable,
-  closeOffscreenDocument 
+  processPdfWithOffscreen,
+  closeOffscreenDocument
 } from './modules/offscreenProcessor';
+import { 
+  isOffscreenApiAvailable,
+  isServiceWorkerContext
+} from './modules/serviceWorkerCompat';
 import { 
   processPdfWithHiddenUI, 
   isHiddenUiAvailable 
 } from './modules/hiddenUiProcessor';
 import { normalizePdfData } from './modules/pdfNormalization';
+import {
+  extractBillData,
+  BillData
+} from './modules/billDataExtraction';
+
+/**
+ * Enhanced extraction result with bill data
+ */
+export interface ExtractionResult extends BaseExtractionResult {
+  billData?: BillData;
+}
 
 /**
  * Options for PDF extraction
@@ -29,6 +44,7 @@ export interface PdfExtractionOptions {
   disableHiddenUi?: boolean;
   disableWorker?: boolean;
   timeout?: number;
+  extractBillData?: boolean;
 }
 
 /**
@@ -53,60 +69,98 @@ export async function extractPdfText(
       pdfDataSize: pdfData instanceof ArrayBuffer ? pdfData.byteLength : pdfData.length
     });
     
-    // First normalize the data
-    const normalizedData = await normalizePdfData(pdfData);
+    // Determine the best extraction method based on environment
+    const offscreenAvailable = isOffscreenApiAvailable();
+    const inServiceWorker = isServiceWorkerContext();
     
-    // Try offscreen document processing first if available
-    if (isOffscreenApiAvailable()) {
+    console.log(`[PDF Service] Offscreen API available: ${offscreenAvailable} Chrome API keys: ${typeof chrome !== 'undefined' ? Object.keys(chrome).join(', ') : 'chrome undefined'}`);
+    console.log(`[PDF Service] Service worker context: ${inServiceWorker}`);
+    
+    // Attempt to extract with the most appropriate method
+    // Priority: Offscreen > Hidden UI > Direct Extraction
+    
+    // 1. Try offscreen extraction if available (preferred method)
+    if (offscreenAvailable) {
+      console.log('[PDF Service] Using offscreen document for PDF processing');
+      
       try {
-        console.log('[PDF Service] Using offscreen document for PDF processing');
-        const result = await processPdfWithOffscreen(normalizedData, {
+        return await processPdfWithOffscreen(pdfData, {
           language: options.language,
-          includePosition: options.includePosition,
+          includePosition: options.includePosition !== false,
           timeout: options.timeout || 60000
         });
-        
-        if (result.success) {
-          return result;
-        }
-        
-        // If offscreen failed but returned an error, continue to fallback
-        console.warn('[PDF Service] Offscreen processing failed:', result.error);
       } catch (offscreenError) {
-        console.error('[PDF Service] Error using offscreen document:', offscreenError);
-        // Continue to other methods
+        console.log('[PDF Service] Offscreen processing failed:', offscreenError);
+        // Continue to fallback methods if offscreen fails
       }
     }
     
-    // If offscreen not available or failed, try hidden UI
-    if (isHiddenUiAvailable() && !options.disableHiddenUi) {
+    // 2. Try hidden UI approach if offscreen is not available or failed
+    // This only works in extension popup or other non-service-worker contexts
+    if (!inServiceWorker && !options.disableHiddenUi) {
+      console.log('[PDF Service] Using hidden UI for PDF processing');
+      
       try {
-        console.log('[PDF Service] Using hidden UI for PDF processing');
-        return await processPdfWithHiddenUI(normalizedData, {
-          language: options.language,
-          timeout: options.timeout || 120000  // 2 minute timeout
-        });
+        return await processPdfWithHiddenUI(pdfData, options);
       } catch (hiddenUiError) {
-        console.error('[PDF Service] Hidden UI processing failed:', hiddenUiError);
+        console.log('[PDF Service] Hidden UI processing failed:', hiddenUiError);
         // Continue to direct extraction
       }
     }
     
-    // If all else fails, use direct extraction
+    // 3. Last resort: direct extraction
     console.log('[PDF Service] Using direct extraction with PDF.js');
-    return await extractPdfTextDirect(normalizedData, {
-      includePosition: options.includePosition,
-      serviceWorkerOptimized: true,
-      language: options.language,
-      disableWorker: options.disableWorker
+    
+    // If we reached here after offscreen failed, force PDF.js patching
+    const needsForcedPatching = offscreenAvailable && inServiceWorker;
+    
+    if (needsForcedPatching) {
+      console.log('[PDF Service] Offscreen API failed, forcing PDF.js service worker patching');
+    }
+    
+    return await extractPdfTextInternal(pdfData, {
+      ...options,
+      includePosition: options.includePosition !== false,
+      offscreenAvailable: false, // Don't try offscreen again
+      forcePdfJsPatching: needsForcedPatching
     });
-  } catch (error) {
-    console.error('[PDF Service] PDF text extraction failed:', error);
+  } catch (error: any) {
     return {
       success: false,
       text: '',
-      error: error instanceof Error ? error.message : 'Unknown error in PDF extraction'
+      error: `PDF extraction error: ${error.message || 'Unknown error'}`
     };
+  }
+}
+
+/**
+ * Process extracted text and extract bill data
+ * 
+ * @param result Extraction result with text
+ * @param language Language code
+ * @returns Enhanced extraction result with bill data
+ */
+async function processTextAndExtractBillData(
+  result: BaseExtractionResult,
+  language?: string
+): Promise<ExtractionResult> {
+  try {
+    if (!result.success || !result.text) {
+      return result;
+    }
+    
+    // Extract bill data from the text
+    const billData = await extractBillData(result, language || 'en');
+    
+    // Return enhanced result with bill data
+    return {
+      ...result,
+      billData
+    };
+  } catch (error) {
+    console.error('[PDF Service] Error extracting bill data:', error);
+    // Return the original result without bill data
+    return result;
   }
 }
 
@@ -119,13 +173,45 @@ export async function extractTextFromPdfBuffer(pdfData: ArrayBuffer | Uint8Array
   try {
     const result = await extractPdfText(pdfData, {
       includePosition: false,
-      disableWorker: true
+      disableWorker: true,
+      extractBillData: false // Don't extract bill data for this simple text extraction
     });
     
     return result.success ? result.text : '';
   } catch (error) {
     console.error('[PDF Service] Error extracting text from PDF buffer:', error);
     return '';
+  }
+}
+
+/**
+ * Process PDF and extract text with bill data
+ * @param pdfData PDF data as ArrayBuffer or Uint8Array
+ * @param language Language code (defaults to 'en')
+ * @returns Promise resolving to extraction result with bill data
+ */
+export async function processPdfFromGmailApi(
+  pdfData: ArrayBuffer | Uint8Array,
+  language: string = 'en'
+): Promise<{ text: string; pages?: any[]; billData?: BillData }> {
+  try {
+    // Use the enhanced extraction with bill data
+    const result = await extractPdfText(pdfData, {
+      language,
+      includePosition: true,
+      extractBillData: true
+    });
+    
+    return {
+      text: result.text,
+      pages: result.pages,
+      billData: result.billData
+    };
+  } catch (error) {
+    console.error('[PDF Service] Error processing PDF from Gmail API:', error);
+    return {
+      text: error instanceof Error ? `Error: ${error.message}` : 'Unknown error',
+    };
   }
 }
 

@@ -188,26 +188,60 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
       return;
     }
     
+    // Check for offscreen API availability more carefully
+    const hasOffscreenApi = typeof chrome !== 'undefined' && 
+                           typeof chrome.offscreen !== 'undefined';
+    
+    console.log('Checking offscreen API availability:', {
+      hasOffscreenApi,
+      chromeApiKeys: typeof chrome !== 'undefined' ? Object.keys(chrome).join(', ') : 'chrome undefined'
+    });
+    
     // Try using the offscreen document first if available
-    if (typeof chrome.offscreen !== 'undefined') {
+    if (hasOffscreenApi) {
       try {
+        console.log('Trying to use offscreen document for PDF processing');
+        
         // Check if offscreen document exists
+        let shouldCreateDocument = true;
+        
         try {
-          // Use a different approach to detect if the document exists
-          const existingDocuments = await chrome.runtime.sendMessage({ type: 'PING_OFFSCREEN' })
-                                    .catch(() => null);
-          if (!existingDocuments) {
-            throw new Error('Offscreen document not available');
-          }
-        } catch (e) {
-          // Create it if it doesn't exist
-          await chrome.offscreen.createDocument({
-            url: chrome.runtime.getURL('pdfHandler.html'),
-            // @ts-ignore - Chrome API types issue
-            reasons: ['DOM_SCRAPING'],
-            justification: 'Process PDF files'
+          // Get existing contexts to see if document is already created
+          // @ts-ignore - Newer Chrome API not fully typed yet
+          const contexts = await chrome.runtime.getContexts({
+            // @ts-ignore - Context types not properly typed yet
+            contextTypes: ['OFFSCREEN_DOCUMENT']
           });
-          console.log('Offscreen document created for PDF processing');
+          
+          // @ts-ignore - Type issues due to incomplete Chrome API types
+          if (contexts && contexts.length > 0) {
+            console.log('Offscreen document already exists, no need to create it');
+            shouldCreateDocument = false;
+          }
+        } catch (contextError) {
+          console.warn('Error checking for existing offscreen document, will create new:', contextError);
+        }
+        
+        // Create the offscreen document if needed
+        if (shouldCreateDocument) {
+          try {
+            console.log('Creating offscreen document for PDF processing');
+            // @ts-ignore - Chrome API types issue
+            await chrome.offscreen.createDocument({
+              url: chrome.runtime.getURL('offscreen-pdf-processor.html'),
+              // @ts-ignore - Chrome API types issue 
+              reasons: ['DOM_PARSER'],
+              justification: 'Process PDF files in a full DOM environment'
+            });
+            
+            console.log('Offscreen document created successfully');
+            
+            // Wait a moment for the document to initialize
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } catch (createError) {
+            console.error('Failed to create offscreen document:', createError);
+            throw createError;
+          }
         }
         
         // Convert base64 to ArrayBuffer for consistent processing
@@ -217,39 +251,84 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
           pdfData = await base64ToArrayBuffer(base64String);
         } catch (conversionError) {
           console.error('Error converting PDF data:', conversionError);
-          pdfData = base64String; // Fall back to using base64 string directly
+          throw new Error('Failed to convert PDF data');
         }
         
-        // Send message to offscreen document using standardized format
-        const response = await chrome.runtime.sendMessage({
-          target: 'offscreen',
-          type: 'extractTextFromPdf',
-          pdfData,
-          language
+        // Generate a unique message ID to track this specific request
+        const messageId = `pdf-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+        
+        // Set up a promise to wait for response
+        const processingPromise = new Promise<any>((resolve, reject) => {
+          // Set up a listener for the result
+          const messageListener = (message: any) => {
+            if (message.messageId !== messageId) return;
+            
+            if (message.type === 'PDF_PROCESSED') {
+              chrome.runtime.onMessage.removeListener(messageListener);
+              resolve(message.result);
+            } else if (message.type === 'PDF_PROCESSING_ERROR') {
+              chrome.runtime.onMessage.removeListener(messageListener);
+              reject(new Error(message.error));
+            }
+          };
+          
+          chrome.runtime.onMessage.addListener(messageListener);
+          
+          // Set a timeout for processing (60 seconds)
+          setTimeout(() => {
+            chrome.runtime.onMessage.removeListener(messageListener);
+            reject(new Error('PDF processing timeout in offscreen document'));
+          }, 60000);
+          
+          // Send PDF data to offscreen document
+          chrome.runtime.sendMessage({
+            type: 'PROCESS_PDF',
+            pdfData: Array.from(new Uint8Array(pdfData)), // Convert to array for transfer
+            options: {
+              language: language || 'en',
+              includePosition: true
+            },
+            messageId
+          }).catch(error => {
+            chrome.runtime.onMessage.removeListener(messageListener);
+            reject(new Error(`Failed to send PDF data: ${error.message || 'Unknown error'}`));
+          });
         });
         
-        if (response && response.success) {
-          console.log('Offscreen document successfully extracted PDF text');
+        // Wait for the result
+        try {
+          console.log('Waiting for offscreen document to process PDF...');
+          const response = await processingPromise;
           
-          // Extract fields if requested for authenticated users
-          const result = await processExtractedText(
-            response.text,
-            language,
-            userId,
-            extractFields
-          );
-          
-          // Send back the extracted text and any extracted fields
+          if (response && response.text) {
+            console.log('Offscreen document successfully extracted PDF text');
+            
+            // Extract fields if requested for authenticated users
+            const result = await processExtractedText(
+              response.text,
+              language,
+              userId,
+              extractFields
+            );
+            
+            // Send back the extracted text and any extracted fields
+            sendResponse({
+              success: true,
+              text: response.text,
+              billData: result.billData,
+              positionalData: response.pages
+            });
+            return;
+          } else {
+            console.warn('Offscreen document failed to extract PDF text:', response?.error);
+            // Fall through to direct extraction
+          }
+        } catch (error) {
+          console.error('Error processing PDF in offscreen document:', error);
           sendResponse({
-            success: true,
-            text: response.text,
-            billData: result.billData,
-            positionalData: response.pages
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to extract text from PDF'
           });
-          return;
-        } else {
-          console.warn('Offscreen document failed to extract PDF text:', response?.error);
-          // Fall through to direct extraction
         }
       } catch (error) {
         console.error('Error using offscreen document for PDF extraction:', error);

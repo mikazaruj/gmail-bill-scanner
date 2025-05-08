@@ -4,6 +4,9 @@
  * Uses Chrome's offscreen API to process PDFs in a full DOM environment.
  */
 
+import { ExtractionResult } from './pdfExtraction';
+import { isOffscreenApiAvailable as checkOffscreenApi } from './serviceWorkerCompat';
+
 /**
  * Options for offscreen PDF processing
  */
@@ -23,18 +26,7 @@ export interface OffscreenPdfOptions {
 export async function processPdfWithOffscreen(
   pdfData: ArrayBuffer | Uint8Array,
   options: OffscreenPdfOptions = {}
-): Promise<{
-  success: boolean;
-  text: string;
-  pages?: Array<{
-    pageNumber: number;
-    text: string;
-    items?: any[];
-    width?: number;
-    height?: number;
-  }>;
-  error?: string;
-}> {
+): Promise<ExtractionResult> {
   try {
     console.log('[PDF Service] Starting PDF processing with offscreen document');
     
@@ -133,7 +125,7 @@ async function createOffscreenDocumentIfNeeded(): Promise<void> {
         }) as OffscreenContext[];
         
         if (contexts && contexts.length > 0) {
-          console.log('[PDF Service] Offscreen document already exists');
+          console.log('[PDF Service] Offscreen document already exists:', contexts);
           return; // Document already exists
         }
       } catch (error) {
@@ -145,17 +137,45 @@ async function createOffscreenDocumentIfNeeded(): Promise<void> {
     // Create the offscreen document
     console.log('[PDF Service] Creating offscreen document');
     
-    // @ts-ignore - Chrome's newer API params might not be fully typed
-    await chrome.offscreen.createDocument({
-      url: chrome.runtime.getURL('offscreen-pdf-processor.html'),
-      reasons: ['WORKERS'] as any[],
-      justification: 'PDF processing requires DOM access'
-    });
+    // Get the correct URL for the offscreen document
+    const offscreenUrl = chrome.runtime.getURL('offscreen-pdf-processor.html');
+    console.log('[PDF Service] Offscreen document URL:', offscreenUrl);
     
-    console.log('[PDF Service] Offscreen document created');
+    // Check if the file exists by attempting to fetch it
+    try {
+      const response = await fetch(offscreenUrl, { method: 'HEAD' });
+      if (!response.ok) {
+        console.error(`[PDF Service] Offscreen document not found at ${offscreenUrl}. Status: ${response.status}`);
+        throw new Error(`Offscreen document not found at ${offscreenUrl}`);
+      }
+      console.log(`[PDF Service] Offscreen document found at ${offscreenUrl}`);
+    } catch (fetchError) {
+      console.error('[PDF Service] Error checking offscreen document existence:', fetchError);
+      // Continue anyway, as the fetch might fail in service worker context
+    }
     
-    // Wait a moment for the document to initialize
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // List all available extension resources to help debug
+    console.log('[PDF Service] Available extension resources:');
+    const manifestDetails = chrome.runtime.getManifest();
+    const webAccessibleResources = manifestDetails.web_accessible_resources || [];
+    console.log('[PDF Service] Web accessible resources:', webAccessibleResources);
+    
+    try {
+      // @ts-ignore - Chrome's newer API params might not be fully typed
+      await chrome.offscreen.createDocument({
+        url: offscreenUrl,
+        reasons: ['WORKERS'] as any[],
+        justification: 'PDF processing requires DOM access'
+      });
+      
+      console.log('[PDF Service] Offscreen document created successfully');
+      
+      // Wait a moment for the document to initialize
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (error) {
+      console.error('[PDF Service] Failed to create offscreen document:', error);
+      throw error;
+    }
   } catch (error) {
     console.error('[PDF Service] Failed to create offscreen document:', error);
     throw error;
@@ -175,8 +195,38 @@ export async function closeOffscreenDocument(): Promise<void> {
 }
 
 /**
- * Check if offscreen API is available
+ * Check if offscreen API is available with thorough detection
  */
 export function isOffscreenApiAvailable(): boolean {
-  return !!chrome.offscreen;
+  try {
+    const hasChrome = typeof chrome !== 'undefined';
+    
+    // Detailed chrome object inspection
+    const chromeKeys = hasChrome ? Object.keys(chrome).join(', ') : 'chrome undefined';
+    
+    // Check if offscreen key exists
+    const hasOffscreenKey = hasChrome && 'offscreen' in chrome;
+    
+    // Check if offscreen methods exist
+    const hasCreateMethod = hasChrome && hasOffscreenKey && 
+      typeof (chrome.offscreen as any)?.createDocument === 'function';
+    const hasCloseMethod = hasChrome && hasOffscreenKey && 
+      typeof (chrome.offscreen as any)?.closeDocument === 'function';
+    
+    // Detailed logging for debugging
+    console.log('[PDF Service] Offscreen API availability check:', {
+      hasChrome,
+      hasOffscreenKey,
+      hasCreateMethod,
+      hasCloseMethod,
+      chromeKeys: chromeKeys.substring(0, 100) + (chromeKeys.length > 100 ? '...' : ''),
+      chromeVersion: (chrome as any)?.runtime?.getManifest?.()?.version || 'unknown'
+    });
+    
+    // Consider API available only if the methods we need are present
+    return hasChrome && hasOffscreenKey && hasCreateMethod && hasCloseMethod;
+  } catch (error) {
+    console.error('[PDF Service] Error checking offscreen API:', error);
+    return false;
+  }
 } 

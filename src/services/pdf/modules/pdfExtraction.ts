@@ -10,6 +10,7 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.entry';
 import { normalizePdfData, checkForPdfHeader, logDiagnostics } from './pdfNormalization';
 import { 
   isServiceWorkerContext, 
+  isOffscreenApiAvailable,
   createServiceWorkerSafeConfig, 
   patchPdfjsForServiceWorker,
   createMinimalPdfJsImplementation
@@ -20,6 +21,9 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 // Promise to track PDF.js loading
 let pdfjsLibPromise: Promise<any> | null = null;
+
+// Constants for PDF extraction
+const EXTRACTION_TIMEOUT = 30000; // 30 seconds
 
 /**
  * Extraction result types
@@ -38,249 +42,307 @@ export interface ExtractionResult {
   error?: string;
 }
 
-export interface ExtractPdfTextOptions {
+export interface ExtractionOptions {
   includePosition?: boolean;
   serviceWorkerOptimized?: boolean;
-  language?: string;
   disableWorker?: boolean;
+  useFallbackExtraction?: boolean;
+  pdfjsLibOverride?: any;
+  language?: string;
+  offscreenAvailable?: boolean;
+  forcePdfJsPatching?: boolean;
 }
 
 /**
- * Unified PDF text extraction function that handles multiple use cases
+ * Extract text from a PDF
+ * 
  * @param pdfData PDF data as ArrayBuffer or Uint8Array
  * @param options Extraction options
  * @returns Promise resolving to extraction result
  */
 export async function extractPdfText(
   pdfData: ArrayBuffer | Uint8Array,
-  options: ExtractPdfTextOptions = {}
+  options: ExtractionOptions = {}
 ): Promise<ExtractionResult> {
-  // Default options
-  const {
-    includePosition = true,
-    serviceWorkerOptimized = isServiceWorkerContext(),
-    language = 'en',
-    disableWorker = isServiceWorkerContext()
-  } = options;
-  
   try {
-    // First normalize PDF data to Uint8Array
-    const normalizedData = await normalizePdfData(pdfData);
+    // Check for offscreen API availability from the provided parameter or directly
+    const offscreenAvailable = options.offscreenAvailable !== undefined 
+      ? options.offscreenAvailable 
+      : isOffscreenApiAvailable();
     
-    // Check for valid PDF header
-    if (!checkForPdfHeader(normalizedData)) {
-      console.warn('Warning: Data does not appear to be a valid PDF');
-    }
+    console.log('[PDF Extraction] Offscreen API available:', offscreenAvailable, 
+      'Chrome API keys:', typeof chrome !== 'undefined' ? Object.keys(chrome).join(', ') : 'chrome undefined');
     
-    // Try with optimized extraction first
-    try {
-      // Add timeout for the entire extraction process
-      const extractionPromise = extractWithPdfJs(normalizedData, {
-        includePosition,
-        serviceWorkerOptimized,
-        disableWorker
-      });
+    // Determine if we're in service worker context
+    const inServiceWorker = isServiceWorkerContext();
+    console.log('[PDF Extraction] Running in service worker context:', inServiceWorker);
+    
+    // Normalize data to Uint8Array
+    const data = pdfData instanceof Uint8Array 
+      ? pdfData 
+      : new Uint8Array(pdfData);
+    
+    // If we're in a service worker, we need to dynamically load PDF.js
+    let pdfjsLib;
+    
+    // Auto-detect if service worker patches are needed - we may need them if we're in a service worker
+    // This is separate from offscreenAvailable because if offscreen document creation fails,
+    // we'll still need the service worker patches
+    const usePatchedPdfJs = inServiceWorker && 
+      (options.forcePdfJsPatching || options.serviceWorkerOptimized !== false);
       
-      // Create a timeout promise
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
-          reject(new Error('PDF extraction timed out after 30 seconds'));
-        }, 30000); // 30 second global timeout
-      });
-      
-      // Race between extraction and timeout
-      let result;
+    console.log('[PDF Extraction] Using patched PDF.js:', usePatchedPdfJs, 
+      'Service worker:', inServiceWorker,
+      'Force patching:', options.forcePdfJsPatching,
+      'Offscreen available:', offscreenAvailable);
+    
+    if (inServiceWorker) {
       try {
-        result = await Promise.race([extractionPromise, timeoutPromise]);
-      } catch (timeoutError) {
-        // If we get a timeout error, log it and throw to trigger fallback
-        console.warn('PDF.js extraction timed out, using fallback extraction:', timeoutError);
-        throw new Error('PDF extraction timed out');
-      }
-      
-      return {
-        success: true,
-        text: result.text,
-        pages: result.pages
-      };
-    } catch (mainError: any) {
-      console.error('Main extraction method failed:', mainError);
-      
-      // Try fallback extraction as second approach
-      try {
-        console.log('Using fallback extraction method');
-        const fallbackText = extractTextFallback(normalizedData);
+        // Load PDF.js dynamically in service worker context
+        pdfjsLib = await loadPdfjsLibrary();
         
+        // Apply service worker patches if needed
+        if (usePatchedPdfJs) {
+          console.log('[PDF Extraction] Applying service worker patches to PDF.js');
+          pdfjsLib = patchPdfjsForServiceWorker(pdfjsLib);
+        } else {
+          console.log('[PDF Extraction] Using PDF.js without service worker patches - offscreen API available');
+        }
+      } catch (error) {
+        console.error('[PDF Extraction] Failed to load PDF.js library:', error);
         return {
-          success: true,
-          text: fallbackText,
-          pages: [{
-            pageNumber: 1,
-            text: fallbackText
-          }],
-          error: mainError instanceof Error ? mainError.message : 'Unknown error in primary extraction'
+          success: false,
+          text: '',
+          error: 'Failed to load PDF.js library'
         };
-      } catch (fallbackError) {
-        throw new PdfExtractionError('All extraction methods failed', {
-          cause: mainError instanceof Error ? mainError as Error : new Error(String(mainError)),
-          fallbackError
-        });
       }
     }
-  } catch (error) {
-    console.error('PDF extraction failed:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error in PDF extraction';
     
+    console.log('[PDF Extraction] Processing PDF (' + data.length + ' bytes)');
+    
+    try {
+      // Extract text with PDF.js (with appropriate options)
+      return await extractWithPdfJs(
+        data, 
+        {
+          ...options,
+          pdfjsLib,
+          serviceWorkerOptimized: usePatchedPdfJs,
+          inServiceWorker
+        }
+      );
+    } catch (error: any) {
+      // If extraction fails, log the error and use fallback method
+      console.log('Main extraction method failed:', error);
+      
+      // When PDF.js fails with document not defined error, apply patches and retry
+      if (error instanceof Error && 
+          error.message.includes('document is not defined') && 
+          !usePatchedPdfJs) {
+        console.log('[PDF Extraction] Detected document not defined error, retrying with service worker patches');
+        
+        try {
+          // Reload PDF.js with patching enabled
+          const patchedPdfjsLib = patchPdfjsForServiceWorker(pdfjsLib || await loadPdfjsLibrary());
+          
+          return await extractWithPdfJs(
+            data, 
+            {
+              ...options,
+              pdfjsLib: patchedPdfjsLib,
+              serviceWorkerOptimized: true,
+              inServiceWorker: true
+            }
+          );
+        } catch (retryError: any) {
+          console.log('[PDF Extraction] Retry with patched PDF.js also failed:', retryError);
+          // Continue to fallback method
+        }
+      }
+      
+      // Use fallback method if all else fails
+      if (options.useFallbackExtraction !== false || inServiceWorker) {
+        console.log('[PDF Extraction] Using fallback extraction method');
+        return await fallbackExtraction(data, options);
+      }
+      
+      // If fallback not allowed, just return the error
+      return {
+        success: false,
+        text: '',
+        error: error?.message || 'Unknown extraction error'
+      };
+    }
+  } catch (error: any) {
+    // Handle any unexpected errors
     return {
       success: false,
       text: '',
-      error: errorMessage
+      error: error?.message || 'Unknown error'
     };
   }
 }
 
 /**
- * Core extraction with PDF.js
- * @param pdfData PDF data as Uint8Array
- * @param options Extraction options
- * @returns Extraction result with text and optional position data
+ * Extract text from PDF using PDF.js
+ * @param data PDF data as Uint8Array
+ * @param options Options for extraction
  */
 async function extractWithPdfJs(
-  pdfData: Uint8Array,
+  data: Uint8Array,
   options: {
     includePosition?: boolean;
     serviceWorkerOptimized?: boolean;
     disableWorker?: boolean;
-  }
-): Promise<{
-  text: string;
-  pages: Array<{
-    pageNumber: number;
-    text: string;
-    items?: any[];
-    lines?: any[];
-    width?: number;
-    height?: number;
-  }>;
-}> {
+    pdfjsLibOverride?: any;
+    pdfjsLib?: any;
+    inServiceWorker?: boolean;
+  } = {}
+): Promise<ExtractionResult> {
   // Get PDF.js library instance
-  const pdfjsLib = await ensurePdfjsLoaded();
+  const pdfjsLibInstance = options.pdfjsLibOverride || options.pdfjsLib || await ensurePdfjsLoaded();
   
-  // Configure loading options based on environment
-  const isServiceWorker = isServiceWorkerContext() || (pdfjsLib as any).isServiceWorker;
+  console.log('Extracting PDF text with PDF.js...');
   
-  // Create proper loading options
-  const loadingOptions = options.serviceWorkerOptimized || isServiceWorker
-    ? createServiceWorkerSafeConfig(pdfData)
-    : { 
-        data: pdfData,
-        disableWorker: options.disableWorker
-      };
+  // Create loading task
+  let loadingTask;
   
-  // Load the PDF document with timeout
   try {
-    console.log('Loading PDF document...');
-    
-    // Create a timeout promise that rejects after 30 seconds
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        reject(new Error('PDF loading timed out after 30 seconds'));
-      }, 30000); // 30 second timeout
-    });
-    
-    // Race between loading and timeout
-    const pdfDocument = await Promise.race([
-      pdfjsLib.getDocument(loadingOptions).promise,
-      timeoutPromise
-    ]);
-    
-    console.log(`PDF loaded with ${pdfDocument.numPages} pages`);
-    
-    // Extract text from each page
-    let extractedText = '';
-    const pages: Array<{
-      pageNumber: number;
-      text: string;
-      items?: any[];
-      lines?: any[];
-      width?: number;
-      height?: number;
-    }> = [];
-    
-    for (let i = 1; i <= pdfDocument.numPages; i++) {
-      console.log(`Processing page ${i}/${pdfDocument.numPages}`);
-      
-      try {
-        // Add timeout for individual page processing too
-        const pagePromise = pdfDocument.getPage(i);
-        const page = await Promise.race([
-          pagePromise,
-          new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error(`Page ${i} processing timed out`)), 5000);
-          })
-        ]);
-        
-        const content = await Promise.race([
-          page.getTextContent(),
-          new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error(`Text content extraction for page ${i} timed out`)), 5000);
-          })
-        ]);
-        
-        if (options.includePosition) {
-          // Extract items with position
-          const items = content.items.map((item: any) => ({
-            text: item.str,
-            x: item.transform[4],
-            y: item.transform[5],
-            width: item.width,
-            height: item.height || 0,
-            fontName: item.fontName,
-            fontSize: item.fontSize || 0
-          }));
-          
-          // Process items to maintain layout
-          const { text, lines } = processPageItems(items, page.view);
-          extractedText += text + '\n\n';
-          
-          // Store page data with layout information
-          pages.push({
-            pageNumber: i,
-            text,
-            items,
-            lines,
-            width: page.view[2],
-            height: page.view[3]
-          });
-        } else {
-          // Simple text extraction without position
-          const pageText = content.items
-            .map((item: any) => item.str)
-            .join(' ');
-          
-          extractedText += pageText + '\n\n';
-          
-          // Store page data without layout information
-          pages.push({
-            pageNumber: i,
-            text: pageText
-          });
-        }
-      } catch (pageError) {
-        console.warn(`Error processing page ${i}:`, pageError);
-        // Continue with next page instead of failing completely
-      }
-    }
-    
-    // Check if we managed to extract any text
-    if (extractedText.trim().length === 0 && pages.length === 0) {
-      throw new Error('No text extracted from PDF');
-    }
-    
-    return {
-      text: extractedText,
-      pages
+    // Configure options based on environment
+    const pdfOptions: any = {
+      data,
+      disableStream: true,
+      disableAutoFetch: true,
+      disableRange: true
     };
+    
+    if (options.serviceWorkerOptimized) {
+      // Add service worker specific options
+      pdfOptions.disableFontFace = true;
+      pdfOptions.nativeImageDecoderSupport = 'none';
+      pdfOptions.disableCreateObjectURL = true;
+      pdfOptions.isEvalSupported = false;
+      pdfOptions.useSystemFonts = false;
+      pdfOptions.cMapUrl = undefined;
+      pdfOptions.standardFontDataUrl = undefined;
+    }
+    
+    if (options.disableWorker) {
+      pdfOptions.disableWorker = true;
+    }
+    
+    // Create document loading task
+    loadingTask = pdfjsLibInstance.getDocument(pdfOptions);
+    
+    // Load the PDF document with timeout
+    try {
+      console.log('Loading PDF document...');
+      
+      // Create a timeout promise that rejects after 30 seconds
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('PDF loading timed out after 30 seconds'));
+        }, 30000); // 30 second timeout
+      });
+      
+      // Race between loading and timeout
+      const pdfDocument = await Promise.race([
+        loadingTask.promise,
+        timeoutPromise
+      ]);
+      
+      console.log(`PDF loaded with ${pdfDocument.numPages} pages`);
+      
+      // Extract text from each page
+      let extractedText = '';
+      const pages: Array<{
+        pageNumber: number;
+        text: string;
+        items?: any[];
+        lines?: any[];
+        width?: number;
+        height?: number;
+      }> = [];
+      
+      for (let i = 1; i <= pdfDocument.numPages; i++) {
+        console.log(`Processing page ${i}/${pdfDocument.numPages}`);
+        
+        try {
+          // Add timeout for individual page processing too
+          const pagePromise = pdfDocument.getPage(i);
+          const page = await Promise.race([
+            pagePromise,
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error(`Page ${i} processing timed out`)), 5000);
+            })
+          ]);
+          
+          const content = await Promise.race([
+            page.getTextContent(),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error(`Text content extraction for page ${i} timed out`)), 5000);
+            })
+          ]);
+          
+          if (options.includePosition) {
+            // Extract items with position
+            const items = content.items.map((item: any) => ({
+              text: item.str,
+              x: item.transform[4],
+              y: item.transform[5],
+              width: item.width,
+              height: item.height || 0,
+              fontName: item.fontName,
+              fontSize: item.fontSize || 0
+            }));
+            
+            // Process items to maintain layout
+            const { text, lines } = processPageItems(items, page.view);
+            extractedText += text + '\n\n';
+            
+            // Store page data with layout information
+            pages.push({
+              pageNumber: i,
+              text,
+              items,
+              lines,
+              width: page.view[2],
+              height: page.view[3]
+            });
+          } else {
+            // Simple text extraction without position
+            const pageText = content.items
+              .map((item: any) => item.str)
+              .join(' ');
+            
+            extractedText += pageText + '\n\n';
+            
+            // Store page data without layout information
+            pages.push({
+              pageNumber: i,
+              text: pageText
+            });
+          }
+        } catch (pageError) {
+          console.warn(`Error processing page ${i}:`, pageError);
+          // Continue with next page instead of failing completely
+        }
+      }
+      
+      // Check if we managed to extract any text
+      if (extractedText.trim().length === 0 && pages.length === 0) {
+        throw new Error('No text extracted from PDF');
+      }
+      
+      return {
+        success: true,
+        text: extractedText,
+        pages
+      };
+    } catch (error) {
+      console.error('Error extracting text with PDF.js:', error);
+      throw error;
+    }
   } catch (error) {
     console.error('Error extracting text with PDF.js:', error);
     throw error;
@@ -705,5 +767,75 @@ export class PdfExtractionError extends Error {
   ) {
     super(message);
     this.name = 'PdfExtractionError';
+  }
+}
+
+/**
+ * Dynamically load the PDF.js library
+ * @returns Promise resolving to the PDF.js library
+ */
+async function loadPdfjsLibrary(): Promise<any> {
+  try {
+    // Try to load through dynamic import
+    const pdfjsModule = await import('pdfjs-dist');
+    const pdfjsLib = pdfjsModule.default || pdfjsModule;
+    
+    // Disable worker to avoid nested worker issues
+    console.log('[PDF Extraction] Disabling PDF.js worker for service worker context');
+    if (pdfjsLib.GlobalWorkerOptions) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+      // Use TypeScript casting to avoid type error
+      (pdfjsLib.GlobalWorkerOptions as any).disableWorker = true;
+    }
+    
+    return pdfjsLib;
+  } catch (loadError) {
+    console.error('[PDF Extraction] Error loading PDF.js dynamically:', loadError);
+    throw new Error(`Failed to load PDF.js: ${loadError instanceof Error ? loadError.message : String(loadError)}`);
+  }
+}
+
+/**
+ * Fallback extraction method when PDF.js fails
+ * @param data PDF data as Uint8Array
+ * @param options Extraction options
+ * @returns Promise resolving to extraction result
+ */
+async function fallbackExtraction(
+  data: Uint8Array,
+  options: ExtractionOptions = {}
+): Promise<ExtractionResult> {
+  console.log('Starting fallback text extraction approach');
+  
+  try {
+    // Attempt pattern-based extraction
+    console.log('Attempting pattern-based extraction');
+    const extractedText = extractTextFallback(data);
+    
+    if (extractedText && extractedText.length > 0) {
+      console.log(`Successfully extracted ${extractedText.length} characters using pattern matching`);
+      return {
+        success: true,
+        text: extractedText,
+        pages: [{
+          pageNumber: 1,
+          text: extractedText
+        }]
+      };
+    }
+    
+    // If pattern matching failed, return empty result
+    return {
+      success: false,
+      text: '',
+      error: 'Fallback extraction failed to extract any text'
+    };
+  } catch (error: any) {
+    console.error('Fallback extraction error:', error);
+    return {
+      success: false,
+      text: '',
+      error: `Fallback extraction error: ${error.message || 'Unknown error'}`
+    };
   }
 } 

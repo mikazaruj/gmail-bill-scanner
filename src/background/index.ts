@@ -44,10 +44,36 @@ const SCOPES = [
   "https://www.googleapis.com/auth/userinfo.profile"
 ];
 
-// At the very top of the file
-console.log('=== DEBUG: Background script with trusted sources handlers loaded ===');
-console.log('=== Gmail Bill Scanner background service worker starting up... ===');
-console.log('Background worker started - this log should be visible');
+// Add global flag for tracking initialization
+let isInitialized = false;
+
+// Initialize background extension
+if (!isInitialized) {
+  isInitialized = true;
+  
+  console.log('=== DEBUG: Background script with trusted sources handlers loaded ===');
+  console.log('=== Gmail Bill Scanner background service worker starting up... ===');
+  console.log('Background worker started - this log should be visible');
+  
+  // Log chrome API availability for debugging
+  if (typeof chrome !== 'undefined') {
+    console.log('Chrome API available, features:', Object.keys(chrome).join(', '));
+    
+    // Check specific APIs we need
+    console.log('offscreen API available:', typeof chrome.offscreen !== 'undefined');
+    console.log('identity API available:', typeof chrome.identity !== 'undefined');
+    console.log('storage API available:', typeof chrome.storage !== 'undefined');
+  } else {
+    console.warn('Chrome API not available!');
+  }
+  
+  // Log browser environment info
+  console.log('Service worker context:', typeof self !== 'undefined' && 
+             typeof (self as any).WorkerGlobalScope !== 'undefined' && 
+             self instanceof (self as any).WorkerGlobalScope);
+  
+  // Don't call initializeAuth() since it's not defined
+}
 
 // Initialize PDF processing handlers for chunked transfers
 initializePdfProcessingHandlers();
@@ -1574,8 +1600,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             
             const extractedText = await extractTextFromPdfWithDetails(pdfData, language);
             
-            // Send back the extracted text
-            sendResponse({ success: true, text: extractedText });
+            if (!extractedText || !extractedText.text || extractedText.text.length < 10) {
+              sendResponse({
+                success: false,
+                error: 'Insufficient text extracted from PDF'
+              });
+              return;
+            }
+            
+            sendResponse({
+              success: true,
+              text: extractedText.text
+            });
           } catch (error) {
             console.error('Error extracting text from PDF:', error);
             sendResponse({ success: false, error: 'Failed to extract text from PDF' });
@@ -2094,19 +2130,23 @@ async function handleScanEmails(
                     console.log(`Processing PDF attachment: ${attachmentData.fileName} (binary format)`);
                     console.log(`Using language setting for PDF: ${settings.inputLanguage}`);
                     
-                    // Try to use our optimized binary PDF processor first
+                    // Try to use our optimized PDF processor first
                     try {
-                      // Import the processPdfFromGmailApi function
-                      const { processPdfFromGmailApi } = await import('../services/pdf/pdfService');
+                      // Import the extractPdfText function from the new main module
+                      const { extractPdfText } = await import('../services/pdf/main');
                       
-                      // Process the PDF directly from binary data
-                      const pdfResult = await processPdfFromGmailApi(
+                      // Process the PDF with the optimized prioritized approach
+                      const pdfResult = await extractPdfText(
                         attachmentBuffer,
-                        settings.inputLanguage as string || 'en'
+                        {
+                          language: settings.inputLanguage as string || 'en',
+                          includePosition: true,
+                          timeout: 60000 // 60 second timeout
+                        }
                       );
                       
                       if (pdfResult.success && pdfResult.text && pdfResult.text.length > 100) {
-                        console.log(`Successfully extracted ${pdfResult.text.length} characters from PDF`);
+                        console.log(`Successfully extracted ${pdfResult.text.length} characters from PDF using optimized approach`);
                         
                         // Create a bill object that matches the Bill interface properly
                         const bill: Bill = {
@@ -3365,9 +3405,9 @@ async function processPdfExtraction(message: any, sendResponse: Function) {
     const { processPdfExtraction: newProcessPdfExtraction } = await import('./pdfProcessor');
     return newProcessPdfExtraction(message, sendResponse);
   } catch (error) {
-    console.error('Failed to import pdfProcessor module, falling back to legacy implementation:', error);
+    console.error('Failed to import pdfProcessor module, falling back to new unified approach:', error);
     
-    // Legacy implementation follows
+    // Use our new unified PDF processing approach
     try {
       const { base64String, language = 'en' } = message;
       
@@ -3376,46 +3416,58 @@ async function processPdfExtraction(message: any, sendResponse: Function) {
         return;
       }
       
-      // Create offscreen document if needed
-      if (typeof chrome.offscreen !== 'undefined') {
-        try {
-          // Check if offscreen document exists
-          try {
-            // Use a different approach to detect if the document exists
-            const existingDocuments = await chrome.runtime.sendMessage({ type: 'PING_OFFSCREEN' })
-                                      .catch(() => null);
-            if (!existingDocuments) {
-              throw new Error('Offscreen document not available');
-            }
-          } catch (e) {
-            // Create it if it doesn't exist
-            await chrome.offscreen.createDocument({
-              url: chrome.runtime.getURL('pdfHandler.html'),
-              // @ts-ignore - Chrome API types issue
-              reasons: ['DOM_SCRAPING'],
-              justification: 'Process PDF files'
-            });
-            console.log('Offscreen document created for PDF processing');
+      // Convert base64 to ArrayBuffer
+      let pdfData: ArrayBuffer;
+      try {
+        // For data URLs, extract the base64 part
+        let base64 = base64String;
+        if (base64.startsWith('data:')) {
+          const parts = base64.split(',');
+          if (parts.length > 1) {
+            base64 = parts[1];
           }
-          
-          // Send message to offscreen document
-          const response = await chrome.runtime.sendMessage({
-            target: 'offscreen',
-            type: 'extractTextFromPdf',
-            base64String,
-            language
-          });
-          
-          sendResponse(response);
-        } catch (error) {
-          console.error('Error with offscreen document:', error);
-          // Fall back to using direct PDF processing
-          processInBackground(message, sendResponse);
         }
-      } else {
-        // No offscreen API available, process in background
-        processInBackground(message, sendResponse);
+        
+        // Standard base64 conversion
+        const binaryString = atob(base64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        pdfData = bytes.buffer;
+      } catch (conversionError) {
+        console.error('Error converting base64 to ArrayBuffer:', conversionError);
+        sendResponse({
+          success: false,
+          error: 'Failed to convert PDF data'
+        });
+        return;
       }
+      
+      // Import the new unified PDF extraction API
+      const { extractPdfText } = await import('../services/pdf/main');
+      
+      // Process the PDF using our prioritized approach
+      const result = await extractPdfText(pdfData, {
+        language,
+        includePosition: true,
+        timeout: 60000 // 60 second timeout
+      });
+      
+      if (!result.success || !result.text || result.text.length < 10) {
+        sendResponse({
+          success: false,
+          error: result.error || 'Insufficient text extracted from PDF'
+        });
+        return;
+      }
+      
+      sendResponse({
+        success: true,
+        text: result.text,
+        // Include bill data if it was extracted
+        ...(result.billData ? { billData: result.billData } : {})
+      });
     } catch (error) {
       console.error('Error processing PDF extraction:', error);
       sendResponse({
@@ -3445,10 +3497,10 @@ async function processInBackground(message: any, sendResponse: Function) {
       return;
     }
     
-    // Import pdfService functions
-    const { extractTextFromPdfWithDetails } = await import('../services/pdf/pdfService');
+    // Import the new unified PDF extraction API
+    const { extractPdfText } = await import('../services/pdf/main');
     
-    // Convert base64 to ArrayBuffer inline (removing dependency on separate function)
+    // Convert base64 to ArrayBuffer
     let pdfData: ArrayBuffer;
     try {
       // For data URLs, extract the base64 part
@@ -3476,20 +3528,27 @@ async function processInBackground(message: any, sendResponse: Function) {
       return;
     }
     
-    // Process the PDF using the service with ArrayBuffer data
-    const extractedText = await extractTextFromPdfWithDetails(pdfData, language);
+    // Process the PDF using our prioritized approach
+    const result = await extractPdfText(pdfData, {
+      language,
+      includePosition: true,
+      disableWorker: true, // Disable worker in background context
+      timeout: 60000 // 60 second timeout
+    });
     
-    if (!extractedText || extractedText.length < 10) {
+    if (!result.success || !result.text || result.text.length < 10) {
       sendResponse({
         success: false,
-        error: 'Insufficient text extracted from PDF'
+        error: result.error || 'Insufficient text extracted from PDF'
       });
       return;
     }
     
     sendResponse({
       success: true,
-      text: extractedText
+      text: result.text,
+      // Include bill data if it was extracted
+      ...(result.billData ? { billData: result.billData } : {})
     });
   } catch (error) {
     console.error('Background PDF processing error:', error);

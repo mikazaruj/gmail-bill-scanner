@@ -120,7 +120,9 @@ module.exports = {
         { from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', to: 'lib/pdf.worker.js' },
         // Copy the PDF processor HTML and JS from public directory
         { from: 'public/pdf-processor.html', to: 'pdf-processor.html' },
-        { from: 'public/pdf-processor-ui.js', to: 'pdf-processor-ui.js' }
+        { from: 'public/pdf-processor-ui.js', to: 'pdf-processor-ui.js' },
+        // Copy the offscreen PDF processor HTML
+        { from: 'public/offscreen-pdf-processor.html', to: 'offscreen-pdf-processor.html' }
       ],
     }),
     // Use HtmlWebpackPlugin to generate HTML files - use different names to avoid conflicts

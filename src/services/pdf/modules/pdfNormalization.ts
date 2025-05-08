@@ -26,49 +26,19 @@ export function logDiagnostics(message: string, data?: any): void {
 }
 
 /**
- * Convert any PDF data to Uint8Array format
- * Simplified version that only handles ArrayBuffer and Uint8Array
- * @param pdfData Data in either ArrayBuffer or Uint8Array
- * @returns Promise resolving to a Uint8Array
+ * Normalize PDF data to ensure consistent format
+ * 
+ * @param pdfData PDF data as ArrayBuffer or Uint8Array 
+ * @returns Promise resolving to normalized Uint8Array
  */
 export async function normalizePdfData(pdfData: ArrayBuffer | Uint8Array): Promise<Uint8Array> {
-  // Track processing time for diagnostics
-  const startTime = Date.now();
-  
-  try {
-    // If already Uint8Array, just return it
-    if (pdfData instanceof Uint8Array) {
-      logDiagnostics(`Uint8Array processed directly: ${pdfData.length} bytes`, {
-        type: 'Uint8Array',
-        byteLength: pdfData.length,
-        processingTime: Date.now() - startTime
-      });
-      return pdfData;
-    }
-    
-    // If ArrayBuffer, create Uint8Array view
-    if (pdfData instanceof ArrayBuffer) {
-      const result = new Uint8Array(pdfData);
-      logDiagnostics(`ArrayBuffer processed to Uint8Array: ${result.length} bytes`, {
-        type: 'ArrayBuffer',
-        byteLength: result.length,
-        processingTime: Date.now() - startTime
-      });
-      return result;
-    }
-    
-    // If we get here, we have an unsupported format
-    throw new Error('Unsupported PDF data format');
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    logDiagnostics(`PDF normalization failed: ${errorMessage}`, {
-      inputType: typeof pdfData,
-      isArrayBuffer: pdfData instanceof ArrayBuffer,
-      isUint8Array: pdfData instanceof Uint8Array,
-      processingTime: Date.now() - startTime
-    });
-    throw error;
+  // If already a Uint8Array, return as is
+  if (pdfData instanceof Uint8Array) {
+    return pdfData;
   }
+  
+  // Convert ArrayBuffer to Uint8Array
+  return new Uint8Array(pdfData);
 }
 
 /**
