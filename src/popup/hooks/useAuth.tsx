@@ -24,6 +24,41 @@ export const useAuth = () => {
       try {
         setIsLoading(true);
         
+        // First check local storage directly for most recent authentication state
+        const authState = await chrome.storage.local.get(['auth_state', 'supabase_user_id', 'google_user_id']);
+        
+        // If we have authentication state in storage with isAuthenticated=true, try to use it first
+        if (authState.auth_state?.isAuthenticated === true) {
+          console.log('Found authenticated state in storage, using it');
+          
+          // If we have a Supabase ID, get the full user profile
+          if (authState.auth_state.userId || authState.supabase_user_id) {
+            const userId = authState.auth_state.userId || authState.supabase_user_id;
+            
+            try {
+              const { data, error } = await supabase
+                .from('users')
+                .select('*')
+                .eq('id', userId)
+                .single();
+                
+              if (error) {
+                console.error('Error fetching user profile from local storage ID:', error);
+              } else if (data) {
+                setUserProfile(data as UserProfile);
+                setIsAuthenticated(true);
+                setIsLoading(false);
+                return; // Exit early if we have data
+              }
+            } catch (e) {
+              console.error('Error getting profile from storage ID:', e);
+            }
+          }
+        }
+        
+        // If direct storage approach failed, fall back to identity resolution
+        console.log('Falling back to identity resolution');
+        
         // Use the identity service to resolve user identity
         const identity = await resolveUserIdentity();
         
@@ -69,6 +104,34 @@ export const useAuth = () => {
     };
     
     loadProfile();
+    
+    // Listen for storage changes to detect auth updates from background script
+    const handleStorageChanges = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
+      if (areaName === 'local') {
+        // Check for auth-related changes
+        const relevantKeys = [
+          'google_user_id', 
+          'supabase_user_id', 
+          'user_profile',
+          'auth_state'
+        ];
+        
+        const hasAuthChanges = relevantKeys.some(key => changes[key]);
+        
+        if (hasAuthChanges) {
+          console.log('Auth-related storage changes detected, refreshing profile');
+          loadProfile();
+        }
+      }
+    };
+    
+    // Add storage listener
+    chrome.storage.onChanged.addListener(handleStorageChanges);
+    
+    // Remove listener on cleanup
+    return () => {
+      chrome.storage.onChanged.removeListener(handleStorageChanges);
+    };
   }, []);
 
   // Login function

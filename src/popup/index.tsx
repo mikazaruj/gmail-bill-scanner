@@ -96,6 +96,7 @@ export const PopupContent = () => {
   const [isSigningUp, setIsSigningUp] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [isReturningUser, setIsReturningUser] = useState<boolean>(false);
+  const [prevAuthState, setPrevAuthState] = useState<boolean | null>(null);
   
   // Immediate UI rendering hack: Force "not loading" state
   const { 
@@ -110,6 +111,34 @@ export const PopupContent = () => {
 
   // Get scan context
   const scanContext = React.useContext(ScanContext);
+  
+  // Track authentication state changes
+  useEffect(() => {
+    // If authentication state changed from false to true, force navigation to dashboard
+    if (prevAuthState === false && isAuthenticated === true) {
+      console.log('Authentication detected, navigating to dashboard');
+      setActiveTab('dashboard');
+    }
+    
+    setPrevAuthState(isAuthenticated);
+  }, [isAuthenticated]);
+  
+  // Check for debug override on mount
+  useEffect(() => {
+    const checkDebugOverride = async () => {
+      try {
+        const debugData = await chrome.storage.local.get(['debug_dashboard_override']);
+        if (debugData.debug_dashboard_override === true) {
+          console.log('Debug dashboard override detected, forcing dashboard view');
+          setActiveTab('dashboard');
+        }
+      } catch (error) {
+        console.error('Error checking debug flags:', error);
+      }
+    };
+    
+    checkDebugOverride();
+  }, []);
   
   // Just try to connect to background service but don't wait for response
   useEffect(() => {
@@ -198,6 +227,25 @@ export const PopupContent = () => {
   
   // For unauthenticated users, show login/signup UI
   if (isAuthenticated === false) {
+    const [showDebugOptions, setShowDebugOptions] = useState(false);
+    
+    const handleDebugClick = () => {
+      console.log('Debug button clicked, forcing navigation to dashboard');
+      // We can't directly set isAuthenticated since it comes from the hook
+      // Instead, just set the active tab to dashboard, which will bypass the auth check
+      setActiveTab('dashboard');
+      
+      // Also store a flag in local storage to remember this debug override
+      chrome.storage.local.set({ 
+        'debug_dashboard_override': true,
+        'auth_state': {
+          isAuthenticated: true,
+          debug: true,
+          lastUpdated: new Date().toISOString()
+        }
+      });
+    };
+    
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>
@@ -216,6 +264,7 @@ export const PopupContent = () => {
           {isReturningUser ? (
             <button 
               onClick={handleLogin} 
+              onDoubleClick={() => setShowDebugOptions(true)}
               className={`primary-button bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md flex justify-center items-center w-full`}
             >
               {actualLoading ? "Signing In..." : "Continue with Google"}
@@ -224,17 +273,31 @@ export const PopupContent = () => {
             <>
               <button 
                 onClick={handleSignUp} 
+                onDoubleClick={() => setShowDebugOptions(true)}
                 className={`primary-button bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md flex justify-center items-center w-full`}
               >
                 {isSigningUp ? "Creating Account..." : "Sign Up with Google"}
               </button>
               <button 
                 onClick={handleLogin} 
+                onDoubleClick={() => setShowDebugOptions(true)}
                 className="secondary-button border border-blue-500 text-blue-600 bg-white hover:bg-blue-50 py-2 rounded-md flex justify-center items-center w-full"
               >
                 Sign In with Google
               </button>
             </>
+          )}
+          
+          {showDebugOptions && (
+            <div className="mt-4 p-2 bg-gray-100 rounded-md">
+              <p className="text-xs text-gray-500 mb-2">Debug Options:</p>
+              <button 
+                onClick={handleDebugClick}
+                className="text-xs bg-gray-200 hover:bg-gray-300 text-gray-800 py-1 px-2 rounded"
+              >
+                Force Dashboard View
+              </button>
+            </div>
           )}
         </div>
         

@@ -1686,6 +1686,17 @@ async function handleAuthentication(message: any, sendResponse: Function) {
         if (signInResult.data && signInResult.data.user) {
           console.log('Background: User authenticated successfully:', signInResult.data.user.id);
           
+          // Store Supabase user ID in local storage for the popup to detect
+          await chrome.storage.local.set({
+            'supabase_user_id': signInResult.data.user.id,
+            'auth_state': {
+              isAuthenticated: true,
+              userId: signInResult.data.user.id,
+              email: authResult.profile.email,
+              lastAuthenticated: new Date().toISOString()
+            }
+          });
+          
           // Return the combined result
           sendResponse({
             success: true,
@@ -1700,6 +1711,17 @@ async function handleAuthentication(message: any, sendResponse: Function) {
           return;
         } else {
           console.error('Background: Failed to authenticate with Supabase:', signInResult.error);
+          
+          // Still store partial auth state so UI can update
+          await chrome.storage.local.set({
+            'auth_state': {
+              isAuthenticated: true,
+              email: authResult.profile.email,
+              googleId: authResult.profile.id,
+              lastAuthenticated: new Date().toISOString()
+            }
+          });
+          
           // Still return success if Google auth worked
           sendResponse({
             success: true,
@@ -1712,6 +1734,17 @@ async function handleAuthentication(message: any, sendResponse: Function) {
         }
       } catch (dbError) {
         console.error('Background: Error with database operation:', dbError);
+        
+        // Still store partial auth state so UI can update
+        await chrome.storage.local.set({
+          'auth_state': {
+            isAuthenticated: true,
+            email: authResult.profile.email,
+            googleId: authResult.profile.id,
+            lastAuthenticated: new Date().toISOString()
+          }
+        });
+        
         // Still return success if Google auth worked
         sendResponse({
           success: true,
