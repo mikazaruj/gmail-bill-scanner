@@ -34,6 +34,7 @@ import { initializePdfProcessingHandlers } from './handlers/pdfProcessingHandler
 import type { FieldMapping } from '../types/FieldMapping';
 // At the top of the file add these imports
 import { getSupabaseClient } from '../services/supabase/client';
+import { cleanupPdfResources } from '../services/pdf/main';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -151,6 +152,15 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 self.addEventListener('unload', () => {
   chrome.alarms.clear('keepAlive');
   console.log('Gmail Bill Scanner background service worker shutting down');
+  
+  // Clean up PDF processing resources
+  try {
+    cleanupPdfResources().catch(err => {
+      console.error('Error cleaning up PDF resources:', err);
+    });
+  } catch (error) {
+    console.error('Error during PDF cleanup:', error);
+  }
 });
 
 // Token storage key for compatibility

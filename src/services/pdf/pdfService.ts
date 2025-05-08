@@ -31,6 +31,12 @@ import {
 // Worker processing support
 let workerSupported: boolean | null = null;
 
+import { 
+  processPdfWithOffscreen,
+  isOffscreenApiAvailable,
+  closeOffscreenDocument
+} from './modules/offscreenProcessor';
+
 /**
  * Process PDF data from Gmail API attachment
  * @param pdfData Binary PDF data
@@ -300,6 +306,118 @@ export async function extractTextFromPdfWithDetails(pdfData: ArrayBuffer, langua
 }
 
 /**
+ * Extract text from PDF buffer directly
+ * Designed for service worker compatibility
+ * @param pdfData PDF data as ArrayBuffer or Uint8Array
+ * @returns Promise resolving to extracted text
+ */
+export async function extractTextFromPdfBuffer(pdfData: ArrayBuffer | Uint8Array): Promise<string> {
+  try {
+    // Normalize the PDF data format first
+    const normalizedData = await normalizePdfData(pdfData);
+    
+    // Use the main extraction function
+    const result = await extractPdfText(normalizedData, {
+      includePosition: false,
+      serviceWorkerOptimized: true,
+      disableWorker: true // Force disable worker in this context
+    });
+    
+    return result.success ? result.text : '';
+  } catch (error) {
+    console.error('Error in extractTextFromPdfBuffer:', error);
+    // Try fallback extraction
+    try {
+      const normalizedData = pdfData instanceof Uint8Array 
+        ? pdfData 
+        : new Uint8Array(pdfData);
+        
+      // Use basic text extraction approach from binary data
+      return extractBasicTextFromBinary(normalizedData);
+    } catch (fallbackError) {
+      console.error('Fallback extraction also failed:', fallbackError);
+      return '';
+    }
+  }
+}
+
+/**
+ * Basic text extraction from binary PDF data
+ * Works in any context including service workers
+ * @param data PDF data as Uint8Array
+ * @returns Extracted text
+ */
+function extractBasicTextFromBinary(data: Uint8Array): string {
+  try {
+    console.log('Starting basic text extraction from binary');
+    
+    // Convert only a subset of the data to avoid memory issues
+    const textMarkers: Array<{ start: number; end: number }> = [];
+    
+    // Look for text objects (indicators of text in PDF format)
+    const BT = [66, 84]; // 'BT' in ASCII
+    const ET = [69, 84]; // 'ET' in ASCII
+    const OPEN_PAREN = 40; // '(' in ASCII
+    const CLOSE_PAREN = 41; // ')' in ASCII
+    
+    // Scan for text markers
+    let inTextObject = false;
+    for (let i = 0; i < data.length - 1; i++) {
+      // Detect text object start/end
+      if (data[i] === BT[0] && data[i + 1] === BT[1]) {
+        inTextObject = true;
+      } else if (data[i] === ET[0] && data[i + 1] === ET[1]) {
+        inTextObject = false;
+      }
+      
+      // Look for text in parentheses when in text object
+      if (inTextObject && data[i] === OPEN_PAREN) {
+        const start = i + 1;
+        let end = start;
+        
+        // Find closing parenthesis
+        while (end < data.length && data[end] !== CLOSE_PAREN) {
+          end++;
+        }
+        
+        if (end < data.length && end - start > 2) {
+          textMarkers.push({ start, end });
+        }
+      }
+    }
+    
+    console.log(`Found ${textMarkers.length} text markers in PDF data`);
+    
+    // Extract text from detected markers
+    let extractedText = '';
+    
+    for (const marker of textMarkers) {
+      const textBytes = data.slice(marker.start, marker.end);
+      let text = '';
+      
+      // Convert bytes to string
+      for (let i = 0; i < textBytes.length; i++) {
+        // Skip null bytes and control characters
+        if (textBytes[i] > 31 && textBytes[i] < 128) {
+          text += String.fromCharCode(textBytes[i]);
+        }
+      }
+      
+      // Only add non-empty text
+      if (text.trim().length > 0) {
+        extractedText += text + ' ';
+      }
+    }
+    
+    console.log(`Basic text extraction yielded ${extractedText.length} characters`);
+    return extractedText;
+  } catch (error) {
+    console.error('Error in basic text extraction:', error);
+    return '';
+  }
+}
+
+/**
  * Diagnose PDF processing environment capabilities
  * This function can be called to check if the current environment supports
  * various PDF processing mechanisms.
@@ -454,6 +572,24 @@ export async function diagnosePdfEnvironment(): Promise<{
       pdfJsSupported: false,
       details: `Diagnostic error: ${errorMessage}`
     };
+  }
+}
+
+/**
+ * Cleanup PDF processing resources
+ * Call this when the extension is shutting down or when PDF processing is complete
+ */
+export async function cleanupPdfResources(): Promise<void> {
+  try {
+    // Close any open offscreen documents
+    if (isOffscreenApiAvailable()) {
+      await closeOffscreenDocument();
+    }
+    
+    // Clean up any other PDF resources
+    // ...
+  } catch (error) {
+    console.error('Error cleaning up PDF resources:', error);
   }
 }
 

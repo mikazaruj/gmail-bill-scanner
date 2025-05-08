@@ -15,6 +15,7 @@ import {
   calculateConfidence
 } from "../patterns/patternLoader";
 import { parseHungarianAmount } from '../utils/amountParser';
+import { extractTextFromPdfBuffer } from '../../../services/pdf/main';
 
 export class PatternBasedExtractor implements ExtractionStrategy {
   readonly name = 'pattern-based';
@@ -194,64 +195,29 @@ export class PatternBasedExtractor implements ExtractionStrategy {
       // Extract text from PDF data
       let extractedText = '';
       try {
-        // Check if we're in a service worker context
-        const isServiceWorker = typeof window === 'undefined' || 
-                               typeof window.document === 'undefined' ||
-                               typeof window.document.createElement === 'undefined';
+        // Convert to binary data if needed
+        let pdfBuffer: ArrayBuffer | Uint8Array;
         
-        if (isServiceWorker) {
-          console.log('Running in service worker context, using fallback PDF extraction');
-          
-          // Improved ArryBuffer handling
-          try {
-            const { normalizePdfData } = await import('../../../services/pdf/pdfService');
-            
-            // If string, use basic text extraction
-            if (typeof pdfData === 'string') {
-              extractedText = this.basicTextExtraction(pdfData);
-            } else {
-              // For ArrayBuffer/Uint8Array, use proper binary handling
-              // and then import text extraction service
-              const { extractTextFromPdfBuffer } = await import('../../../services/pdf/pdfService');
-              extractedText = await extractTextFromPdfBuffer(pdfData);
-              
-              // If extraction failed, try basic extraction on raw binary as fallback
-              if (!extractedText && typeof pdfData === 'string') {
-                extractedText = this.basicTextExtraction(pdfData);
-              }
-            }
-          } catch (error) {
-            console.error('Error normalizing data or extracting text:', error);
-            // Fallback to direct extraction if string
-            if (typeof pdfData === 'string') {
-              extractedText = this.basicTextExtraction(pdfData);
-            } else {
-              throw new Error('Cannot process ArrayBuffer in this context');
-            }
-          }
+        if (typeof pdfData === 'string') {
+          // Convert string to ArrayBuffer
+          pdfBuffer = new TextEncoder().encode(pdfData);
         } else {
-          // In browser context, use proper PDF.js
-          const { extractPdfContent } = await import('../../../services/pdf/pdfService');
-          const result = await extractPdfContent(pdfData);
-          extractedText = result.text;
+          // Assume it's already an ArrayBuffer or Uint8Array
+          pdfBuffer = pdfData as ArrayBuffer;
         }
         
-        console.log(`Extracted ${extractedText.length} characters from PDF`);
+        // Use the new PDF service main module
+        extractedText = await extractTextFromPdfBuffer(pdfBuffer);
+        
+        if (!extractedText) {
+          throw new Error('Failed to extract text from PDF');
+        }
       } catch (error) {
         console.error('Error extracting text from PDF:', error);
         return {
           success: false,
           bills: [],
-          error: 'Failed to extract text from PDF'
-        };
-      }
-      
-      if (!extractedText) {
-        return {
-          success: false,
-          bills: [],
-          confidence: 0,
-          error: 'No text was extracted from PDF'
+          error: `PDF extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}`
         };
       }
       
@@ -449,6 +415,55 @@ export class PatternBasedExtractor implements ExtractionStrategy {
       return extractedText;
     } catch (error) {
       console.error('Error in basic PDF text extraction:', error);
+      return '';
+    }
+  }
+  
+  /**
+   * Extract text from binary data
+   */
+  private extractTextFromBinary(data: Uint8Array): string {
+    try {
+      console.log('Using basic binary text extraction');
+      
+      // Extract parenthesized content (common in PDFs)
+      const chunks: string[] = [];
+      const OPEN_PAREN = 40; // '(' in ASCII
+      const CLOSE_PAREN = 41; // ')' in ASCII
+      
+      for (let i = 0; i < data.length; i++) {
+        if (data[i] === OPEN_PAREN) {
+          const start = i + 1;
+          let end = start;
+          
+          // Find closing parenthesis
+          while (end < data.length && data[end] !== CLOSE_PAREN) {
+            end++;
+          }
+          
+          if (end < data.length && end - start > 2) {
+            // Convert section to text
+            let text = '';
+            for (let j = start; j < end; j++) {
+              if (data[j] >= 32 && data[j] < 127) { // Printable ASCII
+                text += String.fromCharCode(data[j]);
+              }
+            }
+            
+            // Add if it seems like actual text
+            if (text.length > 2 && /[a-zA-Z0-9]/.test(text)) {
+              chunks.push(text);
+            }
+          }
+          
+          // Skip to end to avoid nested parentheses
+          i = end;
+        }
+      }
+      
+      return chunks.join(' ');
+    } catch (error) {
+      console.error('Binary text extraction error:', error);
       return '';
     }
   }

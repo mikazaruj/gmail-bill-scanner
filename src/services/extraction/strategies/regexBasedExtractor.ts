@@ -22,6 +22,7 @@ import {
 } from "../patterns/patternLoader";
 import { parseHungarianAmount } from '../utils/amountParser';
 import { decodeBase64 } from '../../../utils/base64Decode';
+import { extractTextFromPdfBuffer } from '../../../services/pdf/main';
 
 // Common bill-related keywords - dynamically loaded from patterns
 const getBillKeywordsForLanguage = (language: string = 'en') => {
@@ -59,6 +60,16 @@ const getCurrencySymbolsWithDefaults = (language: string = 'en') => {
   const languageSpecificSymbols = getCurrencySymbols(language as 'en' | 'hu');
   return {...defaultSymbols, ...languageSpecificSymbols};
 };
+
+/**
+ * Text extraction context for regex extractor
+ */
+interface TextExtractionContext {
+  text: string;
+  messageId?: string;
+  attachmentId?: string;
+  language?: string;
+}
 
 /**
  * Regex-based extraction strategy
@@ -158,74 +169,51 @@ export class RegexBasedExtractor implements ExtractionStrategy {
    */
   async extractFromPdf(context: PdfExtractionContext): Promise<BillExtractionResult> {
     try {
-      const fileName = context.fileName || 'unknown.pdf';
-      const language = context.language || 'en';
-      
-      // Enhanced logging at the start of extraction
-      console.log(`Extracting PDF text in service worker context`);
-      
-      // Use normalizePdfData to handle both ArrayBuffer and string inputs
-      // This is where most failures happen, so we need to be careful
-      const { normalizePdfData } = await import('../../../services/pdf/pdfService');
-      
-      // Console log for diagnostics about what we're processing
-      console.debug(`PDF Processing: ${fileName}, data type: ${typeof context.pdfData}, ArrayBuffer: ${context.pdfData instanceof ArrayBuffer}`);
-      
+      console.log('Extracting PDF text in regex-based extractor');
+      let extractedText = '';
+
       try {
-        // Running in service worker context, using fallback extraction directly
-        const { extractPdfContent } = await import('../../../services/pdf/pdfService');
+        // Convert to binary data if needed
+        let pdfBuffer: ArrayBuffer | Uint8Array;
         
-        // If we have binary data, use it directly
-        if (context.pdfData instanceof ArrayBuffer) {
-          console.log('Using direct ArrayBuffer for PDF extraction');
+        if (typeof context.pdfData === 'string') {
+          // Convert string to ArrayBuffer
+          pdfBuffer = new TextEncoder().encode(context.pdfData);
         } else {
-          console.log('Converting string data to binary for PDF extraction');
+          // Assume it's already an ArrayBuffer or Uint8Array
+          pdfBuffer = context.pdfData as ArrayBuffer;
         }
         
-        // This will normalize the data and process through PDF.js
-        const extractionResult = await extractPdfContent(context.pdfData);
-        const extractedText = extractionResult.text || '';
+        // Use new main PDF service
+        extractedText = await extractTextFromPdfBuffer(pdfBuffer);
         
-        // Log extraction stats
-        console.debug(`PDF extraction success: extracted ${extractedText.length} characters from ${fileName}`);
-        
-        // Check for empty extraction
-        if (!extractedText || extractedText.trim().length < 10) {
-          console.log('PDF extraction produced little or no text, trying basic extraction');
-          // When PDF.js fails, we need to use basic text extraction
-          return this.basicPdfExtraction(context);
+        if (!extractedText) {
+          throw new Error('No text extracted from PDF');
         }
         
-        // Process extracted text
-        const extractedBills = this.processExtractedText(extractedText, language, fileName);
-        if (extractedBills.length > 0) {
-          return {
-            success: true,
-            bills: extractedBills,
-            debug: {
-              strategy: this.name,
-              extractionMethod: 'pdf.js',
-              confidence: 0.8
-            }
-          };
-        }
-        
-        // If we get here, the PDF.js extraction didn't find any bills, try basic extraction
-        return this.basicPdfExtraction(context);
-      } catch (pdfjsError) {
-        console.warn(`PDF.js extraction failed: ${(pdfjsError as Error).message || 'Unknown error'}`);
-        // PDF.js extraction failed, try basic extraction
-        return this.basicPdfExtraction(context);
+        console.log(`Extracted ${extractedText.length} characters from PDF`);
+      } catch (error) {
+        console.error('Error extracting PDF text:', error);
+        return {
+          success: false,
+          bills: [],
+          error: `Failed to extract text from PDF: ${error instanceof Error ? error.message : 'Unknown error'}`
+        };
       }
+
+      // Process the extracted text with regex patterns
+      return await this.extractFromText({
+        text: extractedText,
+        messageId: context.messageId,
+        attachmentId: context.attachmentId,
+        language: context.language
+      });
     } catch (error) {
-      console.error('PDF extraction error:', (error as Error).message || 'Unknown error');
+      console.error('Error in regex-based PDF extraction:', error);
       return {
         success: false,
         bills: [],
-        debug: {
-          strategy: this.name,
-          error: (error as Error).message || 'Unknown error'
-        }
+        error: error instanceof Error ? error.message : 'Unknown PDF extraction error'
       };
     }
   }
@@ -933,6 +921,56 @@ export class RegexBasedExtractor implements ExtractionStrategy {
     } catch (error) {
       console.error('Error processing extracted text:', (error as Error).message || 'Unknown error');
       return [];
+    }
+  }
+
+  /**
+   * Extract bill information from plain text
+   */
+  async extractFromText(context: TextExtractionContext): Promise<BillExtractionResult> {
+    try {
+      console.log('Extracting from text with regex patterns');
+      
+      if (!context.text || context.text.trim().length === 0) {
+        return {
+          success: false,
+          bills: [],
+          error: 'No text provided for extraction'
+        };
+      }
+      
+      // Process the text with regex patterns
+      const extractedBills = this.processExtractedText(
+        context.text, 
+        context.language || 'en', 
+        'text-input'
+      );
+      
+      if (extractedBills.length > 0) {
+        return {
+          success: true,
+          bills: extractedBills,
+          debug: {
+            strategy: this.name,
+            extractionMethod: 'regex',
+            confidence: 0.8
+          }
+        };
+      }
+      
+      // No bills found
+      return {
+        success: false,
+        bills: [],
+        error: 'No bill information found in text'
+      };
+    } catch (error) {
+      console.error('Error in regex-based text extraction:', error);
+      return {
+        success: false,
+        bills: [],
+        error: error instanceof Error ? error.message : 'Unknown text extraction error'
+      };
     }
   }
 } 

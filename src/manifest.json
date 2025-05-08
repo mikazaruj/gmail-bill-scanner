@@ -18,7 +18,8 @@
     "storage",
     "identity",
     "alarms",
-    "windows"
+    "windows",
+    "offscreen"
   ],
   "host_permissions": [
     "https://mail.google.com/*",
@@ -32,7 +33,9 @@
         "workers/pdf-worker.js",
         "js/pdf-processor-ui.js",
         "lib/pdf.js",
-        "lib/pdf.worker.js"
+        "lib/pdf.worker.js",
+        "offscreen-pdf-processor.html",
+        "js/offscreen-pdf-processor.js"
       ],
       "matches": ["https://mail.google.com/*", "<all_urls>"]
     }

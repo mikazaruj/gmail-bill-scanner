@@ -43,7 +43,7 @@ try {
       
       // Add a timeout for loading to prevent hanging
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('PDF loading timed out after 15 seconds')), 15000);
+        setTimeout(() => reject(new Error('PDF loading timed out after 30 seconds')), 30000);
       });
       
       // Race between loading and timeout

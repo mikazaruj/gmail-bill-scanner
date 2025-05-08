@@ -181,11 +181,11 @@ async function extractWithPdfJs(
   try {
     console.log('Loading PDF document...');
     
-    // Create a timeout promise that rejects after 15 seconds
+    // Create a timeout promise that rejects after 30 seconds
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
-        reject(new Error('PDF loading timed out after 15 seconds'));
-      }, 15000); // 15 second timeout
+        reject(new Error('PDF loading timed out after 30 seconds'));
+      }, 30000); // 30 second timeout
     });
     
     // Race between loading and timeout
@@ -298,12 +298,33 @@ function extractTextFallback(pdfData: Uint8Array): string {
     console.log('Starting fallback text extraction approach');
     let extractedText = '';
     
+    // Add an explicit check for empty or invalid data
+    if (!pdfData || pdfData.length === 0) {
+      console.error('PDF data is empty or invalid');
+      return '';
+    }
+    
     // Method 1: Try to extract PDF text using basic patterns
     try {
       console.log('Attempting pattern-based extraction');
       // Find text blocks in PDF format which are often surrounded by "(" and ")"
       // Limit to first 20000 bytes to avoid memory issues
       const partialData = pdfData.slice(0, Math.min(pdfData.length, 20000));
+      
+      // Ensure we're only working with valid data
+      let validData = true;
+      for (let i = 0; i < partialData.length; i++) {
+        if (partialData[i] === undefined) {
+          console.warn('Invalid data detected at index ' + i);
+          validData = false;
+          break;
+        }
+      }
+      
+      if (!validData) {
+        throw new Error('Invalid binary data detected');
+      }
+      
       const partialString = String.fromCharCode.apply(null, Array.from(partialData));
       const textBlocks = partialString.match(/\(([^\)]{3,})\)/g);
       
