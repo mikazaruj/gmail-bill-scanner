@@ -1,4 +1,4 @@
-# Gmail Bill Scanner
+ (# Gmail Bill Scanner
 
 A Chrome extension that automatically scans, extracts, and organizes bill information from Gmail emails and PDF attachments.
 
@@ -195,3 +195,38 @@ We've created a unified approach to PDF processing with these components:
 ## License
 
 MIT
+
+## PDF Processing
+
+The extension extracts text from PDF bill attachments using pdfjs-dist configured to work in the Chrome extension's service worker environment. The implementation in `src/services/pdf/modules/pdfDataExtractor.ts` provides a reliable way to extract text from PDFs without DOM dependencies.
+
+Key features of the PDF extraction:
+
+1. **Service Worker Compatibility**: Extracts text directly in the service worker context without DOM requirements
+2. **Reliable PDF.js Configuration**: Uses pdfjs-dist with specific configurations to work in service worker environment
+3. **Fallback Mechanism**: Includes a pattern-based text extraction as last resort fallback
+
+This implementation replaces the previous approaches that relied on:
+- Offscreen documents (which had reliability issues)
+- Worker-based extraction (which isn't available in service workers)
+- DOM patching (which was complex and unreliable)
+
+To extract text from a PDF:
+
+```typescript
+import { extractTextFromPdf } from './services/pdf/modules/pdfDataExtractor';
+
+// Extract text from PDF data
+const pdfData = new Uint8Array(/* PDF binary data */);
+const result = await extractTextFromPdf(pdfData, {
+  includePosition: true, // Get positional information
+  timeout: 30000 // 30 second timeout
+});
+
+if (result.success) {
+  console.log('Extracted text:', result.text);
+  console.log('Pages:', result.pages);
+} else {
+  console.error('Extraction failed:', result.error);
+}
+```

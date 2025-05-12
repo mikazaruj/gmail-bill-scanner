@@ -6,27 +6,24 @@
  */
 
 import { 
-  extractPdfText as extractPdfTextInternal, 
   ExtractionOptions,
   ExtractionResult as BaseExtractionResult
 } from './modules/pdfExtraction';
 import { 
-  processPdfWithOffscreen,
   closeOffscreenDocument
 } from './modules/offscreenProcessor';
 import { 
   isOffscreenApiAvailable,
   isServiceWorkerContext
 } from './modules/serviceWorkerCompat';
-import { 
-  processPdfWithHiddenUI, 
-  isHiddenUiAvailable 
-} from './modules/hiddenUiProcessor';
 import { normalizePdfData } from './modules/pdfNormalization';
 import {
   extractBillData,
   BillData
 } from './modules/billDataExtraction';
+
+// Import the new optimized extractText function
+import { extractText } from './modules/main';
 
 /**
  * Enhanced extraction result with bill data
@@ -51,9 +48,8 @@ export interface PdfExtractionOptions {
  * Extract text from PDF data with optimal processing method
  * 
  * This function will determine the best approach based on environment:
- * 1. Offscreen document (if Chrome API available)
- * 2. Hidden UI processing (fallback)
- * 3. Direct extraction (last resort)
+ * 1. Direct extraction with PDF.js (most reliable)
+ * 2. Offscreen document (if available and environment is appropriate)
  * 
  * @param pdfData PDF data as ArrayBuffer or Uint8Array
  * @param options Extraction options
@@ -69,61 +65,19 @@ export async function extractPdfText(
       pdfDataSize: pdfData instanceof ArrayBuffer ? pdfData.byteLength : pdfData.length
     });
     
-    // Determine the best extraction method based on environment
-    const offscreenAvailable = isOffscreenApiAvailable();
-    const inServiceWorker = isServiceWorkerContext();
-    
-    console.log(`[PDF Service] Offscreen API available: ${offscreenAvailable} Chrome API keys: ${typeof chrome !== 'undefined' ? Object.keys(chrome).join(', ') : 'chrome undefined'}`);
-    console.log(`[PDF Service] Service worker context: ${inServiceWorker}`);
-    
-    // Attempt to extract with the most appropriate method
-    // Priority: Offscreen > Hidden UI > Direct Extraction
-    
-    // 1. Try offscreen extraction if available (preferred method)
-    if (offscreenAvailable) {
-      console.log('[PDF Service] Using offscreen document for PDF processing');
-      
-      try {
-        return await processPdfWithOffscreen(pdfData, {
-          language: options.language,
-          includePosition: options.includePosition !== false,
-          timeout: options.timeout || 60000
-        });
-      } catch (offscreenError) {
-        console.log('[PDF Service] Offscreen processing failed:', offscreenError);
-        // Continue to fallback methods if offscreen fails
-      }
-    }
-    
-    // 2. Try hidden UI approach if offscreen is not available or failed
-    // This only works in extension popup or other non-service-worker contexts
-    if (!inServiceWorker && !options.disableHiddenUi) {
-      console.log('[PDF Service] Using hidden UI for PDF processing');
-      
-      try {
-        return await processPdfWithHiddenUI(pdfData, options);
-      } catch (hiddenUiError) {
-        console.log('[PDF Service] Hidden UI processing failed:', hiddenUiError);
-        // Continue to direct extraction
-      }
-    }
-    
-    // 3. Last resort: direct extraction
-    console.log('[PDF Service] Using direct extraction with PDF.js');
-    
-    // If we reached here after offscreen failed, force PDF.js patching
-    const needsForcedPatching = offscreenAvailable && inServiceWorker;
-    
-    if (needsForcedPatching) {
-      console.log('[PDF Service] Offscreen API failed, forcing PDF.js service worker patching');
-    }
-    
-    return await extractPdfTextInternal(pdfData, {
-      ...options,
+    // Use our new optimized extraction function
+    const result = await extractText(pdfData, {
+      language: options.language,
       includePosition: options.includePosition !== false,
-      offscreenAvailable: false, // Don't try offscreen again
-      forcePdfJsPatching: needsForcedPatching
+      timeout: options.timeout || 60000
     });
+    
+    // Process and extract bill data if needed
+    if (options.extractBillData) {
+      return await processTextAndExtractBillData(result, options.language);
+    }
+    
+    return result;
   } catch (error: any) {
     return {
       success: false,

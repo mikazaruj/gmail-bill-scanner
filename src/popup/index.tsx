@@ -97,6 +97,7 @@ export const PopupContent = () => {
   const [authError, setAuthError] = useState<string | null>(null);
   const [isReturningUser, setIsReturningUser] = useState<boolean>(false);
   const [prevAuthState, setPrevAuthState] = useState<boolean | null>(null);
+  const [showDebugOptions, setShowDebugOptions] = useState(false);
   
   // Immediate UI rendering hack: Force "not loading" state
   const { 
@@ -203,6 +204,23 @@ export const PopupContent = () => {
     }
   };
 
+  const handleDebugClick = () => {
+    console.log('Debug button clicked, forcing navigation to dashboard');
+    // We can't directly set isAuthenticated since it comes from the hook
+    // Instead, just set the active tab to dashboard, which will bypass the auth check
+    setActiveTab('dashboard');
+    
+    // Also store a flag in local storage to remember this debug override
+    chrome.storage.local.set({ 
+      'debug_dashboard_override': true,
+      'auth_state': {
+        isAuthenticated: true,
+        debug: true,
+        lastUpdated: new Date().toISOString()
+      }
+    });
+  };
+
   // For authenticated users with errors, show error state
   if (authError) {
     return (
@@ -227,25 +245,6 @@ export const PopupContent = () => {
   
   // For unauthenticated users, show login/signup UI
   if (isAuthenticated === false) {
-    const [showDebugOptions, setShowDebugOptions] = useState(false);
-    
-    const handleDebugClick = () => {
-      console.log('Debug button clicked, forcing navigation to dashboard');
-      // We can't directly set isAuthenticated since it comes from the hook
-      // Instead, just set the active tab to dashboard, which will bypass the auth check
-      setActiveTab('dashboard');
-      
-      // Also store a flag in local storage to remember this debug override
-      chrome.storage.local.set({ 
-        'debug_dashboard_override': true,
-        'auth_state': {
-          isAuthenticated: true,
-          debug: true,
-          lastUpdated: new Date().toISOString()
-        }
-      });
-    };
-    
     return (
       <div className="popup-container">
         <h1>Gmail Bill Scanner</h1>

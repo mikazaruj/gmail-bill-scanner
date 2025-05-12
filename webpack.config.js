@@ -24,7 +24,7 @@ module.exports = {
     options: path.join(__dirname, "src/options/index.tsx"),
     background: path.join(__dirname, "src/background/index.ts"),
     content: path.join(__dirname, "src/content/index.ts"),
-    // Only include pdf-worker as a separate entry point
+    // Include the PDF worker as a separate entry point
     'pdf-worker': path.join(__dirname, "src/workers/pdf-worker.js"),
   },
   output: {
@@ -113,8 +113,9 @@ module.exports = {
         },
         { from: 'public/icon.svg', to: 'icon.svg' },
         { from: 'public/icon128.png', to: 'icon128.png' },
-        // Important: Include the PDF.js worker file directly from node_modules
+        // Copy PDF.js worker files - make sure we have both the .min.js version and the regular one
         { from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', to: 'pdf.worker.min.js' },
+        { from: 'node_modules/pdfjs-dist/build/pdf.worker.js', to: 'pdf.worker.js' },
         // Create a directory for PDF.js libraries that will be imported by the worker
         { from: 'node_modules/pdfjs-dist/build/pdf.min.js', to: 'lib/pdf.js' },
         { from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', to: 'lib/pdf.worker.js' },

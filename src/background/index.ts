@@ -310,8 +310,54 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     // Import our PDF processor module on demand
     import('./pdfProcessor').then(({ processPdfExtraction }) => {
-      // Process the PDF using the processor from the pdfProcessor module
-      processPdfExtraction(message, sendResponse);
+      // First try to use our consolidated service
+      try {
+        import('../services/pdf/consolidatedPdfService').then(pdfService => {
+          console.log('Using consolidated PDF service for extraction');
+          
+          // Extract the PDF data
+          if (message.base64String) {
+            // Convert base64 to binary data
+            const base64 = message.base64String.replace(/^data:application\/pdf;base64,/, '');
+            const binaryString = atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+            
+            // Process the PDF with the consolidated service
+            pdfService.extractTextFromPdf(bytes.buffer, {
+              language: message.language || 'en'
+            })
+              .then(result => {
+                sendResponse({
+                  success: result.success,
+                  text: result.text,
+                  error: result.error
+                });
+              })
+              .catch(error => {
+                console.error('Error in consolidated PDF extraction:', error);
+                // Fall back to legacy method
+                processPdfExtraction(message, sendResponse);
+              });
+          } else {
+            console.error('No PDF data provided');
+            sendResponse({
+              success: false,
+              error: 'No PDF data provided'
+            });
+          }
+        }).catch(error => {
+          console.error('Error importing consolidated PDF service:', error);
+          // Fall back to legacy method
+          processPdfExtraction(message, sendResponse);
+        });
+      } catch (error) {
+        console.error('Error using consolidated PDF service:', error);
+        // Fall back to legacy method
+        processPdfExtraction(message, sendResponse);
+      }
     }).catch(error => {
       console.error('Error importing PDF processor:', error);
       sendResponse({
@@ -1536,33 +1582,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             });
           }
           break;
-
-        case 'EXTRACT_TEXT_FROM_PDF':
-          try {
-            // Get required parameters
-            const { base64String, language, userId, extractFields } = message;
-            
-            // First try to use our consolidated processing handler
-            const { processPdfExtraction } = await import('./handlers/pdfProcessingHandler');
-            
-            // Process the PDF
-            processPdfExtraction({
-              base64String,
-              language: language || 'en',
-              userId,
-              extractFields: extractFields !== false
-            }, sendResponse);
-            
-            // Indicate async response will be used
-            return true;
-          } catch (error) {
-            // Fall back to the older method if the import or handler fails
-            console.error('Error using consolidated PDF handler, falling back to legacy method:', error);
-            
-            // Handle the extract text request
-            await processPdfExtraction(message, sendResponse);
-            return true;
-          }
 
         case 'EXTRACT_TEXT_FROM_PDF_WITH_DETAILS':
           try {
@@ -3171,6 +3190,16 @@ const initializePdfWorker = async () => {
       // Make sure the PDF worker is available
       const workerUrl = chrome.runtime.getURL('pdf.worker.min.js');
       console.log(`PDF.js worker URL: ${workerUrl}`);
+      
+      // Try to initialize our new PDF processing handler
+      try {
+        const { initPdfHandler } = await import('../services/pdf/pdfProcessingHandler');
+        const success = initPdfHandler();
+        console.log("PDF handler initialization result:", success ? "success" : "failed");
+      } catch (handlerError) {
+        console.warn("Could not initialize new PDF handler:", handlerError);
+        // Continue with basic initialization even if the handler fails
+      }
       
       // Set global flag to indicate success
       console.log("PDF.js initialization successful");
