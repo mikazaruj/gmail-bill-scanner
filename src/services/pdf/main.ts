@@ -5,31 +5,37 @@
  * the optimal processing method based on environment and available APIs.
  */
 
+// Import from the clean PDF implementation
 import { 
-  ExtractionOptions,
-  ExtractionResult as BaseExtractionResult
-} from './modules/pdfExtraction';
-import { 
-  closeOffscreenDocument
-} from './modules/offscreenProcessor';
-import { 
-  isOffscreenApiAvailable,
-  isServiceWorkerContext
-} from './modules/serviceWorkerCompat';
-import { normalizePdfData } from './modules/pdfNormalization';
-import {
-  extractBillData,
-  BillData
-} from './modules/billDataExtraction';
-
-// Import the new optimized extractText function
-import { extractText } from './modules/main';
+  extractPdfText as cleanExtractPdfText, 
+  PdfExtractionOptions as CleanOptions,
+  PdfExtractionResult as CleanResult
+} from './cleanPdfExtractor';
 
 /**
  * Enhanced extraction result with bill data
  */
-export interface ExtractionResult extends BaseExtractionResult {
+export interface ExtractionResult extends CleanResult {
   billData?: BillData;
+}
+
+/**
+ * Bill data structure
+ */
+export interface BillData {
+  amount?: number;
+  currency?: string;
+  dueDate?: string;
+  issueDate?: string;
+  paymentStatus?: string;
+  serviceProvider?: string;
+  billType?: string;
+  accountNumber?: string;
+  serviceAddress?: string;
+  billPeriod?: {
+    from?: string;
+    to?: string;
+  };
 }
 
 /**
@@ -38,8 +44,6 @@ export interface ExtractionResult extends BaseExtractionResult {
 export interface PdfExtractionOptions {
   language?: string;
   includePosition?: boolean;
-  disableHiddenUi?: boolean;
-  disableWorker?: boolean;
   timeout?: number;
   extractBillData?: boolean;
 }
@@ -47,9 +51,7 @@ export interface PdfExtractionOptions {
 /**
  * Extract text from PDF data with optimal processing method
  * 
- * This function will determine the best approach based on environment:
- * 1. Direct extraction with PDF.js (most reliable)
- * 2. Offscreen document (if available and environment is appropriate)
+ * Uses the clean PDF extraction implementation.
  * 
  * @param pdfData PDF data as ArrayBuffer or Uint8Array
  * @param options Extraction options
@@ -65,16 +67,19 @@ export async function extractPdfText(
       pdfDataSize: pdfData instanceof ArrayBuffer ? pdfData.byteLength : pdfData.length
     });
     
-    // Use our new optimized extraction function
-    const result = await extractText(pdfData, {
-      language: options.language,
+    // Use the clean PDF extraction
+    const result = await cleanExtractPdfText(pdfData, {
       includePosition: options.includePosition !== false,
       timeout: options.timeout || 60000
     });
     
     // Process and extract bill data if needed
     if (options.extractBillData) {
-      return await processTextAndExtractBillData(result, options.language);
+      return {
+        ...result,
+        // For now, we don't have bill data extraction
+        billData: undefined
+      };
     }
     
     return result;
@@ -88,37 +93,6 @@ export async function extractPdfText(
 }
 
 /**
- * Process extracted text and extract bill data
- * 
- * @param result Extraction result with text
- * @param language Language code
- * @returns Enhanced extraction result with bill data
- */
-async function processTextAndExtractBillData(
-  result: BaseExtractionResult,
-  language?: string
-): Promise<ExtractionResult> {
-  try {
-    if (!result.success || !result.text) {
-      return result;
-    }
-    
-    // Extract bill data from the text
-    const billData = await extractBillData(result, language || 'en');
-    
-    // Return enhanced result with bill data
-    return {
-      ...result,
-      billData
-    };
-  } catch (error) {
-    console.error('[PDF Service] Error extracting bill data:', error);
-    // Return the original result without bill data
-    return result;
-  }
-}
-
-/**
  * Extract simple text from PDF buffer
  * @param pdfData PDF data as ArrayBuffer or Uint8Array
  * @returns Promise resolving to extracted text
@@ -127,7 +101,6 @@ export async function extractTextFromPdfBuffer(pdfData: ArrayBuffer | Uint8Array
   try {
     const result = await extractPdfText(pdfData, {
       includePosition: false,
-      disableWorker: true,
       extractBillData: false // Don't extract bill data for this simple text extraction
     });
     
@@ -175,13 +148,8 @@ export async function processPdfFromGmailApi(
  */
 export async function cleanupPdfResources(): Promise<void> {
   try {
-    // Close any open offscreen documents
-    if (isOffscreenApiAvailable()) {
-      await closeOffscreenDocument();
-    }
-    
-    // Clean up any other PDF resources
-    // ...
+    // No cleanup needed for the clean implementation
+    console.log('[PDF Service] PDF resources cleaned up');
   } catch (error) {
     console.error('[PDF Service] Error cleaning up PDF resources:', error);
   }

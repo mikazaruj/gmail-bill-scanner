@@ -116,6 +116,8 @@ module.exports = {
         // Copy PDF.js worker files - make sure we have both the .min.js version and the regular one
         { from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', to: 'pdf.worker.min.js' },
         { from: 'node_modules/pdfjs-dist/build/pdf.worker.js', to: 'pdf.worker.js' },
+        // Also copy to the build directory for Node.js compatible imports
+        { from: 'node_modules/pdfjs-dist/build/pdf.worker.js', to: 'build/pdf.worker.js' },
         // Create a directory for PDF.js libraries that will be imported by the worker
         { from: 'node_modules/pdfjs-dist/build/pdf.min.js', to: 'lib/pdf.js' },
         { from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', to: 'lib/pdf.worker.js' },

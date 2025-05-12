@@ -6,6 +6,9 @@
 
 /// <reference lib="webworker" />
 
+// Import PDF worker initialization first to ensure it's loaded early
+import '../services/pdf/initPdfWorker';
+
 // Import core dependencies and types
 import { getEmailContent, getAttachments } from '../services/gmail/gmailApi';
 import { 
@@ -122,7 +125,16 @@ const initializePdfWorkerIfNeeded = async (): Promise<boolean> => {
   console.log('Initializing PDF worker on-demand for scanning operation');
   
   try {
-    // Perform the actual initialization
+    // First check if our early initialization worked
+    const { isWorkerInitialized } = await import('../services/pdf/initPdfWorker');
+    if (isWorkerInitialized) {
+      console.log('PDF worker was already initialized by the initialization module');
+      pdfWorkerInitialized = true;
+      pdfWorkerInitializationAttempted = true;
+      return true;
+    }
+    
+    // If not, try with the existing initialization function
     const result = await initializePdfWorker();
     pdfWorkerInitialized = result;
     pdfWorkerInitializationAttempted = true;
@@ -3183,33 +3195,30 @@ async function authenticateWithProfile(): Promise<{ success: boolean; profile?: 
 // Simplified PDF worker initialization with reliable error handling
 const initializePdfWorker = async () => {
   try {
-    console.log("Initializing PDF.js extraction...");
+    console.log('Initializing PDF.js worker with Node.js compatible approach');
     
-    // Only attempt to initialize if we're in the right context
-    if (typeof chrome !== 'undefined' && chrome.runtime) {
-      // Make sure the PDF worker is available
-      const workerUrl = chrome.runtime.getURL('pdf.worker.min.js');
-      console.log(`PDF.js worker URL: ${workerUrl}`);
-      
-      // Try to initialize our new PDF processing handler
-      try {
-        const { initPdfHandler } = await import('../services/pdf/pdfProcessingHandler');
-        const success = initPdfHandler();
-        console.log("PDF handler initialization result:", success ? "success" : "failed");
-      } catch (handlerError) {
-        console.warn("Could not initialize new PDF handler:", handlerError);
-        // Continue with basic initialization even if the handler fails
-      }
-      
-      // Set global flag to indicate success
-      console.log("PDF.js initialization successful");
-      return true;
-    } else {
-      console.error("Not in extension context, PDF.js initialization failed");
-      return false;
+    // Import the PDF.js modules using the Node.js compatible paths
+    const pdfjsLib = await import('pdfjs-dist/build/pdf');
+    const pdfjsWorker = await import('pdfjs-dist/build/pdf.worker.entry');
+    
+    // Set the worker source to the imported worker entry point
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker.default;
+    
+    console.log('Successfully set PDF.js worker source to imported worker entry');
+    
+    // Try to initialize our PDF processing handler if needed
+    try {
+      const { initPdfHandler } = await import('../services/pdf/pdfProcessingHandler');
+      const success = initPdfHandler();
+      console.log("PDF handler initialization result:", success ? "success" : "failed");
+    } catch (handlerError) {
+      console.warn("Non-critical error initializing PDF handler:", handlerError);
+      // Non-critical error, continue
     }
+    
+    return true;
   } catch (error) {
-    console.error('Error in PDF initialization:', error);
+    console.error('Error in PDF worker initialization:', error);
     return false;
   }
 };
@@ -3721,3 +3730,5 @@ async function ensureGoogleIdentityMap() {
 //   // Vendor detection now relies on the structured data extraction from PDF documents
 //   return undefined;
 // }
+
+// Removed duplicate initializePdfWorker function

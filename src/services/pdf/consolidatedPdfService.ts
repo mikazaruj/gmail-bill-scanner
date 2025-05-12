@@ -5,8 +5,13 @@
  * Properly initializes PDF.js worker and handles text extraction
  */
 
-import * as pdfjsLib from 'pdfjs-dist';
+// Import Node.js compatible PDF.js modules
+import * as pdfjsLib from 'pdfjs-dist/build/pdf';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.entry';
 import { Bill } from '../../types/Bill';
+
+// Set the worker source directly to the imported worker entry point
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 /**
  * Interface for bill data extraction result
@@ -22,35 +27,17 @@ export interface BillData {
   [key: string]: any;
 }
 
-// Properly initialize PDF.js worker in a way that works in service workers
-// This is the most crucial fix for the "No GlobalWorkerOptions.workerSrc specified" error
-function initializePdfJs() {
-  try {
-    // Check if we're in an extension context
-    if (typeof chrome !== 'undefined' && chrome.runtime) {
-      const workerUrl = chrome.runtime.getURL('pdf.worker.min.js');
-      console.log(`PDF.js worker URL: ${workerUrl}`);
-
-      // Set the worker source - this addresses the error
-      pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
-      
-      // PDF.js doesn't directly expose disableWorker in newer versions
-      // We'll set it in the document parameters instead
-      console.log("PDF.js initialization successful");
-      return true;
-    } else {
-      console.warn("Not in extension context, using workerless mode");
-      // We'll disable the worker at the document loading level instead
-      return true;
-    }
-  } catch (error) {
-    console.error('Error in PDF.js initialization:', error);
-    return false;
-  }
+/**
+ * Check if we're running in a service worker context
+ */
+function isServiceWorkerContext(): boolean {
+  return (
+    // Check for self.clients which is only available in service workers
+    typeof self !== 'undefined' && 
+    typeof (self as any).clients !== 'undefined' &&
+    typeof window === 'undefined'
+  );
 }
-
-// Initialize immediately
-const initialized = initializePdfJs();
 
 /**
  * PDF extraction options
@@ -95,11 +82,6 @@ export async function extractTextFromPdf(
   options: PdfExtractionOptions = {}
 ): Promise<PdfExtractionResult> {
   try {
-    // Ensure PDF.js is initialized
-    if (!initialized) {
-      await initializePdfJs();
-    }
-
     console.log(`[PDF Service] Starting extraction with PDF.js in service worker environment`);
     
     // Normalize input to Uint8Array
@@ -120,6 +102,14 @@ export async function extractTextFromPdf(
     }
     
     try {
+      // Determine if we should disable worker based on context
+      const inServiceWorker = isServiceWorkerContext();
+      const shouldDisableWorker = inServiceWorker;
+      
+      if (shouldDisableWorker) {
+        console.log(`[PDF Service] Running in service worker context, disabling PDF.js worker`);
+      }
+      
       // Create PDF.js loading task with service worker safe options
       const loadingTask = pdfjsLib.getDocument({
         data,
@@ -127,7 +117,9 @@ export async function extractTextFromPdf(
         disableFontFace: true,
         disableRange: true,
         disableStream: true,
-        // Note: We use this flag in the document parameters rather than GlobalWorkerOptions
+        // Explicitly disable worker if in service worker
+        disableWorker: shouldDisableWorker,
+        // Additional options for stability
         ignoreErrors: true,
         isEvalSupported: false,
         useSystemFonts: false
