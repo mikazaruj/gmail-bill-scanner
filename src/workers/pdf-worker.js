@@ -1,318 +1,171 @@
 /**
- * PDF Worker - Dedicated Web Worker for PDF processing
+ * PDF Worker
  * 
- * This worker handles CPU-intensive PDF extraction tasks in a background thread
- * with fewer restrictions than service workers, providing better compatibility
- * with libraries like PDF.js.
+ * This worker provides PDF text extraction in a dedicated thread.
+ * It uses the cleaner pdfjs-dist implementation.
  */
 
-// Self-checking for worker compatibility
-self.addEventListener('error', function(event) {
-  console.error('[PDF Worker] Global error:', event.message);
-  self.postMessage({
-    success: false,
-    error: 'PDF Worker initialization error: ' + event.message
-  });
-});
+// Import necessary libraries
+importScripts('../pdf.worker.min.js');
 
-try {
-  // Import required libraries
-  importScripts(
-    '../lib/pdf.js',
-    '../lib/pdf.worker.js'
-  );
+// Configure PDF.js for worker environment
+if (typeof pdfjsLib !== 'undefined') {
+  // Always disable worker inside this worker to prevent nested workers
+  pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+  console.log('[PDF Worker] PDF.js library loaded successfully');
+} else {
+  console.error('[PDF Worker] PDF.js library not loaded properly!');
+}
 
-  // Configure PDF.js
-  const pdfjsLib = self.pdfjsLib;
-
-  // Set worker source (unnecessary in Web Worker context, but silences warnings)
-  if (pdfjsLib.GlobalWorkerOptions) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = '../lib/pdf.worker.js';
+// Listen for messages from the main thread
+self.onmessage = async (event) => {
+  try {
+    const { pdfData, options, requestId } = event.data;
+    
+    console.log('[PDF Worker] Received PDF data, size:', pdfData.byteLength, 'bytes');
+    
+    // Process the PDF
+    const result = await extractPdfText(pdfData, options);
+    
+    // Send the result back to the main thread
+    self.postMessage({
+      success: true,
+      result,
+      requestId
+    });
+  } catch (error) {
+    console.error('[PDF Worker] Error processing PDF:', error);
+    
+    // Send error back to main thread
+    self.postMessage({
+      success: false,
+      error: error.message || 'Unknown error in PDF worker',
+      requestId: event.data?.requestId
+    });
   }
+};
 
-  /**
-   * Extract text from PDF data
-   * @param {ArrayBuffer} pdfData - The binary PDF data
-   * @param {boolean} includePosition - Whether to include positional information
-   * @returns {Promise<object>} Extraction result with text and pages
-   */
-  async function extractPdfText(pdfData, includePosition = true) {
-    try {
-      // Load the PDF document
-      const loadingTask = pdfjsLib.getDocument({ data: pdfData });
-      
-      // Add a timeout for loading to prevent hanging
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('PDF loading timed out after 30 seconds')), 30000);
-      });
-      
-      // Race between loading and timeout
-      const pdfDocument = await Promise.race([loadingTask.promise, timeoutPromise]);
-      
-      console.log(`PDF loaded with ${pdfDocument.numPages} pages`);
-      
-      // Extract text from each page
-      let extractedText = '';
-      const pages = [];
-      
-      for (let i = 1; i <= pdfDocument.numPages; i++) {
-        const page = await pdfDocument.getPage(i);
-        const content = await page.getTextContent();
+/**
+ * Extract text from a PDF
+ * 
+ * @param {ArrayBuffer} pdfData - The PDF data
+ * @param {Object} options - Extraction options
+ * @returns {Object} Extraction result
+ */
+async function extractPdfText(pdfData, options = {}) {
+  const pdfjsLib = globalThis.pdfjsLib;
+  
+  if (!pdfjsLib) {
+    throw new Error('PDF.js library not available');
+  }
+  
+  try {
+    // Normalize input to Uint8Array
+    const data = new Uint8Array(pdfData);
+    
+    console.log('[PDF Worker] Starting extraction with PDF.js');
+    
+    // Configure PDF.js for worker environment
+    // Critical: Always disable nested worker in a worker context
+    const loadingTask = pdfjsLib.getDocument({
+      data,
+      disableFontFace: true,
+      disableRange: true,
+      disableStream: false,
+      disableWorker: true, // Must be true to avoid nested workers
+      cMapUrl: undefined,
+      cMapPacked: false,
+      standardFontDataUrl: undefined,
+      useSystemFonts: false,
+      isEvalSupported: false,
+      useWorkerFetch: false
+    });
+    
+    const pdfDoc = await loadingTask.promise;
+    
+    // Get total page count
+    const pageCount = pdfDoc.numPages;
+    console.log(`[PDF Worker] PDF loaded with ${pageCount} pages`);
+    
+    // Process each page to extract text
+    const allPages = [];
+    let fullText = '';
+    
+    for (let i = 1; i <= pageCount; i++) {
+      try {
+        // Get the page
+        const page = await pdfDoc.getPage(i);
         
-        if (includePosition) {
-          // Extract items with position
-          const items = content.items.map(item => ({
-            text: item.str,
-            x: item.transform[4],
-            y: item.transform[5],
-            width: item.width,
-            height: item.height || 0,
-            fontName: item.fontName,
-            fontSize: item.fontSize || 0
-          }));
+        // Get text content
+        const textContent = await page.getTextContent();
+        
+        // Extract the page text
+        const pageText = textContent.items
+          .map(item => 'str' in item ? item.str : '')
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        
+        // Create the page info object
+        const pageInfo = {
+          pageNumber: i,
+          text: pageText
+        };
+        
+        // Add position information if requested
+        if (options.includePosition) {
+          const textItems = [];
           
-          // Process items to maintain layout
-          const { text, lines } = processPageItems(items, page.view);
-          extractedText += text + '\n\n';
+          for (const item of textContent.items) {
+            if ('str' in item) {
+              textItems.push({
+                text: item.str,
+                x: item.transform[4],
+                y: item.transform[5],
+                width: item.width || 0,
+                height: item.height || 0
+              });
+            }
+          }
           
-          // Store page data with layout information
-          pages.push({
-            pageNumber: i,
-            text,
-            items,
-            lines,
-            width: page.view[2],
-            height: page.view[3]
-          });
-        } else {
-          // Simple text extraction without position
-          const pageText = content.items
-            .map(item => item.str)
-            .join(' ');
-          
-          extractedText += pageText + '\n\n';
-          
-          // Store page data without layout information
-          pages.push({
-            pageNumber: i,
-            text: pageText
-          });
+          pageInfo.items = textItems;
         }
+        
+        // Add page to result
+        allPages.push(pageInfo);
+        fullText += pageText + '\n\n';
+        
+        console.log(`[PDF Worker] Extracted text from page ${i}`);
+        
+        // Free memory after each page
+        page.cleanup();
+      } catch (pageError) {
+        console.error(`[PDF Worker] Error processing page ${i}:`, pageError);
+        // Continue with next page
       }
-      
-      return {
-        success: true,
-        text: extractedText,
-        pages
-      };
-    } catch (error) {
-      console.error('Error in PDF.js extraction:', error);
+    }
+    
+    // Check if we extracted any text
+    if (fullText.trim().length === 0) {
       return {
         success: false,
         text: '',
-        error: error.message || 'Unknown error in PDF extraction'
+        error: 'No text found in PDF'
       };
     }
+    
+    // Return the extracted text
+    return {
+      success: true,
+      text: fullText,
+      pages: allPages
+    };
+  } catch (error) {
+    console.error('[PDF Worker] Extraction error:', error);
+    return {
+      success: false,
+      text: '',
+      error: `PDF extraction failed: ${error.message || 'Unknown error'}`
+    };
   }
-
-  /**
-   * Process page items to extract text with layout information
-   * @param {Array} items - Text items with position
-   * @param {Array} viewBox - Page dimensions
-   * @returns {Object} Processed text and line information
-   */
-  function processPageItems(items, viewBox) {
-    // Sort items by their y-coordinate (top to bottom)
-    // For items at similar y positions, sort by x (left to right)
-    const sortedItems = [...items].sort((a, b) => {
-      // Use a tolerance for y-position to group items on same line
-      const yTolerance = 5;
-      if (Math.abs(a.y - b.y) <= yTolerance) {
-        return a.x - b.x;
-      }
-      // Reverse y sort (PDF coordinates are bottom-up)
-      return b.y - a.y;
-    });
-    
-    // Group items into lines based on y-position
-    const lines = [];
-    let currentLine = [];
-    let currentY = null;
-    const yTolerance = 5; // Items within this range are on same line
-    
-    for (const item of sortedItems) {
-      if (currentY === null || Math.abs(item.y - currentY) <= yTolerance) {
-        // Same line
-        currentLine.push(item);
-        // Update current Y to average of line items for better grouping
-        if (currentLine.length > 1) {
-          currentY = currentLine.reduce((sum, i) => sum + i.y, 0) / currentLine.length;
-        } else {
-          currentY = item.y;
-        }
-      } else {
-        // New line
-        if (currentLine.length > 0) {
-          // Sort items in the current line by x-position
-          currentLine.sort((a, b) => a.x - b.x);
-          lines.push(currentLine);
-        }
-        currentLine = [item];
-        currentY = item.y;
-      }
-    }
-    
-    // Add the last line if exists
-    if (currentLine.length > 0) {
-      currentLine.sort((a, b) => a.x - b.x);
-      lines.push(currentLine);
-    }
-    
-    // Generate text with layout preserved
-    let text = '';
-    for (const line of lines) {
-      // Add space between words if they're separate text items
-      const lineText = line.map(item => item.text).join(' ');
-      text += lineText + '\n';
-    }
-    
-    return { text, lines };
-  }
-
-  /**
-   * Extract bill data from text using pattern matching
-   * @param {string} text - The extracted text
-   * @param {string} language - The language code
-   * @returns {Object|null} Extracted bill data or null if none found
-   */
-  function extractBillData(text, language = 'en') {
-    try {
-      // Basic patterns for bill data extraction
-      const extractors = {
-        en: {
-          amount: /(?:total|amount|due|pay)(?:[^0-9]*)([$€£]?\s*\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i,
-          dueDate: /(?:due|payment|deadline)(?:[^0-9]*)((?:\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2}))/i,
-          invoiceNumber: /(?:invoice|bill|ref)(?:[^0-9a-z]*)([\w\-\/]{3,})/i,
-          vendor: /^([A-Z].{2,30})(?:\s*\n)/m
-        },
-        hu: {
-          amount: /(?:fizetendő|összeg|összesen)(?:[^0-9]*)([$€£]?\s*\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i,
-          dueDate: /(?:fizetési\s*határidő|esedékesség)(?:[^0-9]*)((?:\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}|\d{4}[\/\.\-]\d{1,2}[\/\.\-]\d{1,2}))/i,
-          invoiceNumber: /(?:számla\s*szám|azonosító)(?:[^0-9a-z]*)([\w\-\/]{3,})/i,
-          vendor: /^([A-Z].{2,30})(?:\s*\n)/m
-        }
-      };
-      
-      // Select language-specific extractors
-      const lang = language === 'hu' ? 'hu' : 'en';
-      const patterns = extractors[lang];
-      
-      // Extract fields
-      const result = {};
-      
-      // Amount
-      const amountMatch = text.match(patterns.amount);
-      if (amountMatch && amountMatch[1]) {
-        let amount = amountMatch[1].replace(/[^\d.,]/g, '').replace(',', '.');
-        result.amount = parseFloat(amount);
-      }
-      
-      // Due date
-      const dueDateMatch = text.match(patterns.dueDate);
-      if (dueDateMatch && dueDateMatch[1]) {
-        result.dueDate = dueDateMatch[1];
-      }
-      
-      // Invoice number
-      const invoiceMatch = text.match(patterns.invoiceNumber);
-      if (invoiceMatch && invoiceMatch[1]) {
-        result.invoiceNumber = invoiceMatch[1];
-      }
-      
-      // Vendor - look at first few lines of text
-      const lines = text.split('\n').slice(0, 10);
-      for (let i = 0; i < Math.min(5, lines.length); i++) {
-        if (lines[i].length > 5 && !/^\s*\d+/.test(lines[i])) {
-          result.vendor = lines[i].trim();
-          break;
-        }
-      }
-      
-      return Object.keys(result).length > 0 ? result : null;
-    } catch (error) {
-      console.error('Error extracting bill data:', error);
-      return null;
-    }
-  }
-
-  // Handle messages from the main thread
-  self.onmessage = async function(event) {
-    const { action, pdfData, language } = event.data;
-    
-    if (action === 'extractText') {
-      try {
-        console.log('[PDF Worker] Starting PDF text extraction');
-        
-        // Report status back to main thread
-        self.postMessage({
-          type: 'status',
-          message: 'Started PDF extraction'
-        });
-        
-        // Extract text with position information
-        const extractionResult = await extractPdfText(pdfData, true);
-        
-        // If successful, try to extract bill data
-        if (extractionResult.success && extractionResult.text) {
-          console.log('[PDF Worker] PDF text extraction successful, extracting bill data');
-          
-          self.postMessage({
-            type: 'status',
-            message: 'Extracting bill data'
-          });
-          
-          const billData = extractBillData(extractionResult.text, language);
-          
-          // Send the result back to the main thread
-          self.postMessage({
-            success: true,
-            result: {
-              text: extractionResult.text,
-              pages: extractionResult.pages,
-              billData
-            }
-          });
-        } else {
-          // Send error back to main thread
-          self.postMessage({
-            success: false,
-            error: extractionResult.error || 'PDF extraction failed with unknown error'
-          });
-        }
-      } catch (error) {
-        console.error('[PDF Worker] Error processing PDF:', error);
-        self.postMessage({
-          success: false,
-          error: error.message || 'Unknown error in PDF worker'
-        });
-      }
-    } else {
-      console.error('[PDF Worker] Unknown action:', action);
-      self.postMessage({
-        success: false,
-        error: `Unknown action: ${action}`
-      });
-    }
-  };
-  
-  // Notify that the worker initialized successfully
-  console.log('[PDF Worker] Successfully initialized');
-  
-} catch (initError) {
-  // Report initialization failure
-  console.error('[PDF Worker] Initialization failed:', initError);
-  self.postMessage({
-    success: false,
-    error: 'PDF Worker initialization failed: ' + (initError.message || 'Unknown error')
-  });
 } 

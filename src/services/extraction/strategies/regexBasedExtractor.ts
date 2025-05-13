@@ -22,7 +22,7 @@ import {
 } from "../patterns/patternLoader";
 import { parseHungarianAmount } from '../utils/amountParser';
 import { decodeBase64 } from '../../../utils/base64Decode';
-import { extractTextFromPdfBuffer } from '../../../services/pdf/main';
+import { extractTextFromPdfBuffer } from '../../../services/pdf/pdfService';
 
 // Common bill-related keywords - dynamically loaded from patterns
 const getBillKeywordsForLanguage = (language: string = 'en') => {
@@ -184,16 +184,43 @@ export class RegexBasedExtractor implements ExtractionStrategy {
           pdfBuffer = context.pdfData as ArrayBuffer;
         }
         
-        // Use new main PDF service
-        extractedText = await extractTextFromPdfBuffer(pdfBuffer);
+        console.log(`[Regex Extractor] Attempting PDF extraction with buffer size: ${pdfBuffer instanceof ArrayBuffer ? pdfBuffer.byteLength : pdfBuffer.length} bytes`);
         
-        if (!extractedText) {
+        // Try with explicit error handling
+        try {
+          // Use pdfService's extraction method
+          extractedText = await extractTextFromPdfBuffer(pdfBuffer);
+          console.log(`[Regex Extractor] PDF extraction succeeded with ${extractedText.length} chars of text`);
+        } catch (pdfError) {
+          console.error('[Regex Extractor] Primary PDF extraction failed:', pdfError);
+          
+          // If extraction failed, try fallback to basic extraction
+          if (typeof context.pdfData === 'string') {
+            console.log('[Regex Extractor] Attempting fallback basic text extraction');
+            try {
+              // Use the basicTextExtraction method directly
+              extractedText = this.basicTextExtraction(context.pdfData, context.language || 'en');
+            } catch (fallbackError) {
+              console.error('[Regex Extractor] Fallback extraction also failed:', fallbackError);
+            }
+          } else if (pdfBuffer instanceof Uint8Array) {
+            console.log('[Regex Extractor] Attempting basic binary extraction');
+            try {
+              // Basic binary extraction (not using the method from patternBasedExtractor)
+              extractedText = this.extractAsciiTextFromBinary(pdfBuffer);
+            } catch (binaryError) {
+              console.error('[Regex Extractor] Binary extraction failed:', binaryError);
+            }
+          }
+        }
+        
+        if (!extractedText || extractedText.trim().length === 0) {
           throw new Error('No text extracted from PDF');
         }
         
-        console.log(`Extracted ${extractedText.length} characters from PDF`);
+        console.log(`[Regex Extractor] Extracted ${extractedText.length} characters from PDF`);
       } catch (error) {
-        console.error('Error extracting PDF text:', error);
+        console.error('[Regex Extractor] All PDF extraction methods failed:', error);
         return {
           success: false,
           bills: [],
@@ -971,6 +998,84 @@ export class RegexBasedExtractor implements ExtractionStrategy {
         bills: [],
         error: error instanceof Error ? error.message : 'Unknown text extraction error'
       };
+    }
+  }
+
+  /**
+   * Extract ASCII text from binary data
+   * Simple fallback method when PDF.js extraction fails
+   */
+  private extractAsciiTextFromBinary(data: Uint8Array): string {
+    try {
+      console.log('[Regex Extractor] Attempting basic ASCII extraction from binary');
+      
+      // Get a small sample for logging
+      const sampleSize = Math.min(data.length, 100);
+      console.log(`[Regex Extractor] Binary sample (first ${sampleSize} bytes):`, 
+        Array.from(data.slice(0, sampleSize)).map(b => b.toString(16)).join(' '));
+      
+      // Extract parenthesized content (common in PDFs)
+      const chunks: string[] = [];
+      const OPEN_PAREN = 40; // '(' in ASCII
+      const CLOSE_PAREN = 41; // ')' in ASCII
+      
+      // Look for text between parentheses
+      for (let i = 0; i < data.length; i++) {
+        if (data[i] === OPEN_PAREN) {
+          const start = i + 1;
+          let end = start;
+          
+          // Find closing parenthesis
+          while (end < data.length && data[end] !== CLOSE_PAREN) {
+            end++;
+          }
+          
+          if (end < data.length && end - start > 2) {
+            // Convert section to text
+            let text = '';
+            for (let j = start; j < end; j++) {
+              if (data[j] >= 32 && data[j] < 127) { // Printable ASCII
+                text += String.fromCharCode(data[j]);
+              }
+            }
+            
+            // Add if it seems like actual text
+            if (text.length > 2 && /[a-zA-Z0-9]/.test(text)) {
+              chunks.push(text);
+            }
+          }
+          
+          // Skip to end to avoid nested parentheses
+          i = end;
+        }
+      }
+      
+      // Also look for plain text sections (outside parentheses)
+      let currentText = '';
+      let textChunks: string[] = [];
+      
+      for (let i = 0; i < data.length; i++) {
+        const byte = data[i];
+        // Check if it's a printable ASCII character
+        if (byte >= 32 && byte < 127) {
+          currentText += String.fromCharCode(byte);
+        } else if (currentText.length > 0) {
+          // End of text section, save if it seems valid
+          if (currentText.length > 3 && /[a-zA-Z0-9]/.test(currentText)) {
+            textChunks.push(currentText);
+          }
+          currentText = '';
+        }
+      }
+      
+      // Combine all text chunks
+      const allText = [...chunks, ...textChunks].join(' ');
+      console.log(`[Regex Extractor] Binary extraction found ${chunks.length} parenthesized chunks, ${textChunks.length} plain text chunks`);
+      
+      return allText;
+    } catch (error) {
+      console.error('[Regex Extractor] Binary text extraction error:', error);
+      return '';
     }
   }
 } 

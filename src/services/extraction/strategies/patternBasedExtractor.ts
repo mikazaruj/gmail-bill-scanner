@@ -15,7 +15,7 @@ import {
   calculateConfidence
 } from "../patterns/patternLoader";
 import { parseHungarianAmount } from '../utils/amountParser';
-import { extractTextFromPdfBuffer } from '../../../services/pdf/main';
+import { extractTextFromPdfBuffer } from '../../../services/pdf/pdfService';
 
 export class PatternBasedExtractor implements ExtractionStrategy {
   readonly name = 'pattern-based';

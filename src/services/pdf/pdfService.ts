@@ -95,7 +95,8 @@ export async function extractTextFromPdfWithDetails(pdfData: ArrayBuffer, langua
  * Compatibility function that redirects to the new clean implementation
  */
 export async function extractTextFromPdfBuffer(pdfData: ArrayBuffer | Uint8Array): Promise<string> {
-  return await extractTextOnly(pdfData);
+  const result = await extractTextOnly(pdfData);
+  return result.success ? result.text : '';
 }
 
 /**

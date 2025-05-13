@@ -3,13 +3,19 @@
  * 
  * This provides a central interface for all PDF processing, determining
  * the optimal processing method based on environment and available APIs.
+ * 
+ * NOTE: This module should be used when direct PDF processing is needed.
+ * For worker-based PDF processing, the PDF worker code in src/workers/pdf-worker.js 
+ * should be used which implements the same clean approach without DOM dependencies.
  */
 
 // Import from the clean PDF implementation
 import { 
   extractPdfText as cleanExtractPdfText, 
   PdfExtractionOptions as CleanOptions,
-  PdfExtractionResult as CleanResult
+  PdfExtractionResult as CleanResult,
+  setPdfWorkerUrl,
+  isServiceWorkerContext
 } from './cleanPdfExtractor';
 
 /**
@@ -46,6 +52,7 @@ export interface PdfExtractionOptions {
   includePosition?: boolean;
   timeout?: number;
   extractBillData?: boolean;
+  workerUrl?: string;
 }
 
 /**
@@ -62,10 +69,29 @@ export async function extractPdfText(
   options: PdfExtractionOptions = {}
 ): Promise<ExtractionResult> {
   try {
+    // Skip processing if pdfData is invalid
+    if (!pdfData || (pdfData instanceof ArrayBuffer && pdfData.byteLength === 0) || 
+        (pdfData instanceof Uint8Array && pdfData.length === 0)) {
+      return {
+        success: false,
+        text: '',
+        error: 'Invalid or empty PDF data provided'
+      };
+    }
+    
     console.log('[PDF Service] Starting PDF extraction with options:', {
       ...options,
       pdfDataSize: pdfData instanceof ArrayBuffer ? pdfData.byteLength : pdfData.length
     });
+    
+    // Set worker URL if provided
+    if (options.workerUrl) {
+      setPdfWorkerUrl(options.workerUrl);
+    }
+    
+    // Log context information
+    const inServiceWorkerContext = isServiceWorkerContext();
+    console.log(`[PDF Service] Running in service worker context: ${inServiceWorkerContext}`);
     
     // Use the clean PDF extraction
     const result = await cleanExtractPdfText(pdfData, {
@@ -84,6 +110,7 @@ export async function extractPdfText(
     
     return result;
   } catch (error: any) {
+    console.error('[PDF Service] Error extracting PDF text:', error);
     return {
       success: false,
       text: '',
@@ -101,7 +128,8 @@ export async function extractTextFromPdfBuffer(pdfData: ArrayBuffer | Uint8Array
   try {
     const result = await extractPdfText(pdfData, {
       includePosition: false,
-      extractBillData: false // Don't extract bill data for this simple text extraction
+      extractBillData: false,
+      timeout: 45000 // 45 second timeout for simple text extraction
     });
     
     return result.success ? result.text : '';
@@ -126,7 +154,8 @@ export async function processPdfFromGmailApi(
     const result = await extractPdfText(pdfData, {
       language,
       includePosition: true,
-      extractBillData: true
+      extractBillData: true,
+      timeout: 60000 // 1 minute timeout for Gmail API processing
     });
     
     return {
