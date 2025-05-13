@@ -21,6 +21,7 @@ import {
 } from "./utils/hungarianStemming";
 import { extractTextFromPdfBuffer } from "../pdf/pdfService";
 import { createBill } from "../../utils/billTransformers";
+import { debugPdfExtraction } from "../debug/pdfDebugUtils";
 
 export interface UnifiedExtractionOptions {
   language?: 'en' | 'hu';
@@ -298,6 +299,10 @@ export class UnifiedPatternMatcher {
       if (!extractedText) {
         throw new Error('Failed to extract text from PDF');
       }
+      
+      // Debug the extracted text to help diagnose pattern matching issues
+      console.log(`[PDF Extractor] Successfully extracted ${extractedText.length} characters from PDF`);
+      debugPdfExtraction(extractedText);
       
       return extractedText;
     } catch (error) {

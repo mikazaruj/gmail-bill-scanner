@@ -53,4 +53,6 @@ export interface BillExtractionResult {
     reason?: string;
     [key: string]: any;
   };
+  // Additional detailed debug data for development and troubleshooting
+  debugData?: any;
 } 

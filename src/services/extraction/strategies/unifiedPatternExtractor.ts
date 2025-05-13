@@ -7,6 +7,7 @@
 import { Bill, BillExtractionResult } from "../../../types/Bill";
 import { EmailExtractionContext, ExtractionStrategy, PdfExtractionContext } from "./extractionStrategy";
 import { UnifiedPatternMatcher, UnifiedExtractionContext } from "../unifiedPatternMatcher";
+import { pdfDebugTools } from "../../debug/pdfDebugUtils";
 
 /**
  * Extraction strategy that uses the unified pattern matcher
@@ -85,6 +86,17 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
     try {
       const { pdfData, messageId, attachmentId, fileName, language } = context;
       
+      console.log(`[Unified Extractor] Starting PDF extraction for ${fileName || 'unknown file'}`);
+      
+      // Get the size of PDF data in a type-safe way
+      let dataSize = 0;
+      if (typeof pdfData === 'string') {
+        dataSize = pdfData.length;
+      } else {
+        dataSize = pdfData.byteLength;
+      }
+      console.log(`[Unified Extractor] PDF data size: ${dataSize} bytes`);
+      
       // Create extraction context
       const extractionContext: UnifiedExtractionContext = {
         pdfData,
@@ -93,28 +105,42 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         fileName
       };
       
-      // Use unified matcher with stemming enabled for Hungarian
+      // Use unified matcher with stemming enabled for Hungarian and debug mode on
       const result = await this.matcher.extract(extractionContext, {
         language: language as 'en' | 'hu',
         applyStemming: language === 'hu',
-        debug: false
+        debug: true // Enable debug mode to get more information
       });
       
-      // Add detailed logging for Hungarian bills
-      if (language === 'hu' && result.success && result.bills.length > 0) {
+      // Log detailed extraction results
+      if (result.success && result.bills.length > 0) {
         const bill = result.bills[0];
-        console.log(`Unified extractor found Hungarian bill with confidence ${result.confidence}`);
-        console.log(`Hungarian bill details: vendor=${bill.vendor}, amount=${bill.amount}, currency=${bill.currency}`);
+        console.log(`[Unified Extractor] Found bill with confidence ${result.confidence}`);
+        console.log(`[Unified Extractor] Bill details: vendor=${bill.vendor}, amount=${bill.amount}, currency=${bill.currency}`);
+        
+        if (bill.amount === 0) {
+          console.warn(`[Unified Extractor] WARNING: Amount is zero, possible extraction failure`);
+          console.log(`[Unified Extractor] Detailed debug data:`, result.debugData);
+          
+          // If we're in the browser context, make debug tools available
+          if (typeof window !== 'undefined') {
+            console.log(`[Unified Extractor] Use PdfDebugTools in console to analyze the extracted text`);
+          }
+        }
+      } else {
+        console.warn(`[Unified Extractor] Extraction failed: ${result.error || 'Unknown error'}`);
+        console.log(`[Unified Extractor] Debug data:`, result.debugData);
       }
       
       return {
         success: result.success,
         bills: result.bills,
         confidence: result.confidence,
-        error: result.error
+        error: result.error,
+        debugData: result.debugData // Include debug data in the result
       };
     } catch (error) {
-      console.error('Error in unified pattern PDF extraction:', error);
+      console.error('[Unified Extractor] Error in PDF extraction:', error);
       return {
         success: false,
         bills: [],

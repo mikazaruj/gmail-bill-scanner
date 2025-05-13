@@ -13,7 +13,10 @@
     "update-schema": "node schema/schema-updater.js",
     "diff-schema": "node schema/schema-diff.js",
     "update-schema:mcp": "node schema/mcp-schema-updater.js",
-    "test-schema:mcp": "node schema/test-mcp-updater.js"
+    "test-schema:mcp": "node schema/test-mcp-updater.js",
+    "debug-pdf": "npx ts-node --esm src/debug-tool.ts",
+    "debug-pdf-js": "node src/debug-tool.js",
+    "simple-debug": "node src/simple-debug-tool.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.3",
@@ -51,6 +54,7 @@
     "prettier": "3.2.4",
     "style-loader": "^3.3.4",
     "tailwindcss": "^3.4.17",
+    "ts-node": "^10.9.2",
     "typescript": "5.3.3",
     "webpack": "^5.99.2",
     "webpack-cli": "^5.1.4"
