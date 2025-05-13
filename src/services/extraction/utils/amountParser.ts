@@ -9,6 +9,7 @@
  * - 175,95 (comma as decimal separator)
  * - 175.945,95 (dot as thousands separator, comma as decimal)
  * - 175 945,95 (space as thousands separator, comma as decimal)
+ * - 6.364 Ft (dot as thousands separator with currency symbol)
  * 
  * @param amountStr The string representation of the amount
  * @returns The parsed float value
@@ -34,19 +35,33 @@ export function parseHungarianAmount(amountStr: string): number {
     const hasThousandDots = /\d{1,3}[.]\d{3}/.test(cleanedAmount);
     const hasThousandSpaces = /\d{1,3}\s\d{3}/.test(cleanedAmount);
     const hasCommaDecimals = /,\d{1,2}$/.test(cleanedAmount);
+    const hasShortNumber = /^\d{1,4}$/.test(cleanedAmount); // Short numbers like "6364"
     
     console.log('Format analysis:', { 
       hasThousandDots, 
       hasThousandSpaces,
-      hasCommaDecimals
+      hasCommaDecimals,
+      hasShortNumber
     });
     
     // Step 2: Process Hungarian-style amount
     // Keep track of original amount to help diagnose parsing issues
     const originalAmount = cleanedAmount;
     
-    // Case 1: Number with thousand dots (e.g., 10.000 or 175.945)
+    // Handle simple 3-4 digit numbers (e.g. "6364")
+    if (hasShortNumber) {
+      return parseInt(cleanedAmount, 10);
+    }
+    
+    // Case 1: Number with thousand dots (e.g., 10.000 or 175.945 or 6.364)
     if (hasThousandDots) {
+      // Special check for numbers like "6.364" - Hungarian format where dot is always a thousand separator
+      if (/^\d{1,3}[.]\d{3}$/.test(cleanedAmount)) {
+        cleanedAmount = cleanedAmount.replace(/[.]/g, '');
+        console.log('Removed thousand dots from short number:', cleanedAmount);
+        return parseInt(cleanedAmount, 10);
+      }
+      
       // Check if it's actually a number with a decimal point (e.g., 123.45)
       const decimalDotPattern = /^\d{1,3}[.]\d{1,2}$/;
       if (!decimalDotPattern.test(cleanedAmount)) {

@@ -91,7 +91,9 @@
         "A számla fizetendő végösszege.{1,50}(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
         "teljes fizetendő összeg.{1,50}(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
         "Bruttó érték\\s*összesen\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
-        "Fizetendő\\s*végösszeg\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)"
+        "Fizetendő\\s*végösszeg\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+        "Fizetendő\\s+összeg:\\s*(\\d{1,4}\\.\\d{3})\\s*Ft",
+        "Bruttó\\s+számlaérték\\s+összesen\\*\\*:\\s*(\\d{1,4}\\.\\d{3})"
       ],
       "postProcessing": "removeSpaces"
     },
@@ -220,7 +222,9 @@
           "Így az elszámolt időszakban az Ön megtakarítása:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
           "Rezsikökkentett díj nélkül az Ön fizetési kötelezettsége\\s*az elszámolt időszakban a következő összeg lett volna:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
           "Bruttó érték\\s*összesen\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
-          "Fizetendő\\s*végösszeg\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)"
+          "Fizetendő\\s*végösszeg\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+          "Fizetendő\\s+összeg:\\s*(\\d{1,4}\\.\\d{3})\\s*Ft",
+          "Bruttó\\s+számlaérték\\s+összesen\\*\\*:\\s*(\\d{1,4}\\.\\d{3})"
         ],
         "highlightedFields": {
           "amount": [
@@ -255,7 +259,8 @@
     "amount": [
       "Fizetendő összeg:?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
       "Fizetendő összeg:\\s*(\\d+\\s*\\d+)\\s*Ft",
-      "Fizetendő összeg:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft"
+      "Fizetendő összeg:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)\\s*Ft",
+      "Fizetendő\\s+összeg:\\s*(\\d{1,4}\\.\\d{3})\\s*Ft"
     ],
     "dueDate": [
       "Fizetési határidő:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})"

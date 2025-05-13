@@ -16,7 +16,9 @@
     "test-schema:mcp": "node schema/test-mcp-updater.js",
     "debug-pdf": "npx ts-node --esm src/debug-tool.ts",
     "debug-pdf-js": "node src/debug-tool.js",
-    "simple-debug": "node src/simple-debug-tool.js"
+    "simple-debug": "node src/simple-debug-tool.js",
+    "compare-pdf": "node src/compare-extraction.js",
+    "compare-pdf-ts": "npx ts-node src/compare-extraction-ts.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.3",
