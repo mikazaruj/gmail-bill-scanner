@@ -1,15 +1,73 @@
-# Bill Extraction System
+# Bill Extraction Service
 
-This directory contains the bill extraction system used to process PDF bills and extract structured data from them.
+This module handles the extraction of bill information from emails and PDFs with a focus on multilingual support, particularly for Hungarian bills.
 
 ## Architecture
 
-The extraction system is designed with the following principles:
+The extraction system uses a strategy pattern with multiple extractors:
 
-1. **Configuration-driven**: All patterns are defined in configuration files rather than hardcoded in the code
-2. **Language-aware**: Supports multiple languages with language-specific patterns
-3. **Multi-strategy**: Combines regex pattern matching with position-aware extraction
-4. **Stem-based recognition**: Uses Hungarian word stem recognition for improved language support
+1. **UnifiedPatternExtractor** (Primary): Uses stemming and advanced pattern matching for best results, especially for Hungarian documents.
+2. **PatternBasedExtractor** (Fallback): Uses simple pattern matching.
+3. **RegexBasedExtractor** (Last resort): Uses basic regex patterns.
+
+## Hungarian Language Features
+
+The system includes specialized features for Hungarian language bills:
+
+- **Stemming and Lemmatization**: The `hungarianStemming.ts` module handles the complex morphology of Hungarian words, recognizing word variations with different suffixes.
+- **Comprehensive Pattern Definitions**: The `hungarian-bill-patterns.json` file contains specialized patterns for Hungarian bills.
+- **Special Company Handling**: Specialized handling for major Hungarian utility companies like MVM, EON, etc.
+
+## PDF Extraction
+
+The system uses a custom binary analysis approach for PDF text extraction:
+
+1. **Service Worker Compatible**: Works in browser extension environments without DOM dependencies.
+2. **Multiple Fallback Methods**:
+   - Scanning for text between parentheses
+   - Targeted extraction based on Hungarian keywords
+   - Character-by-character ASCII string extraction
+
+## Extraction Pipeline
+
+The unified extraction pipeline follows these steps:
+
+1. **Text Extraction**: Get text from PDF or email
+2. **Text Normalization**: Apply stemming and normalization for Hungarian
+3. **Pattern Matching**: Apply comprehensive patterns from language-specific pattern files
+4. **Confidence Scoring**: Score extraction quality based on found patterns
+5. **Field Extraction**: Pull out specific bill fields like amount, due date, etc.
+6. **Result Formatting**: Create standardized bill objects
+
+## Testing
+
+The `test-unified-extractor.ts` provides a way to test the extraction pipeline with sample text or PDF files.
+
+## Usage
+
+```typescript
+// Using BillExtractor (recommended)
+const extractor = new BillExtractor();
+const result = await extractor.extractFromPdf(pdfData, messageId, attachmentId, fileName, { 
+  language: 'hu' 
+});
+
+// Using UnifiedPatternMatcher directly
+const matcher = new UnifiedPatternMatcher();
+const result = await matcher.extract({
+  pdfData: pdfBuffer,
+  fileName: 'bill.pdf'
+}, {
+  language: 'hu',
+  applyStemming: true
+});
+```
+
+## Improvement Areas
+
+- Add support for more Hungarian utility companies
+- Expand stemming dictionary for better word variation matching
+- Implement automated testing with representative bill samples
 
 ## Components
 

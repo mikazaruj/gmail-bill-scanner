@@ -16,6 +16,7 @@ import {
 } from "./strategies/extractionStrategy";
 import { RegexBasedExtractor } from "./strategies/regexBasedExtractor";
 import { PatternBasedExtractor } from "./strategies/patternBasedExtractor";
+import { UnifiedPatternExtractor } from "./strategies/unifiedPatternExtractor";
 import { getLanguagePatterns } from "./patterns/patternLoader";
 import { extractTextFromPdf } from '../pdf/pdfService';
 import { ExtractionResult } from "../../types";
@@ -47,11 +48,15 @@ export class BillExtractor {
     try {
       console.log('Initializing extraction strategies');
       
-      // Pattern-based extractor (preferred)
+      // Unified pattern extractor (highest priority)
+      const unifiedStrategy = new UnifiedPatternExtractor();
+      this.registerStrategy(unifiedStrategy);
+      
+      // Pattern-based extractor (fallback)
       const patternStrategy = new PatternBasedExtractor();
       this.registerStrategy(patternStrategy);
       
-      // Regex-based extractor (fallback)
+      // Regex-based extractor (lowest priority fallback)
       const regexStrategy = new RegexBasedExtractor();
       this.registerStrategy(regexStrategy);
       
@@ -500,72 +505,4 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   }
 }
 
-/**
- * Extract bill data from a PDF document
- */
-export const extractFromPdf = async (
-  base64Pdf: string, 
-  language: string = 'en',
-  options: { verbose?: boolean } = {}
-): Promise<ExtractionResult> => {
-  
-  try {
-    // No need to initialize worker anymore, as we're using direct PDF.js approach
-    console.log('Using direct PDF.js extraction...');
-    
-    // Also notify background script for backward compatibility
-    try {
-      if (typeof chrome !== 'undefined' && chrome.runtime) {
-        chrome.runtime.sendMessage({ type: 'INIT_PDF_WORKER' });
-      }
-    } catch (error) {
-      console.warn('Failed to send worker init message to background:', error);
-    }
-    
-    // Preprocess the PDF data if needed based on language
-    const preprocessedData = preprocessPdfData(base64Pdf, language);
-    
-    // Extract text from PDF
-    const extractionResult = await extractTextFromPdf(base64ToArrayBuffer(preprocessedData), language);
-    const extractedText = extractionResult.text;
-    
-    if (!extractedText || extractedText.length < 10) {
-      console.warn('PDF extraction returned insufficient text');
-      return {
-        success: false,
-        confidence: 0,
-        error: 'Failed to extract text from PDF',
-        source: 'pdf'
-      };
-    }
-    
-    // Log successful extraction with length
-    console.log(`Successfully extracted ${extractedText.length} characters from PDF`);
-    
-    // TODO: Implement full extraction logic using extracted text
-    // For now, return a placeholder result
-    return {
-      success: true,
-      confidence: 0.3,
-      source: 'pdf',
-      // We'll fill this with real data later
-      billData: {
-        id: `pdf-${Date.now()}`,
-        vendor: 'Unknown',
-        amount: 0,
-        dueDate: new Date(),
-        isPaid: false,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      }
-    };
-  } catch (error) {
-    console.error('Error extracting from PDF:', error);
-    return {
-      success: false,
-      confidence: 0,
-      error: error instanceof Error ? error.message : String(error),
-      source: 'pdf'
-    };
-  }
-}; 
+// Deprecated function has been removed - please use the BillExtractor class instead 
