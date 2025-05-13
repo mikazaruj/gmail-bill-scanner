@@ -1,73 +1,22 @@
 /**
- * Clean PDF Extractor
+ * Enhanced PDF Text Extractor
  * 
- * Pure pdfjs-dist implementation with no DOM dependencies,
- * optimized for service worker environments.
+ * This implementation works in service worker contexts
+ * by completely avoiding any DOM dependencies
  */
 
-// @ts-ignore - Directly import from the main library
-import * as pdfjsLib from 'pdfjs-dist';
+// DO NOT import PDF.js directly as it causes "document is not defined" errors
+// Instead, we'll use a simpler binary analysis approach for service workers
 
-// Configure worker URL globally - use relative URL to worker file or a passed URL
-let WORKER_URL = './pdf.worker.min.js';
-
-// Detect service worker context immediately
-const IS_SERVICE_WORKER = typeof self !== 'undefined' && 
-                         typeof window === 'undefined' && 
-                         typeof document === 'undefined' &&
-                         'skipWaiting' in self;
-
-// Configure PDF.js safely regardless of environment
-try {
-  if (IS_SERVICE_WORKER) {
-    // In service worker context, immediately force disableWorker to true
-    console.log('[PDF Extractor] Service worker context detected, disabling nested workers');
-    
-    // Ensure we don't try to set a workerSrc in service worker context
-    if ((pdfjsLib as any).GlobalWorkerOptions) {
-      (pdfjsLib as any).GlobalWorkerOptions.workerSrc = '';
-    }
-  } else {
-    // Only in browser context, set up worker URL
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
-      WORKER_URL = chrome.runtime.getURL('pdf.worker.min.js');
-    }
-    
-    if ((pdfjsLib as any).GlobalWorkerOptions) {
-      (pdfjsLib as any).GlobalWorkerOptions.workerSrc = WORKER_URL;
-    }
-  }
-} catch (error) {
-  console.error('[PDF Extractor] Error configuring PDF.js:', error);
-  // Fail gracefully, we'll still try to process PDFs without worker
+// Type definitions
+export interface PdfExtractionOptions {
+  language?: string;
+  includePosition?: boolean;
+  timeout?: number;
+  workerUrl?: string; // Keeping compatibility with previous API
 }
 
-/**
- * Set custom worker URL
- * 
- * @param url - URL to the PDF.js worker file
- */
-export function setPdfWorkerUrl(url: string): void {
-  if (IS_SERVICE_WORKER) {
-    console.log('[PDF Extractor] In service worker context, worker URL ignored');
-    return;
-  }
-  
-  try {
-    WORKER_URL = url;
-    if ((pdfjsLib as any).GlobalWorkerOptions) {
-      (pdfjsLib as any).GlobalWorkerOptions.workerSrc = WORKER_URL;
-    }
-  } catch (error) {
-    console.error('[PDF Extractor] Error setting worker URL:', error);
-  }
-}
-
-/**
- * PDF extraction result
- */
 export interface PdfExtractionResult {
-  success: boolean;
   text: string;
   pages?: Array<{
     pageNumber: number;
@@ -80,17 +29,26 @@ export interface PdfExtractionResult {
       height: number;
     }>;
   }>;
+  success: boolean;
+  items?: PdfTextItem[];
   error?: string;
 }
 
-/**
- * PDF extraction options
- */
-export interface PdfExtractionOptions {
-  includePosition?: boolean;
-  timeout?: number; // in milliseconds
-  workerUrl?: string; // optional custom worker URL
+export interface PdfTextItem {
+  text: string;
+  page: number;
+  x?: number;
+  y?: number;
 }
+
+/**
+ * Detect if running in a service worker context
+ */
+const IS_SERVICE_WORKER = 
+  typeof self !== 'undefined' && 
+  typeof window === 'undefined' && 
+  typeof document === 'undefined' &&
+  'skipWaiting' in self;
 
 /**
  * Check if code is running in a service worker context
@@ -120,38 +78,32 @@ export function isServiceWorkerContext(): boolean {
 }
 
 /**
- * Extract text from a PDF using pdfjs-dist
- * 
- * @param pdfData - PDF data as ArrayBuffer or Uint8Array
- * @param options - Extraction options
- * @returns Promise with extraction result
+ * Dummy function for compatibility with previous API
+ */
+export function setPdfWorkerUrl(url: string): void {
+  console.log('[PDF Extractor] Worker URL setting is ignored in this implementation');
+  // No-op since we don't use workers in this implementation
+}
+
+/**
+ * Perform PDF text extraction with proper service worker handling
  */
 export async function extractPdfText(
   pdfData: ArrayBuffer | Uint8Array,
   options: PdfExtractionOptions = {}
 ): Promise<PdfExtractionResult> {
+  console.log(`[PDF Extractor] Service worker detection: Standard check: ${IS_SERVICE_WORKER}, Has SW API: ${typeof self !== 'undefined' && 'skipWaiting' in self}, Lacks DOM: ${typeof document === 'undefined'}`);
+  
+  console.log(`[PDF Extractor] Starting extraction with environment:`, { 
+    serviceWorker: isServiceWorkerContext(),
+    hasWindow: typeof window !== 'undefined',
+    hasDocument: typeof document !== 'undefined'
+  });
+
   try {
-    console.log(`[PDF Extractor] Starting extraction with environment:`, { 
-      serviceWorker: isServiceWorkerContext(),
-      hasWindow: typeof window !== 'undefined',
-      hasDocument: typeof document !== 'undefined'
-    });
-    
-    // Set custom worker URL if provided and not in service worker
-    if (options.workerUrl && !isServiceWorkerContext()) {
-      setPdfWorkerUrl(options.workerUrl);
-    }
-    
-    // Normalize input to Uint8Array
-    const data = pdfData instanceof Uint8Array 
-      ? pdfData 
-      : new Uint8Array(pdfData);
-    
-    console.log(`[PDF Extractor] Starting extraction with PDF.js (service worker: ${isServiceWorkerContext()})`);
-    
     // Handle timeout if specified
     let timeoutId: NodeJS.Timeout | null = null;
-    const extractionPromise = performExtraction(data, options);
+    const extractionPromise = performBinaryExtraction(pdfData, options);
     
     if (options.timeout) {
       const timeoutPromise = new Promise<PdfExtractionResult>((_, reject) => {
@@ -171,213 +123,347 @@ export async function extractPdfText(
       // No timeout specified, just return the extraction promise
       return await extractionPromise;
     }
-  } catch (error: any) {
-    console.error('[PDF Extractor] Error during PDF extraction:', error);
-    
-    // Better error message for document not defined errors
-    if (error.message && error.message.includes('document is not defined')) {
-      console.error('[PDF Extractor] Browser document API was required but unavailable in this context');
-      return {
-        success: false,
-        text: '',
-        error: 'PDF extraction failed: document is not defined (this is a service worker environment issue)'
-      };
-    }
-    
+  } catch (error) {
+    console.error('[PDF Extractor] Extraction failed:', error);
     return {
-      success: false,
       text: '',
-      error: `PDF extraction error: ${error.message || 'Unknown error'}`
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error during PDF extraction'
     };
   }
 }
 
 /**
- * Perform the actual PDF extraction
+ * Binary extraction that works in service workers
+ * This completely avoids any DOM dependencies
  */
-async function performExtraction(
-  data: Uint8Array,
+async function performBinaryExtraction(
+  data: ArrayBuffer | Uint8Array,
   options: PdfExtractionOptions
 ): Promise<PdfExtractionResult> {
+  console.log(`[PDF Extractor] Starting binary extraction (service worker: ${IS_SERVICE_WORKER})`);
+  
+  // Ensure data is in the right format
+  const pdfData = data instanceof ArrayBuffer 
+    ? new Uint8Array(data) 
+    : data;
+  
   try {
-    // Always disable worker in service worker context
-    const inServiceWorker = isServiceWorkerContext();
-    
-    if (inServiceWorker) {
-      console.log(`[PDF Extractor] Running in service worker context, disabling PDF.js worker`);
-    }
-    
-    // Add more detailed environment logging for diagnostics
-    console.log(`[PDF Extractor] Environment: ` + 
-      `ServiceWorker: ${inServiceWorker}, ` +
-      `Window defined: ${typeof window !== 'undefined'}, ` +
-      `Document defined: ${typeof document !== 'undefined'}`);
-    
-    // Create PDF loading options
-    const loadingOptions: any = {
-      data,
-      disableFontFace: true,
-      disableRange: true,
-      disableStream: false,
-      disableWorker: true, // Always disable worker to be safe
-      cMapUrl: undefined,
-      cMapPacked: false,
-      standardFontDataUrl: undefined,
-      useSystemFonts: false,
-      isEvalSupported: false,
-      useWorkerFetch: false
-    };
-    
-    // Load the PDF document with error handling
-    let loadingTask;
-    try {
-      loadingTask = (pdfjsLib as any).getDocument(loadingOptions);
-    } catch (initError: any) {
-      console.error('[PDF Extractor] Error initializing PDF document:', initError);
+    // First check if it's a PDF
+    if (!isPdf(pdfData)) {
       return {
-        success: false,
         text: '',
-        error: `PDF initialization failed: ${initError.message || 'Unknown error'}`
+        success: false,
+        error: 'Not a valid PDF file'
       };
     }
     
-    // Wait for the PDF to load with error handling
-    let pdfDoc;
-    try {
-      pdfDoc = await loadingTask.promise;
-    } catch (loadError: any) {
-      console.error('[PDF Extractor] Error loading PDF document:', loadError);
+    // Extract text directly from binary data
+    const extractedText = extractTextFromBinary(pdfData, options);
+    
+    // If we couldn't extract any text
+    if (!extractedText || extractedText.trim().length === 0) {
       return {
-        success: false,
         text: '',
-        error: `PDF loading failed: ${loadError.message || 'Unknown error'}`
+        success: false,
+        error: 'No text extracted from PDF'
       };
     }
     
-    // Get total page count
-    const pageCount = pdfDoc.numPages;
-    console.log(`[PDF Extractor] PDF loaded with ${pageCount} pages`);
-    
-    // Process each page to extract text
-    const allPages: Array<{
-      pageNumber: number;
-      text: string;
-      items?: Array<{
-        text: string;
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-      }>;
-    }> = [];
-    
-    let fullText = '';
-    
-    for (let i = 1; i <= pageCount; i++) {
-      try {
-        // Get the page
-        const page = await pdfDoc.getPage(i);
-        
-        // Get text content with error handling
-        let textContent;
-        try {
-          textContent = await page.getTextContent();
-        } catch (textError: any) {
-          console.error(`[PDF Extractor] Error getting text content for page ${i}:`, textError);
-          // Skip this page but continue with others
-          continue;
-        }
-        
-        // Extract the page text
-        const pageText = textContent.items
-          .map((item: any) => 'str' in item ? item.str : '')
-          .join(' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-        
-        // Create the page info object
-        const pageInfo: {
-          pageNumber: number;
-          text: string;
-          items?: Array<{
-            text: string;
-            x: number;
-            y: number;
-            width: number;
-            height: number;
-          }>;
-        } = {
-          pageNumber: i,
-          text: pageText
-        };
-        
-        // Add position information if requested
-        if (options.includePosition) {
-          const textItems: Array<{
-            text: string;
-            x: number;
-            y: number;
-            width: number;
-            height: number;
-          }> = [];
-          
-          for (const item of textContent.items) {
-            if ('str' in item) {
-              textItems.push({
-                text: item.str,
-                x: item.transform[4],
-                y: item.transform[5],
-                width: item.width || 0,
-                height: item.height || 0
-              });
-            }
-          }
-          
-          pageInfo.items = textItems;
-        }
-        
-        // Add page to result
-        allPages.push(pageInfo);
-        fullText += pageText + '\n\n';
-        
-        console.log(`[PDF Extractor] Extracted text from page ${i}`);
-        
-        // Free memory after each page
-        try {
-          page.cleanup();
-        } catch (cleanupError) {
-          console.warn(`[PDF Extractor] Error cleaning up page ${i}:`, cleanupError);
-          // Continue even if cleanup fails
-        }
-      } catch (pageError: any) {
-        console.error(`[PDF Extractor] Error processing page ${i}:`, pageError);
-        // Continue with next page
+    // For compatibility, create a simple page structure
+    const pages = [
+      {
+        pageNumber: 1,
+        text: extractedText
       }
-    }
-    
-    // Check if we extracted any text
-    if (fullText.trim().length === 0) {
-      return {
-        success: false,
-        text: '',
-        error: 'No text found in PDF'
-      };
-    }
+    ];
     
     // Return the extracted text
     return {
-      success: true,
-      text: fullText,
-      pages: allPages
+      text: extractedText,
+      pages: pages,
+      success: true
     };
-  } catch (error: any) {
-    console.error('[PDF Extractor] Extraction error:', error);
+  } catch (error) {
+    console.error('[PDF Extractor] Error in binary extraction:', error);
     return {
-      success: false,
       text: '',
-      error: `PDF extraction failed: ${error.message || 'Unknown error'}`
+      success: false,
+      error: `Binary extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}`
     };
   }
+}
+
+/**
+ * Extract text directly from PDF binary data
+ * This uses direct binary analysis without requiring the PDF.js library
+ * 
+ * Completely rewritten for improved memory efficiency to avoid stack overflow
+ */
+function extractTextFromBinary(data: Uint8Array, options: PdfExtractionOptions = {}): string {
+  console.log(`[PDF Extractor] Extracting text from binary PDF data (${data.length} bytes)`);
+  
+  try {
+    // Safety check
+    if (!data || data.length < 100) {
+      console.log('[PDF Extractor] PDF data too small, returning empty result');
+      return '';
+    }
+    
+    // Set safe limits to prevent memory issues
+    const MAX_PROCESS_SIZE = Math.min(data.length, 300000); // Process at most 300KB
+    const MAX_CHUNKS = 200; // Maximum number of text chunks to collect
+    const MAX_CHUNK_SIZE = 2000; // Maximum size of a single chunk
+    
+    // Use a Set to deduplicate chunks automatically
+    const textChunks = new Set<string>();
+    
+    // PART 1: Scan for text between parentheses (common in PDFs)
+    // Process the data in smaller segments to avoid stack issues
+    const SEGMENT_SIZE = 10000; // Process 10KB at a time
+    
+    console.log('[PDF Extractor] Starting iterative chunk extraction');
+    
+    for (let segmentStart = 0; segmentStart < MAX_PROCESS_SIZE; segmentStart += SEGMENT_SIZE) {
+      const segmentEnd = Math.min(segmentStart + SEGMENT_SIZE, MAX_PROCESS_SIZE);
+      
+      let inTextChunk = false;
+      let currentChunk = '';
+      let skipNext = false;
+      let nestingLevel = 0;
+      
+      // Process this segment byte by byte
+      for (let i = segmentStart; i < segmentEnd; i++) {
+        // Safety check to avoid memory issues
+        if (currentChunk.length > MAX_CHUNK_SIZE) {
+          if (currentChunk.length > 3 && /[a-zA-Z0-9]/.test(currentChunk)) {
+            textChunks.add(currentChunk);
+          }
+          currentChunk = '';
+          inTextChunk = false;
+          nestingLevel = 0;
+          
+          // If we've collected enough chunks, stop processing
+          if (textChunks.size >= MAX_CHUNKS) break;
+        }
+        
+        const byte = data[i];
+        
+        // Handle escape sequences
+        if (skipNext) {
+          skipNext = false;
+          continue;
+        }
+        
+        // Handle opening and closing parentheses
+        if (byte === 0x28) { // '('
+          if (!inTextChunk) {
+            inTextChunk = true;
+            currentChunk = '';
+          } else {
+            nestingLevel++;
+            currentChunk += '(';
+          }
+          continue;
+        }
+        
+        if (byte === 0x29) { // ')'
+          if (inTextChunk) {
+            if (nestingLevel > 0) {
+              nestingLevel--;
+              currentChunk += ')';
+            } else {
+              // End of text chunk
+              if (currentChunk.length > 3 && /[a-zA-Z0-9]/.test(currentChunk)) {
+                textChunks.add(currentChunk);
+              }
+              currentChunk = '';
+              inTextChunk = false;
+            }
+          }
+          continue;
+        }
+        
+        // Handle escape character
+        if (byte === 0x5C) { // '\'
+          skipNext = true;
+          continue;
+        }
+        
+        // Add normal characters to the current chunk
+        if (inTextChunk && byte >= 32 && byte < 127) {
+          currentChunk += String.fromCharCode(byte);
+        }
+      }
+      
+      // Add the final chunk from this segment if it exists
+      if (currentChunk.length > 3 && /[a-zA-Z0-9]/.test(currentChunk)) {
+        textChunks.add(currentChunk);
+      }
+      
+      // If we've collected enough chunks, stop processing
+      if (textChunks.size >= MAX_CHUNKS) break;
+    }
+    
+    // PART 2: Look for Hungarian keywords (non-recursive approach)
+    const hungarianKeywords = [
+      'számla', 'fizetendő', 'összeg', 'forint', 'végösszeg', 
+      'áfa', 'határidő', 'teljesítés', 'kelte', 'dátum'
+    ];
+    
+    // Process a maximum of 100KB for keyword searching
+    const keywordSearchLimit = Math.min(data.length, 100000);
+    
+    // Convert a portion of data to ASCII for simple text search
+    let asciiBuffer = '';
+    for (let i = 0; i < keywordSearchLimit; i++) {
+      if (data[i] >= 32 && data[i] < 127) {
+        asciiBuffer += String.fromCharCode(data[i]);
+      } else {
+        asciiBuffer += ' ';
+      }
+      
+      // Process buffer in chunks to avoid memory issues
+      if (asciiBuffer.length >= 10000) {
+        // Search for keywords in this buffer segment
+        for (const keyword of hungarianKeywords) {
+          const keywordIndex = asciiBuffer.indexOf(keyword);
+          if (keywordIndex >= 0) {
+            // Extract context around the keyword
+            const start = Math.max(0, keywordIndex - 20);
+            const end = Math.min(asciiBuffer.length, keywordIndex + keyword.length + 40);
+            const context = asciiBuffer.substring(start, end).trim();
+            
+            if (context.length > 0) {
+              textChunks.add(context);
+            }
+          }
+        }
+        
+        // Keep only the last 100 characters for overlapping keyword detection
+        asciiBuffer = asciiBuffer.substring(asciiBuffer.length - 100);
+      }
+    }
+    
+    // Look for amount patterns in the ASCII buffer
+    if (asciiBuffer.length > 0) {
+      // Simple regex patterns for amounts
+      const simpleAmountPattern = /\d{1,3}(?:[ .,]\d{3})*(?:[,.]\d{1,2})/g;
+      const matches = asciiBuffer.match(simpleAmountPattern);
+      
+      if (matches) {
+        for (const match of matches) {
+          if (match.length > 3) {
+            // Try to grab context around the amount
+            const matchIndex = asciiBuffer.indexOf(match);
+            if (matchIndex >= 0) {
+              const start = Math.max(0, matchIndex - 15);
+              const end = Math.min(asciiBuffer.length, matchIndex + match.length + 15);
+              textChunks.add(asciiBuffer.substring(start, end).trim());
+            }
+          }
+        }
+      }
+    }
+    
+    // PART 3: ASCII string extraction (simplistic approach)
+    // Only do this if we haven't found enough text yet
+    if (textChunks.size < 10) {
+      let currentText = '';
+      let consecutiveChars = 0;
+      
+      // Process a small part of the file to find ASCII strings
+      const limit = Math.min(data.length, 50000);
+      
+      for (let i = 0; i < limit; i++) {
+        if (data[i] >= 32 && data[i] < 127) {
+          currentText += String.fromCharCode(data[i]);
+          consecutiveChars++;
+          
+          // If we find 5+ consecutive ASCII chars, consider it a text chunk
+          if (consecutiveChars >= 5 && currentText.length > 0) {
+            if (/[a-zA-Z]/.test(currentText)) {
+              textChunks.add(currentText);
+            }
+            
+            // Avoid memory issues by resetting after a certain length
+            if (currentText.length > 100) {
+              currentText = '';
+              consecutiveChars = 0;
+            }
+          }
+        } else {
+          // Reset on non-ASCII
+          if (currentText.length > 5 && /[a-zA-Z]/.test(currentText)) {
+            textChunks.add(currentText);
+          }
+          currentText = '';
+          consecutiveChars = 0;
+        }
+        
+        // If we've collected enough chunks, stop processing
+        if (textChunks.size >= MAX_CHUNKS) break;
+      }
+    }
+    
+    // Convert the Set to an Array for further processing
+    const chunks = Array.from(textChunks);
+    
+    // Prioritize chunks with Hungarian keywords 
+    chunks.sort((a, b) => {
+      const aHasKeyword = hungarianKeywords.some(kw => a.toLowerCase().includes(kw));
+      const bHasKeyword = hungarianKeywords.some(kw => b.toLowerCase().includes(kw));
+      
+      if (aHasKeyword && !bHasKeyword) return -1;
+      if (!aHasKeyword && bHasKeyword) return 1;
+      return b.length - a.length; // Longer chunks first otherwise
+    });
+    
+    // Take the top MAX_CHUNKS chunks
+    const limitedChunks = chunks.slice(0, MAX_CHUNKS);
+    
+    // Combine chunks with spaces, limiting total size
+    const result = limitedChunks.join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, 5000); // Cap total result size
+    
+    // Log the result
+    console.log(`[PDF Extractor] Successfully extracted ${result.length} characters from PDF`);
+    return result;
+  } catch (e) {
+    // Catch all errors
+    console.error('[PDF Extractor] Error in binary text extraction:', e);
+    
+    // Return empty string on error
+    return '';
+  }
+}
+
+/**
+ * Extract Hungarian-specific bill data from text
+ */
+function extractHungarianSpecificData(text: string): string[] {
+  const items: string[] = [];
+  
+  // Look for common Hungarian bill patterns
+  const patterns = [
+    /fizetendő\s+összeg\s*:\s*([0-9.,\s]+)/i,
+    /végösszeg\s*:\s*([0-9.,\s]+)/i,
+    /összesen\s*:\s*([0-9.,\s]+)/i,
+    /fizetési\s+határidő\s*:\s*([0-9.\s]+)/i,
+    /fogyasztási\s+időszak\s*:\s*([^\n]+)/i,
+    /számla\s+sorszáma\s*:\s*([^\n]+)/i
+  ];
+  
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      items.push(match[0]);
+    }
+  }
+  
+  return items;
 }
 
 /**
