@@ -2215,13 +2215,13 @@ async function handleScanEmails(
                         // Create a bill object that matches the Bill interface properly
                         const bill: Bill = {
                           id: `${messageId}-${attachmentData.id}`,
-                          vendor: pdfResult.billData?.vendor || 'Unknown',
+                          vendor: (pdfResult.billData as any)?.vendor || 'Unknown',
                           amount: typeof pdfResult.billData?.amount === 'string' 
                             ? parseFloat(pdfResult.billData.amount) || 0 
                             : pdfResult.billData?.amount || 0,
                           currency: 'HUF',  // Default currency
                           date: new Date(), // Current date as fallback
-                          category: pdfResult.billData?.category || 'Utility',
+                          category: (pdfResult.billData as any)?.category || 'Utility',
                           dueDate: pdfResult.billData?.dueDate ? new Date(pdfResult.billData.dueDate) : undefined,
                           isPaid: false,
                           source: {
@@ -2259,7 +2259,8 @@ async function handleScanEmails(
                         attachmentData.id,
                         attachmentData.fileName,
                         {
-                          language: settings.inputLanguage as 'en' | 'hu' | undefined
+                          language: settings.inputLanguage as 'en' | 'hu' | undefined,
+                          userId: userId // Pass userId to enable field mapping
                         }
                       );
                       
@@ -3603,7 +3604,6 @@ async function processInBackground(message: any, sendResponse: Function) {
     const result = await extractPdfText(pdfData, {
       language,
       includePosition: true,
-      disableWorker: true, // Disable worker in background context
       timeout: 60000 // 60 second timeout
     });
     

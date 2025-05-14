@@ -28,6 +28,8 @@ export interface PdfExtractionContext {
   attachmentId: string;
   fileName: string;
   language?: 'en' | 'hu';
+  userId?: string; // User ID for mapping fields to user-defined fields
+  pdfText?: string; // Optional pre-extracted text
 }
 
 /**

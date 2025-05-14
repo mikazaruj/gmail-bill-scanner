@@ -6,7 +6,8 @@
 
 import { 
   Bill, 
-  BillExtractionResult 
+  BillExtractionResult,
+  DynamicBill  // Add DynamicBill import
 } from "../../types/Bill";
 import { GmailMessage } from "../../types";
 import { 
@@ -21,6 +22,7 @@ import { getLanguagePatterns } from "./patterns/patternLoader";
 import { extractTextFromPdf } from '../pdf/pdfService';
 import { ExtractionResult } from "../../types";
 import { decodeBase64 } from '../../utils/base64Decode';
+import { createBill } from "../../utils/billTransformers"; // Import createBill
 
 // Gmail message header interface
 interface GmailMessageHeader {
@@ -259,7 +261,7 @@ export class BillExtractor {
     messageId: string,
     attachmentId: string,
     fileName: string,
-    options: { language?: 'en' | 'hu'; emailBill?: Bill } = {}
+    options: { language?: 'en' | 'hu'; emailBill?: Bill; userId?: string } = {}
   ): Promise<BillExtractionResult> {
     try {
       if (!this.initialized) {
@@ -268,6 +270,13 @@ export class BillExtractor {
       
       // If we already have a bill from the email, use that information
       const emailBill = options.emailBill;
+      
+      // Log the userId if available in options
+      if (options.userId) {
+        console.log(`PDF extraction with userId: ${options.userId}`);
+      } else {
+        console.log(`PDF extraction without userId - no user context available`);
+      }
       
       // Extract text from PDF
       let extractedText: string = "";
@@ -322,8 +331,11 @@ export class BillExtractor {
           attachmentId,
           fileName,
           pdfData: processedPdfData, // Use the extracted text as string pdfData
-          language: options.language
+          language: options.language,
+          userId: options.userId // Pass userId from options to context
         };
+        
+        console.log(`Passing context to ${strategy.name} with userId: ${context.userId || 'none'}`);
         
         try {
           const result = await strategy.extractFromPdf(context);
@@ -331,6 +343,20 @@ export class BillExtractor {
           // Log confidence for tracking
           if (result.confidence) {
             console.log(`${strategy.name} PDF confidence: ${result.confidence}`);
+          }
+          
+          // Also log extraction results for debugging
+          if (result.success && result.bills.length > 0) {
+            const bill = result.bills[0];
+            console.log(`${strategy.name} extracted bill:`, {
+              vendor: bill.vendor,
+              amount: bill.amount,
+              invoiceNumber: bill.invoiceNumber,
+              dueDate: bill.dueDate,
+              accountNumber: bill.accountNumber
+            });
+          } else {
+            console.log(`${strategy.name} extraction failed:`, result.error);
           }
           
           // Keep track of best result by confidence
@@ -347,9 +373,19 @@ export class BillExtractor {
             // If we have both email and PDF bill, merge them for the best result
             if (emailBill && result.bills[0]) {
               console.log('Found both email and PDF bills, merging for best results');
-              // Replace the first bill with the merged bill
+              
+              // Ensure both bills have required fields before merging
+              const { ensureBillFormat } = await import('../dynamicBillFactory');
+              
+              // Convert emailBill to DynamicBill if needed
+              const dynamicEmailBill = ensureBillFormat(emailBill);
+              
+              // Convert pdfBill to DynamicBill if needed
               const pdfBill = result.bills[0];
-              result.bills[0] = this.mergeBills(emailBill, pdfBill);
+              const dynamicPdfBill = ensureBillFormat(pdfBill);
+              
+              // Replace the first bill with the merged bill
+              result.bills[0] = this.mergeBills(dynamicEmailBill, dynamicPdfBill);
             }
             
             return result;
@@ -481,11 +517,11 @@ export class BillExtractor {
    * @param pdfBill Bill extracted from PDF
    * @returns Merged bill with best information from both sources
    */
-  mergeBills(emailBill: Bill, pdfBill: Bill): Bill {
+  mergeBills(emailBill: DynamicBill, pdfBill: DynamicBill): DynamicBill {
     console.log('Merging bills from email and PDF sources');
 
     // Create a new bill with the best information from both sources
-    const mergedBill: Bill = {
+    const mergedBill: DynamicBill = {
       ...emailBill, // Start with email bill data
       
       // Use PDF data for fields that are missing or "Unknown" in email
@@ -494,7 +530,7 @@ export class BillExtractor {
         : pdfBill.vendor,
       
       // For amount, prefer the one that's non-zero
-      amount: emailBill.amount > 0 ? emailBill.amount : pdfBill.amount,
+      amount: (emailBill.amount && emailBill.amount > 0) ? emailBill.amount : pdfBill.amount,
       
       // For dates, use the more specific one
       date: emailBill.date || pdfBill.date,
@@ -529,6 +565,108 @@ export class BillExtractor {
     });
     
     return mergedBill;
+  }
+
+  /**
+   * Create a dynamic bill from extracted data
+   * 
+   * @param extractedData Extracted data from PDF or email
+   * @param options Additional options including userId
+   * @returns Promise resolving to a DynamicBill
+   */
+  async createDynamicBillFromExtracted(
+    extractedData: {
+      messageId?: string;
+      attachmentId?: string;
+      fileName?: string;
+      vendor?: string;
+      amount?: number;
+      currency?: string;
+      date?: Date;
+      dueDate?: Date;
+      category?: string;
+      accountNumber?: string;
+      invoiceNumber?: string;
+      [key: string]: any;
+    },
+    options: {
+      userId?: string;
+      source?: 'pdf' | 'email' | 'manual' | 'combined';
+      language?: 'en' | 'hu';
+      confidence?: number;
+    } = {}
+  ): Promise<DynamicBill> {
+    try {
+      // If userId is provided, use the dynamicBillFactory
+      if (options.userId) {
+        // Import dynamically to avoid circular dependencies
+        const { createDynamicBill, ensureBillFormat } = await import('../dynamicBillFactory');
+        
+        // Prepare core bill fields
+        const coreBillFields = {
+          id: extractedData.messageId && extractedData.attachmentId 
+              ? `${options.source || 'extraction'}-${extractedData.messageId}-${extractedData.attachmentId}`
+              : `extraction-${Date.now()}`,
+          source: {
+            type: options.source || 'manual',
+            messageId: extractedData.messageId,
+            attachmentId: extractedData.attachmentId,
+            fileName: extractedData.fileName
+          },
+          extractionMethod: `bill-extractor-${Date.now()}`,
+          extractionConfidence: options.confidence || 0.5,
+        };
+        
+        // Create dynamic bill
+        console.log(`Creating dynamic bill with user ID: ${options.userId}`);
+        const dynamicBill = await createDynamicBill(coreBillFields, options.userId, extractedData);
+        
+        // Ensure bill has all required fields for compatibility
+        return ensureBillFormat(dynamicBill);
+      } else {
+        // Import createBill for backward compatibility
+        const bill = createBill({
+          id: extractedData.messageId && extractedData.attachmentId 
+              ? `${options.source || 'extraction'}-${extractedData.messageId}-${extractedData.attachmentId}`
+              : `extraction-${Date.now()}`,
+          vendor: extractedData.vendor || 'Unknown',
+          amount: extractedData.amount || 0,
+          currency: extractedData.currency || 'HUF',
+          date: extractedData.date || new Date(),
+          category: extractedData.category || 'Other',
+          dueDate: extractedData.dueDate,
+          accountNumber: extractedData.accountNumber,
+          invoiceNumber: extractedData.invoiceNumber,
+          source: {
+            type: options.source || 'manual',
+            messageId: extractedData.messageId,
+            attachmentId: extractedData.attachmentId,
+            fileName: extractedData.fileName
+          },
+          extractionMethod: 'bill-extractor',
+          language: options.language,
+          extractionConfidence: options.confidence || 0.5
+        });
+        
+        return bill;
+      }
+    } catch (error) {
+      console.error('Error creating dynamic bill from extracted data:', error);
+      // Fallback to basic bill creation
+      return {
+        id: `extraction-${Date.now()}`,
+        vendor: extractedData.vendor || 'Unknown',
+        amount: extractedData.amount || 0,
+        currency: extractedData.currency || 'HUF',
+        date: extractedData.date || new Date(),
+        category: extractedData.category || 'Other',
+        source: {
+          type: options.source || 'manual'
+        },
+        extractionMethod: 'fallback',
+        language: options.language
+      };
+    }
   }
 }
 

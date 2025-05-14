@@ -78,6 +78,9 @@ export class UnifiedPatternMatcher {
           console.log('Extracting text from PDF data');
           textToAnalyze = await this.extractTextFromPdf(context.pdfData);
           
+          // Add a debug log to show the first part of the extracted text
+          console.log('PDF Text (first 500 chars):', textToAnalyze.substring(0, 500));
+          
           if (debug) {
             debugData.extractedText = textToAnalyze.substring(0, 1000); // Truncate for debug output
           }
@@ -157,11 +160,15 @@ export class UnifiedPatternMatcher {
       // If we have a user ID, get their field mappings
       if (context.userId) {
         try {
+          console.log(`Getting user field mappings for user ID: ${context.userId}`);
+          
           // Import the user field mapping service
           const { getUserFieldMappings, mapFieldNameToPatternType } = await import('../userFieldMappingService');
           
           // Get user field mappings
           userFields = await getUserFieldMappings(context.userId);
+          
+          console.log(`Retrieved ${userFields.length} user field mappings:`, userFields);
           
           if (userFields.length > 0) {
             console.log(`Using ${userFields.length} user-defined fields for extraction`);
@@ -178,6 +185,7 @@ export class UnifiedPatternMatcher {
             // Map user fields to internal field names
             const mappedFields = userFields.map(field => {
               const patternType = mapFieldNameToPatternType(field.name, field.field_type);
+              console.log(`Mapped user field ${field.name} (${field.field_type}) to pattern type: ${patternType}`);
               
               // Map pattern types to internal field names
               const patternToInternalField: Record<string, string> = {
@@ -204,6 +212,7 @@ export class UnifiedPatternMatcher {
           }
         } catch (error) {
           console.error('Error getting user field mappings:', error);
+          console.error('Error details:', JSON.stringify(error));
           // Continue with default fields
         }
       }
@@ -339,36 +348,101 @@ export class UnifiedPatternMatcher {
         }
       }
       
-      // Create the bill
-      const bill = createBill({
-        id: context.messageId && context.attachmentId 
-            ? `pdf-${context.messageId}-${context.attachmentId}`
-            : `extraction-${Date.now()}`,
-        vendor,
-        amount,
-        currency,
-        date: billingDate,
-        category,
-        dueDate,
-        accountNumber: extractedFields.accountNumber || undefined,
-        invoiceNumber: extractedFields.invoiceNumber || undefined,
-        source: {
-          type: context.pdfData ? 'pdf' : 'manual',
-          messageId: context.messageId,
-          attachmentId: context.attachmentId,
-          fileName: context.fileName
-        },
-        extractionMethod: 'unified-pattern-matcher',
-        language,
-        extractionConfidence: confidence
-      });
-      
-      return {
-        success: true,
-        bills: [bill],
-        confidence,
-        debugData: debug ? debugData : undefined
-      };
+      // Import dynamicBillFactory
+      try {
+        // Import dynamically to avoid circular dependencies
+        const { createDynamicBill, mapExtractedValues, ensureBillFormat } = await import('../dynamicBillFactory');
+        
+        // Prepare core bill fields
+        const coreBillFields = {
+          id: context.messageId && context.attachmentId 
+              ? `pdf-${context.messageId}-${context.attachmentId}`
+              : `extraction-${Date.now()}`,
+          source: {
+            type: (context.pdfData ? 'pdf' : 'manual') as 'pdf' | 'manual' | 'email' | 'combined',
+            messageId: context.messageId,
+            attachmentId: context.attachmentId,
+            fileName: context.fileName
+          },
+          extractionMethod: 'unified-pattern-matcher',
+          extractionConfidence: confidence,
+        };
+        
+        // Map all extracted fields to user-defined fields if userId is available
+        let mappedValues: Record<string, any> = {
+          vendor,
+          amount,
+          currency,
+          date: billingDate,
+          dueDate,
+          category,
+          accountNumber: extractedFields.accountNumber || undefined,
+          invoiceNumber: extractedFields.invoiceNumber || undefined,
+          language,
+        };
+        
+        // If userId is available, map values according to user-defined fields
+        if (context.userId) {
+          console.log(`Mapping bill fields using user ID: ${context.userId}`);
+          mappedValues = await mapExtractedValues(
+            { ...extractedFields, amount, currency, billingDate }, 
+            context.userId
+          );
+        }
+        
+        // Create dynamic bill based on user field mappings if userId is available
+        let bill;
+        if (context.userId) {
+          bill = await createDynamicBill(coreBillFields, context.userId, mappedValues);
+        } else {
+          // For compatibility with existing code when no userId is available
+          bill = ensureBillFormat({
+            ...coreBillFields,
+            ...mappedValues
+          });
+        }
+        
+        return {
+          success: true,
+          bills: [bill],
+          confidence,
+          debugData: debug ? debugData : undefined
+        };
+      } catch (error) {
+        console.error('Error creating dynamic bill:', error);
+        
+        // Fallback to old bill creation method
+        // Create the bill using the old approach
+        const bill = createBill({
+          id: context.messageId && context.attachmentId 
+              ? `pdf-${context.messageId}-${context.attachmentId}`
+              : `extraction-${Date.now()}`,
+          vendor,
+          amount,
+          currency,
+          date: billingDate,
+          category,
+          dueDate,
+          accountNumber: extractedFields.accountNumber || undefined,
+          invoiceNumber: extractedFields.invoiceNumber || undefined,
+          source: {
+            type: context.pdfData ? 'pdf' : 'manual',
+            messageId: context.messageId,
+            attachmentId: context.attachmentId,
+            fileName: context.fileName
+          },
+          extractionMethod: 'unified-pattern-matcher',
+          language,
+          extractionConfidence: confidence
+        });
+        
+        return {
+          success: true,
+          bills: [bill],
+          confidence,
+          debugData: debug ? debugData : undefined
+        };
+      }
     } catch (error) {
       console.error('Error in unified pattern matcher:', error);
       return {

@@ -1,7 +1,7 @@
 export async function getUserFieldMappings(userId: string): Promise<any[]> {
   try {
     // Dynamic import to avoid circular dependencies
-    const { getSupabaseClient } = await import('../supabase/client');
+    const { getSupabaseClient } = await import('./supabase/client');
     const supabase = await getSupabaseClient();
     
     // Query field mappings from Supabase

@@ -1,24 +1,18 @@
 /**
  * Unified Bill Data Model
  * 
- * Single, comprehensive bill data model to be used throughout the application
+ * Dynamic bill data model that supports user-defined fields
  */
 
-export interface Bill {
-  // Required fields
+/**
+ * Core system-required fields interface
+ * These fields are required for internal system operations
+ */
+export interface CoreBillFields {
+  // Required system fields for identification and basic operations
   id: string;
-  vendor: string;  // Standard term (instead of merchant/vendor)
-  amount: number;
-  currency: string;
-  date: Date;
-  category: string;
   
-  // Optional fields
-  dueDate?: Date;
-  accountNumber?: string;
-  isPaid?: boolean;
-  notes?: string;
-  invoiceNumber?: string;
+  // Source of the bill data for tracing purposes
   source?: {
     type: 'email' | 'pdf' | 'manual' | 'combined';
     messageId?: string;
@@ -32,9 +26,42 @@ export interface Bill {
   language?: 'en' | 'hu';
   confidence?: number;
   
-  // System fields
+  // System timestamps
   createdAt?: Date;
   updatedAt?: Date;
+}
+
+/**
+ * Dynamic Bill interface with user-defined fields
+ * Combines core system fields with flexible user fields
+ */
+export interface DynamicBill extends CoreBillFields {
+  // Dynamic field storage - allows any field to be added by name
+  [key: string]: any;
+  
+  // Commonly used fields - defined for type checking and backwards compatibility
+  // These will be dynamically populated based on user's field_mapping_view
+  vendor?: string;
+  amount?: number;
+  currency?: string;
+  date?: Date;
+  category?: string;
+  dueDate?: Date;
+  accountNumber?: string;
+  isPaid?: boolean;
+  notes?: string;
+  invoiceNumber?: string;
+}
+
+// Legacy interface for backward compatibility
+export interface Bill extends DynamicBill {
+  // Required fields in the old model are now optional in DynamicBill
+  // but defined here as required for backwards compatibility
+  vendor: string;
+  amount: number;
+  currency: string;
+  date: Date;
+  category: string;
 }
 
 /**
@@ -42,7 +69,7 @@ export interface Bill {
  */
 export interface BillExtractionResult {
   success: boolean;
-  bills: Bill[];
+  bills: DynamicBill[];
   error?: string;
   confidence?: number;
   debug?: {
