@@ -275,13 +275,9 @@ export class UserFieldExtractor implements ExtractionStrategy {
     try {
       // First get the user's field mappings
       const fieldMappings = await getFieldMappings(userId);
-      console.log(`Retrieved ${fieldMappings.length} field mappings for user ${userId}`);
+      console.log(`Retrieved ${fieldMappings.length} enabled field mappings for user ${userId}`);
       
-      // Filter to only enabled fields
-      const enabledFields = fieldMappings.filter(field => field.is_enabled);
-      console.log(`Found ${enabledFields.length} enabled field mappings`);
-      
-      if (enabledFields.length === 0) {
+      if (fieldMappings.length === 0) {
         console.warn('No enabled field mappings found for user');
         return {};
       }
@@ -290,7 +286,7 @@ export class UserFieldExtractor implements ExtractionStrategy {
       const result: Record<string, any> = {};
       
       // For each enabled field, try to extract data using patterns
-      for (const field of enabledFields) {
+      for (const field of fieldMappings) {
         const fieldName = field.name;
         const displayName = field.display_name;
         const fieldType = field.field_type || 'text';

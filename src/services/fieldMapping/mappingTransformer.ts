@@ -53,23 +53,15 @@ export async function mapBillToUserFields(
   userId: string
 ): Promise<Record<string, any>> {
   try {
-    // Get the field mappings for this user
+    // Get the field mappings for this user (only enabled fields)
     const fieldMappings = await getFieldMappings(userId);
     
     if (!fieldMappings || fieldMappings.length === 0) {
-      console.log('No field mappings found for user, returning original bill');
+      console.log('No enabled field mappings found for user, returning original bill');
       return bill;
     }
     
-    console.log(`Found ${fieldMappings.length} field mappings for user ${userId}`);
-    
-    // Get all enabled fields
-    const enabledFields = fieldMappings.filter(field => field.is_enabled);
-    console.log(`${enabledFields.length} enabled field mappings`);
-    
-    if (enabledFields.length === 0) {
-      return bill; // No mappings to apply
-    }
+    console.log(`Found ${fieldMappings.length} enabled field mappings for user ${userId}`);
     
     // Create a new object with user-defined field structure
     const result: Record<string, any> = {};
@@ -80,13 +72,15 @@ export async function mapBillToUserFields(
     result.updated_at = bill.updatedAt || new Date();
     
     // For each enabled field, try to find a value from the bill
-    for (const field of enabledFields) {
+    for (const field of fieldMappings) {
       const fieldName = field.name;
       const displayName = field.display_name || fieldName;
+      const column = field.column_mapping || '';
       
       // 1. If the bill already has this exact field name, use it directly
       if (bill[fieldName] !== undefined) {
         result[fieldName] = formatFieldValueForType(bill[fieldName], field.field_type);
+        console.log(`Mapped field ${fieldName} directly, value: ${result[fieldName]}`);
         continue;
       }
       
@@ -94,6 +88,7 @@ export async function mapBillToUserFields(
       const internalField = findInternalFieldForUserField(fieldName);
       if (internalField && bill[internalField] !== undefined) {
         result[fieldName] = formatFieldValueForType(bill[internalField], field.field_type);
+        console.log(`Mapped internal field ${internalField} to ${fieldName}, value: ${result[fieldName]}`);
         continue;
       }
       
@@ -101,9 +96,11 @@ export async function mapBillToUserFields(
       if (fieldName.includes('vendor') || fieldName.includes('issuer')) {
         if (typeof bill.vendor === 'object' && bill.vendor !== null && bill.vendor.name) {
           result[fieldName] = bill.vendor.name;
+          console.log(`Mapped vendor object.name to ${fieldName}, value: ${result[fieldName]}`);
           continue;
         } else if (typeof bill.vendor === 'string') {
           result[fieldName] = bill.vendor;
+          console.log(`Mapped vendor string to ${fieldName}, value: ${result[fieldName]}`);
           continue;
         }
       }
@@ -112,14 +109,17 @@ export async function mapBillToUserFields(
       if (fieldName.includes('date') && bill.date) {
         if (fieldName.includes('due') && bill.dueDate) {
           result[fieldName] = formatDate(bill.dueDate);
+          console.log(`Mapped dueDate to ${fieldName}, value: ${result[fieldName]}`);
         } else {
           result[fieldName] = formatDate(bill.date);
+          console.log(`Mapped date to ${fieldName}, value: ${result[fieldName]}`);
         }
         continue;
       }
       
       // Set default value if no matching field found
       result[fieldName] = getDefaultValueForField(field.field_type);
+      console.log(`No value found for ${fieldName}, using default: ${result[fieldName]}`);
     }
     
     return result;

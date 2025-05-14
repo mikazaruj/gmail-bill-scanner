@@ -236,48 +236,20 @@ export class UnifiedPatternMatcher {
       const vendor = extractedFields.vendor || 
                     (context.fileName ? context.fileName.split('.')[0] : 'Unknown');
       
-      // Check if this is an MVM bill
-      const isMvm = this.isMvmBill(processedText);
-      
-      // If this is an MVM bill, use specialized extraction
-      if (isMvm) {
-        console.log('Detected MVM bill, using specialized extraction');
-        const mvmFields = this.extractMvmFields(processedText);
-        
-        // Override extracted fields with MVM-specific ones
-        if (mvmFields.amount) {
-          extractedFields.amount = mvmFields.amount;
-        }
-        
-        if (mvmFields.invoiceNumber) {
-          extractedFields.invoiceNumber = mvmFields.invoiceNumber;
-        }
-        
-        if (mvmFields.customerId) {
-          extractedFields.accountNumber = mvmFields.customerId;
-        }
-        
-        if (mvmFields.billingPeriod) {
-          // Store in debug data
-          if (debug && debugData) {
-            debugData.billingPeriod = mvmFields.billingPeriod;
-          }
-        }
-        
-        if (mvmFields.dueDate) {
-          extractedFields.dueDate = mvmFields.dueDate;
-        }
-        
-        if (mvmFields.vendor) {
-          extractedFields.vendor = mvmFields.vendor;
-        }
+      // Detect bill type using the new method
+      const billType = this.detectBillType(processedText);
+      console.log(`Detected bill type: ${billType}`);
+
+      // Extract vendor based on bill type
+      const detectedVendor = this.extractVendorByBillType(processedText, billType);
+      if (detectedVendor !== 'Unknown') {
+        console.log(`Detected vendor: ${detectedVendor}`);
+        extractedFields.vendor = detectedVendor;
       }
-      
-      // Check if we're dealing with a Hungarian utility bill
-      const isHungarianUtility = language === 'hu' && this.isHungarianUtilityBill(processedText);
-      
-      if (isHungarianUtility) {
-        console.log('Detected Hungarian utility bill, using specialized extraction');
+
+      // Apply bill type specific extraction
+      if (billType === 'utility') {
+        console.log('Using utility bill extraction patterns');
         const utilityFields = this.extractHungarianUtilityBill(processedText);
         
         // Override extracted fields with utility-specific ones
@@ -307,13 +279,6 @@ export class UnifiedPatternMatcher {
         if (utilityFields.vendor) {
           extractedFields.vendor = utilityFields.vendor;
         }
-        
-        if (utilityFields.category) {
-          category = utilityFields.category;
-        }
-        
-        // Boost confidence for Hungarian utility bills
-        confidence += 0.2;
       }
       
       // Create the bill
@@ -732,5 +697,102 @@ export class UnifiedPatternMatcher {
     
     // If at least 3 indicators are present, it's likely a Hungarian utility bill
     return indicatorCount >= 3;
+  }
+
+  /**
+   * Detect bill type based on content patterns
+   * @param text The text to analyze
+   * @returns The detected bill type: 'utility', 'telecom', 'building_service', etc.
+   */
+  private detectBillType(text: string): string {
+    const lowercaseText = text.toLowerCase();
+    
+    // Detect utility bills (including electricity, gas, water)
+    if (lowercaseText.includes('áram') || 
+        lowercaseText.includes('energia') ||
+        lowercaseText.includes('gáz') || 
+        lowercaseText.includes('víz') ||
+        lowercaseText.includes('földgáz') || 
+        lowercaseText.includes('villamos') ||
+        lowercaseText.includes('villamosenergia') ||
+        lowercaseText.includes('energiakereskedelmi') ||
+        lowercaseText.includes('mvm') ||
+        lowercaseText.includes('eon') ||
+        lowercaseText.includes('tigáz') ||
+        lowercaseText.includes('vízmű')) {
+      return 'utility';
+    }
+    
+    // Detect building service bills
+    if (lowercaseText.includes('közös költség') || 
+        lowercaseText.includes('társasház') ||
+        lowercaseText.includes('lakás') || 
+        lowercaseText.includes('épület') ||
+        lowercaseText.includes('ingatlan') ||
+        lowercaseText.includes('lakásszövetkezet') ||
+        lowercaseText.includes('takarítás') ||
+        lowercaseText.includes('hulladék') ||
+        lowercaseText.includes('szemét')) {
+      return 'building_service';
+    }
+    
+    // Detect telecom bills
+    if (lowercaseText.includes('telefon') || 
+        lowercaseText.includes('mobil') ||
+        lowercaseText.includes('internet') || 
+        lowercaseText.includes('tv') ||
+        lowercaseText.includes('telekom') ||
+        lowercaseText.includes('vodafone') ||
+        lowercaseText.includes('yettel') ||
+        lowercaseText.includes('digi')) {
+      return 'telecom';
+    }
+    
+    // Default to general bill type
+    return 'general';
+  }
+
+  /**
+   * Extract vendor name based on bill type
+   * @param text The text to extract from
+   * @param billType The detected bill type
+   * @returns The extracted vendor name
+   */
+  private extractVendorByBillType(text: string, billType: string): string {
+    // Common vendor patterns applicable to all bill types
+    const commonPatterns = [
+      /(?:szolgáltató\s+neve\s*:|szolgáltató\s*:)\s*([A-Za-z0-9][\w\s\.-]+?)(?:[\s,\n]|$)/i,
+      /(?:kibocsátó|eladó|számlakibocsátó)\s*:\s*([A-Za-z0-9][\w\s\.-]+?)(?:[\s,\n]|$)/i
+    ];
+    
+    // Bill type specific patterns
+    const typeSpecificPatterns: Record<string, RegExp[]> = {
+      'utility': [
+        /(?:energia\s*szolgáltató|gázszolgáltató|áramszolgáltató|vízszolgáltató)\s*:\s*([A-Za-z0-9][\w\s\.-]+?)(?:[\s,\n]|$)/i,
+        /(MVM(?:\s+[A-Za-z0-9][\w\s\.-]+)?)(?:[\s,\n]|$)/i,
+        /(E\.ON(?:\s+[A-Za-z0-9][\w\s\.-]+)?)(?:[\s,\n]|$)/i
+      ],
+      'building_service': [
+        /(?:közös\s*képviselő|társasház|lakásszövetkezet)\s*:\s*([A-Za-z0-9][\w\s\.-]+?)(?:[\s,\n]|$)/i,
+        /(?:kezelő|üzemeltető)\s*:\s*([A-Za-z0-9][\w\s\.-]+?)(?:[\s,\n]|$)/i
+      ],
+      'telecom': [
+        /(Telekom|Vodafone|Yettel|Digi|UPC)(?:\s+[A-Za-z0-9][\w\s\.-]*)?(?:[\s,\n]|$)/i
+      ]
+    };
+    
+    // Combine common patterns with bill type specific patterns
+    const patternsToUse = [...commonPatterns, ...(typeSpecificPatterns[billType] || [])];
+    
+    // Try each pattern
+    for (const pattern of patternsToUse) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+    }
+    
+    // If no vendor found, try to extract from file name or other context
+    return 'Unknown';
   }
 } 

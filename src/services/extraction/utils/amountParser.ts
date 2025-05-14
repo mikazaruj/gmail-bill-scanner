@@ -48,13 +48,13 @@ export function parseHungarianAmount(amountStr: string): number {
       hasShortNumber
     });
     
-    // Check specifically for MVM bill format with 4-digit number with dot as thousands separator (6.364)
-    const isMvmFormat = /^\d{1,3}[.]\d{3}$/.test(cleanedAmount);
-    if (isMvmFormat) {
-      console.log('Detected MVM bill format with dot as thousands separator');
-      // For MVM bills, we directly convert to integer by removing the dot
+    // Check for Hungarian short amount format with dot as thousands separator (e.g., 6.364)
+    const isHungarianThousandsDot = /^\d{1,3}[.]\d{3}$/.test(cleanedAmount);
+    if (isHungarianThousandsDot) {
+      console.log('Detected Hungarian format with dot as thousands separator');
+      // Convert by removing the dot (standard in Hungarian accounting)
       cleanedAmount = cleanedAmount.replace(/[.]/g, '');
-      console.log('Converted MVM format to:', cleanedAmount);
+      console.log('Converted Hungarian format to:', cleanedAmount);
       return parseInt(cleanedAmount, 10);
     }
     

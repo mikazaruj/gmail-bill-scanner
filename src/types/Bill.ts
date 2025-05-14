@@ -20,7 +20,7 @@ export interface Bill {
   notes?: string;
   invoiceNumber?: string;
   source?: {
-    type: 'email' | 'pdf' | 'manual';
+    type: 'email' | 'pdf' | 'manual' | 'combined';
     messageId?: string;
     attachmentId?: string;
     fileName?: string;

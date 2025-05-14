@@ -31,11 +31,12 @@ export async function getFieldMappings(userId: string): Promise<any[]> {
     const { getSupabaseClient } = await import('../supabase/client');
     const supabase = await getSupabaseClient();
     
-    // Query field mappings from Supabase
+    // Query field mappings from Supabase using field_mapping_view
     const { data, error } = await supabase
-      .from('field_mappings')
+      .from('field_mapping_view')
       .select('*')
       .eq('user_id', userId)
+      .eq('is_enabled', true)      // Only get enabled fields
       .order('display_order', { ascending: true });
     
     if (error) {
@@ -47,6 +48,7 @@ export async function getFieldMappings(userId: string): Promise<any[]> {
       return DEFAULT_FIELD_MAPPINGS;
     }
     
+    console.log(`Retrieved ${data.length} enabled field mappings for user ${userId}`);
     return data;
   } catch (error) {
     handleError(error instanceof Error ? error : new Error(String(error)), {

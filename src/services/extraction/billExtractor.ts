@@ -48,7 +48,17 @@ export class BillExtractor {
     try {
       console.log('Initializing extraction strategies');
       
-      // Unified pattern extractor (highest priority)
+      // Dynamic import to avoid circular dependencies
+      import("./strategies/userFieldExtractor").then(({ UserFieldExtractor }) => {
+        // User-defined field extractor (highest priority)
+        const userFieldStrategy = new UserFieldExtractor();
+        this.registerStrategy(userFieldStrategy);
+        console.log('Registered UserFieldExtractor as highest priority');
+      }).catch(error => {
+        console.error('Error loading UserFieldExtractor:', error);
+      });
+      
+      // Unified pattern extractor (second priority)
       const unifiedStrategy = new UnifiedPatternExtractor();
       this.registerStrategy(unifiedStrategy);
       
@@ -258,39 +268,48 @@ export class BillExtractor {
     messageId: string,
     attachmentId: string,
     fileName: string,
-    options: { language?: 'en' | 'hu' } = {}
+    options: { language?: 'en' | 'hu'; emailBill?: Bill } = {}
   ): Promise<BillExtractionResult> {
     try {
       if (!this.initialized) {
         this.initializeStrategies();
       }
       
-      // Set the correct language based on file name pattern if not specified
-      let language = options.language;
+      // If we already have a bill from the email, use that information
+      const emailBill = options.emailBill;
       
-      // If the language is not specified, try to detect it from the file name
-      if (!language) {
-        const hungarianIndicators = ['szamla', 'számla', 'mvm', 'eon', 'dij', 'díj', '.hu'];
-        const isLikelyHungarian = hungarianIndicators.some(term => 
-          fileName.toLowerCase().includes(term.toLowerCase())
-        );
-        
-        language = isLikelyHungarian ? 'hu' : 'en';
-        console.log(`Auto-detected bill language from filename: ${language}`);
-      }
+      // Extract text from PDF
+      let extractedText: string = "";
       
-      console.log(`Extracting bills from PDF with language: ${language || 'en'}`);
-      
-      // For ArrayBuffer, we can skip preprocessing since it's already binary
-      let processedPdfData: string | ArrayBuffer = pdfData;
-      
-      // Only preprocess if we have a string (base64)
+      // Handle different PDF data formats
       if (typeof pdfData === 'string') {
-        // Preprocess PDF data based on language
-        processedPdfData = this.preprocessPdfData(pdfData, language);
+        try {
+          // For base64 PDF data, preprocess it
+          extractedText = this.preprocessPdfData(pdfData, options.language);
+        } catch (error) {
+          console.error('Error preprocessing PDF data:', error);
+        }
       } else {
-        console.log('Using binary PDF data directly, skipping base64 preprocessing');
+        try {
+          // For ArrayBuffer, use PDF service directly
+          extractedText = await extractTextFromPdf(pdfData);
+        } catch (error) {
+          console.error('Error extracting text from PDF ArrayBuffer:', error);
+        }
       }
+      
+      // If we couldn't extract any text, return error
+      if (!extractedText || extractedText.trim() === '') {
+        return {
+          success: false,
+          bills: [],
+          error: 'No text could be extracted from PDF'
+        };
+      }
+      
+      // Store the extracted text in the PDF data for strategies to use
+      // Keeping the original PDF data as a backup
+      const processedPdfData = extractedText;
       
       // Try each strategy in order, stopping when we find bills
       let highestConfidence = 0;
@@ -301,43 +320,26 @@ export class BillExtractor {
       };
       
       for (const strategy of this.strategies) {
-        // Note: extractFromPdf is an optional method in the strategy interface,
-        // so we need to check if it exists before calling it
+        // Skip if strategy doesn't support PDF extraction
         if (!strategy.extractFromPdf) {
           console.log(`Strategy ${strategy.name} does not support PDF extraction, skipping`);
           continue;
         }
         
         const context: PdfExtractionContext = {
-          pdfData: processedPdfData,
           messageId,
           attachmentId,
           fileName,
-          language
+          pdfData: processedPdfData, // Use the extracted text as string pdfData
+          language: options.language
         };
         
         try {
-          // Process with current strategy - we've verified extractFromPdf exists
           const result = await strategy.extractFromPdf(context);
           
-          // Special logging for Hungarian bills to help diagnose extraction issues
-          if (language === 'hu' && result.success && result.bills.length > 0) {
-            const bill = result.bills[0];
-            console.log(`Strategy ${strategy.name} found ${result.bills.length} bills with confidence ${result.confidence}`);
-            console.log(`Hungarian bill extraction details: vendor=${bill.vendor}, amount=${bill.amount}, currency=${bill.currency}`);
-            
-            // Save processing metrics for diagnostics
-            const metrics = {
-              strategy: strategy.name,
-              confidence: result.confidence || 0,
-              fileName,
-              language,
-              vendor: bill.vendor,
-              amount: bill.amount,
-              timestamp: new Date().toISOString()
-            };
-            
-            console.log('Hungarian bill extraction metrics:', metrics);
+          // Log confidence for tracking
+          if (result.confidence) {
+            console.log(`${strategy.name} PDF confidence: ${result.confidence}`);
           }
           
           // Keep track of best result by confidence
@@ -345,33 +347,50 @@ export class BillExtractor {
             if (!result.confidence || result.confidence > highestConfidence) {
               highestConfidence = result.confidence || 0;
               bestResult = result;
-              
-              // If we have a result with good confidence, no need to try other strategies
-              if (highestConfidence >= 0.6) {
-                console.log(`Found bills with high confidence (${highestConfidence}), using this result`);
-                return result;
-              }
             }
+          }
+          
+          // If we found bills with reasonable confidence, break
+          if (result.success && result.bills.length > 0 && 
+              (result.confidence === undefined || result.confidence >= 0.5)) {
+            // If we have both email and PDF bill, merge them for the best result
+            if (emailBill && result.bills[0]) {
+              console.log('Found both email and PDF bills, merging for best results');
+              // Replace the first bill with the merged bill
+              const pdfBill = result.bills[0];
+              result.bills[0] = this.mergeBills(emailBill, pdfBill);
+            }
+            
+            return result;
           }
         } catch (strategyError) {
           console.error(`Error in ${strategy.name} PDF extraction:`, strategyError);
         }
       }
       
-      // If we didn't find any bills with the strategies, log details for diagnostics
-      if (!bestResult.success || bestResult.bills.length === 0) {
-        // Special logging for Hungarian bills
-        if (language === 'hu') {
-          console.log(`Hungarian PDF bill extraction failed - no bills found`);
-          console.log(`PDF details: fileName=${fileName}`);
-        }
-      } else {
-        console.log(`Best extraction result had confidence: ${highestConfidence}`);
+      // If we have email bill but couldn't extract PDF well, augment email bill with PDF source
+      if (emailBill && bestResult.success === false) {
+        console.log('PDF extraction failed, using email bill with PDF source info');
+        const augmentedBill = {
+          ...emailBill,
+          source: {
+            ...emailBill.source,
+            type: 'combined' as const,
+            attachmentId,
+            fileName
+          }
+        };
+        
+        return {
+          success: true,
+          bills: [augmentedBill],
+          confidence: emailBill.confidence || 0.5
+        };
       }
       
       return bestResult;
     } catch (error) {
-      console.error('Error extracting bills from PDF:', error);
+      console.error('Error extracting from PDF:', error);
       return {
         success: false,
         bills: [],
@@ -463,6 +482,62 @@ export class BillExtractor {
     if (!headers || !Array.isArray(headers)) return null;
     const header = headers.find(h => h.name.toLowerCase() === name.toLowerCase());
     return header ? header.value : null;
+  }
+
+  /**
+   * Merge bills from email and PDF with the same source
+   * @param emailBill Bill extracted from email
+   * @param pdfBill Bill extracted from PDF
+   * @returns Merged bill with best information from both sources
+   */
+  mergeBills(emailBill: Bill, pdfBill: Bill): Bill {
+    console.log('Merging bills from email and PDF sources');
+
+    // Create a new bill with the best information from both sources
+    const mergedBill: Bill = {
+      ...emailBill, // Start with email bill data
+      
+      // Use PDF data for fields that are missing or "Unknown" in email
+      vendor: emailBill.vendor && emailBill.vendor !== 'Unknown' 
+        ? emailBill.vendor 
+        : pdfBill.vendor,
+      
+      // For amount, prefer the one that's non-zero
+      amount: emailBill.amount > 0 ? emailBill.amount : pdfBill.amount,
+      
+      // For dates, use the more specific one
+      date: emailBill.date || pdfBill.date,
+      dueDate: emailBill.dueDate || pdfBill.dueDate,
+      
+      // For other fields, prefer non-null values
+      accountNumber: emailBill.accountNumber || pdfBill.accountNumber,
+      invoiceNumber: emailBill.invoiceNumber || pdfBill.invoiceNumber,
+      
+      // Keep track of both sources
+      source: {
+        type: 'combined',
+        messageId: emailBill.source?.messageId || pdfBill.source?.messageId,
+        attachmentId: pdfBill.source?.attachmentId,
+        fileName: pdfBill.source?.fileName
+      },
+      
+      // Set confidence to the higher of the two
+      confidence: Math.max(
+        emailBill.confidence || 0, 
+        pdfBill.confidence || 0
+      )
+    };
+    
+    console.log('Merged bill created:', {
+      vendor: mergedBill.vendor,
+      amount: mergedBill.amount,
+      date: mergedBill.date,
+      dueDate: mergedBill.dueDate,
+      accountNumber: mergedBill.accountNumber,
+      invoiceNumber: mergedBill.invoiceNumber
+    });
+    
+    return mergedBill;
   }
 }
 
