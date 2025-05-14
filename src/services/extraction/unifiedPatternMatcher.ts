@@ -5,6 +5,8 @@
  * to create a robust bill extraction pipeline.
  */
 
+"use strict";
+
 import { Bill } from "../../types/Bill";
 import { 
   getLanguagePatterns, 
@@ -202,7 +204,7 @@ export class UnifiedPatternMatcher {
       
       // Detect service type
       const serviceTypeInfo = detectServiceType(textToAnalyze, language);
-      const category = serviceTypeInfo?.category || "Other";
+      let category: string | undefined = serviceTypeInfo?.category || "Other";
       
       // Parse dates
       let billingDate = new Date();
@@ -233,6 +235,86 @@ export class UnifiedPatternMatcher {
       // Get vendor
       const vendor = extractedFields.vendor || 
                     (context.fileName ? context.fileName.split('.')[0] : 'Unknown');
+      
+      // Check if this is an MVM bill
+      const isMvm = this.isMvmBill(processedText);
+      
+      // If this is an MVM bill, use specialized extraction
+      if (isMvm) {
+        console.log('Detected MVM bill, using specialized extraction');
+        const mvmFields = this.extractMvmFields(processedText);
+        
+        // Override extracted fields with MVM-specific ones
+        if (mvmFields.amount) {
+          extractedFields.amount = mvmFields.amount;
+        }
+        
+        if (mvmFields.invoiceNumber) {
+          extractedFields.invoiceNumber = mvmFields.invoiceNumber;
+        }
+        
+        if (mvmFields.customerId) {
+          extractedFields.accountNumber = mvmFields.customerId;
+        }
+        
+        if (mvmFields.billingPeriod) {
+          // Store in debug data
+          if (debug && debugData) {
+            debugData.billingPeriod = mvmFields.billingPeriod;
+          }
+        }
+        
+        if (mvmFields.dueDate) {
+          extractedFields.dueDate = mvmFields.dueDate;
+        }
+        
+        if (mvmFields.vendor) {
+          extractedFields.vendor = mvmFields.vendor;
+        }
+      }
+      
+      // Check if we're dealing with a Hungarian utility bill
+      const isHungarianUtility = language === 'hu' && this.isHungarianUtilityBill(processedText);
+      
+      if (isHungarianUtility) {
+        console.log('Detected Hungarian utility bill, using specialized extraction');
+        const utilityFields = this.extractHungarianUtilityBill(processedText);
+        
+        // Override extracted fields with utility-specific ones
+        if (utilityFields.amount) {
+          extractedFields.amount = utilityFields.amount;
+        }
+        
+        if (utilityFields.invoiceNumber) {
+          extractedFields.invoiceNumber = utilityFields.invoiceNumber;
+        }
+        
+        if (utilityFields.accountNumber) {
+          extractedFields.accountNumber = utilityFields.accountNumber;
+        }
+        
+        if (utilityFields.billingPeriod) {
+          // Store in debug data
+          if (debug && debugData) {
+            debugData.billingPeriod = utilityFields.billingPeriod;
+          }
+        }
+        
+        if (utilityFields.dueDate) {
+          extractedFields.dueDate = utilityFields.dueDate;
+        }
+        
+        if (utilityFields.vendor) {
+          extractedFields.vendor = utilityFields.vendor;
+        }
+        
+        if (utilityFields.category) {
+          category = utilityFields.category;
+        }
+        
+        // Boost confidence for Hungarian utility bills
+        confidence += 0.2;
+      }
       
       // Create the bill
       const bill = createBill({
@@ -309,5 +391,346 @@ export class UnifiedPatternMatcher {
       console.error('Error extracting text from PDF:', error);
       throw error;
     }
+  }
+
+  /**
+   * Check if a vendor is MVM based on text content
+   * @param text The text to check
+   * @returns True if the text likely belongs to an MVM bill
+   */
+  private isMvmBill(text: string): boolean {
+    const mvmPatterns = [
+      /mvm\s+next/i,
+      /mvm.*energiakereskedelmi/i,
+      /energiakereskedelmi.*zrt/i
+    ];
+    
+    for (const pattern of mvmPatterns) {
+      if (pattern.test(text)) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Extract fields specifically for MVM bills
+   * @param text The text to extract from
+   * @returns Object with extracted fields
+   */
+  private extractMvmFields(text: string): {[key: string]: string} {
+    const result: {[key: string]: string} = {};
+    
+    // Extract amount - MVM specific patterns
+    const amountPatterns = [
+      /Fizetendő összeg:\s*(\d{1,4}\.\d{3})\s*Ft/i,
+      /Bruttó számlaérték összesen\*\*:\s*(\d{1,4}\.\d{3})/i,
+      /Fizetendő\s+összeg\s*:\s*(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i
+    ];
+    
+    for (const pattern of amountPatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        result.amount = match[1];
+        break;
+      }
+    }
+    
+    // Extract invoice number
+    const invoicePattern = /Számla sorszáma:\s*([0-9]+)/i;
+    const invoiceMatch = text.match(invoicePattern);
+    if (invoiceMatch && invoiceMatch[1]) {
+      result.invoiceNumber = invoiceMatch[1];
+    }
+    
+    // Extract customer ID
+    const customerIdPatterns = [
+      /Felhasználó azonosító száma:\s*(\d+)/i,
+      /Vevő \(Fizető\) azonosító:\s*([A-Za-z0-9\-]+)/i,
+      /Szerződéses folyószámla:\s*([A-Za-z0-9\-]+)/i
+    ];
+    
+    for (const pattern of customerIdPatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        result.customerId = match[1];
+        break;
+      }
+    }
+    
+    // Extract billing period
+    const billingPeriodPattern = /Elszámolt időszak:\s+([^\n]+)/i;
+    const billingMatch = text.match(billingPeriodPattern);
+    if (billingMatch && billingMatch[1]) {
+      result.billingPeriod = billingMatch[1];
+    }
+    
+    // Extract due date
+    const dueDatePattern = /Fizetési határidő:\s+([^\n]+)/i;
+    const dueDateMatch = text.match(dueDatePattern);
+    if (dueDateMatch && dueDateMatch[1]) {
+      result.dueDate = dueDateMatch[1];
+    }
+    
+    // Extract vendor
+    const vendorPattern = /Szolgáltató neve:\s*([^\n]+)/i;
+    const vendorMatch = text.match(vendorPattern);
+    if (vendorMatch && vendorMatch[1]) {
+      result.vendor = vendorMatch[1];
+    }
+    
+    return result;
+  }
+
+  /**
+   * Extract Hungarian utility bill information based on common patterns
+   * @param text The text to extract from
+   * @returns Object with extracted fields
+   */
+  private extractHungarianUtilityBill(text: string): {[key: string]: string} {
+    const result: {[key: string]: string} = {};
+    
+    // 1. Extract Amount - General utility bill patterns
+    const amountPatterns = [
+      /Fizetendő összeg:\s*(\d{1,4}\.\d{3})\s*Ft/i,
+      /Fizetendő összeg:\s*(\d{1,4})\s*Ft/i,
+      /Bruttó számlaérték összesen\*\*:\s*(\d{1,4}\.\d{3})/i,
+      /Fizetendő\s+összeg\s*:\s*(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i,
+      /Bruttó érték\s*összesen\s*:\s*(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i,
+      /Fizetendő\s*végösszeg\s*:\s*(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i,
+      /Fizetendő összeg:\s+([0-9.,\s]+)\s+Ft/i,
+      /(?:Számla\\s+összege|Végösszeg):?\s*(?:Ft\.?|HUF)?\s*(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i,
+      /(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)(?:\s*|-)[Ff][Tt]\.?/i,
+      /(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)(?:\s*)[Hh][Uu][Ff]/i,
+      /(?:fizetend[őo]|összesen).{1,30}?(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)/i,
+      /(?:fizetési\s+határidő).{1,50}(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)\s*Ft/i
+    ];
+    
+    for (const pattern of amountPatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        result.amount = match[1].trim();
+        break;
+      }
+    }
+    
+    // 2. Extract Invoice Number - Multiple formats
+    const invoicePatterns = [
+      /Számla sorszáma:\s*([A-Z0-9-]+)/i,
+      /Számla sorszáma:\s*([0-9]+)/i,
+      /Sorszám:\s*([A-Za-z0-9\-\/]+)/i,
+      /Számlaszám:\s*([A-Za-z0-9\-\/]+)/i,
+      /Számla\s+azonosító:\s*([A-Za-z0-9\-\/]+)/i,
+      /Számlaszám:\s*\n?\s*([A-Za-z0-9\-\/]+)/i
+    ];
+    
+    for (const pattern of invoicePatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        result.invoiceNumber = match[1].trim();
+        break;
+      }
+    }
+    
+    // 3. Extract Customer ID - Multiple format patterns
+    const customerIdPatterns = [
+      /Felhasználó azonosító száma:\s*(\d+)/i,
+      /Vevő \(Fizető\) azonosító:\s*([A-Za-z0-9-]+)/i,
+      /Szerződéses folyószámla:\s*([A-Za-z0-9-]+)/i,
+      /(?:ügyfél|fogyasztó)?\s*(?:azonosító|szám):\s*([A-Z0-9\-]+)/i,
+      /felhasználói\s+azonosító:\s*([A-Za-z0-9\-]+)/i,
+      /ügyfél\s+azonosító:\s*([A-Za-z0-9\-]+)/i,
+      /szerz[.őÖ]\s*szám:\s*([A-Za-z0-9\-]+)/i,
+      /(?:fogyasztási|felhasználási)\s+hely\s+(?:azonosító|szám):\s*([A-Z0-9\-]+)/i,
+      /Felhasználási\s+hely\s+(?:azonosító|szám)?:\s*([A-Za-z0-9\-]+)/i
+    ];
+    
+    for (const pattern of customerIdPatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        result.accountNumber = match[1].trim();
+        break;
+      }
+    }
+    
+    // 4. Extract Billing Period
+    const billingPeriodPatterns = [
+      /Elszámolt időszak:\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}\s*-\s*\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+      /Elszámolt időszak:\s*([^\n]+)/i,
+      /Elszámolási\s+időszak:\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}\s*-\s*\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+      /Elszámolási\s+időszak:\s*([^\n]+)/i
+    ];
+    
+    for (const pattern of billingPeriodPatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        result.billingPeriod = match[1].trim();
+        break;
+      }
+    }
+    
+    // 5. Extract Due Date
+    const dueDatePatterns = [
+      /Fizetési határidő:\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+      /Fizetési határidő:\s*([^\n]+)/i,
+      /Esedékesség:\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+      /Befizetési\s+határidő:\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+      /Fizetési\s+határidő:[^\n]*\n[^\n]*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+      /Fizetési határidő.{1,30}(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i
+    ];
+    
+    for (const pattern of dueDatePatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        result.dueDate = match[1].trim();
+        break;
+      }
+    }
+    
+    // 6. Extract Vendor (Utility Provider)
+    const vendorPatterns = [
+      /Szolgáltató neve:\s*([^,\n]+)/i,
+      /Szolgáltató:\s*([^,\n]+)/i,
+      /Kibocsátó:\s*([^,\n]+)/i,
+      /Eladó:\s*([^,\n]+)/i,
+      /Számlakibocsátó neve:\s*([^,\n]+)/i
+    ];
+    
+    for (const pattern of vendorPatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        // Clean up vendor name - truncate at address or other info
+        let vendor = match[1].trim();
+        
+        // Clean up vendor: if it contains "Címe" or similar, truncate
+        if (vendor.includes('Címe:')) {
+          vendor = vendor.substring(0, vendor.indexOf('Címe:')).trim();
+        }
+        
+        result.vendor = vendor;
+        break;
+      }
+    }
+    
+    // 7. Try to identify utility type
+    if (this.isBillType(text, 'electricity')) {
+      result.category = 'electricity';
+    } else if (this.isBillType(text, 'gas')) {
+      result.category = 'gas';
+    } else if (this.isBillType(text, 'water')) {
+      result.category = 'water';
+    } else if (this.isBillType(text, 'telecom')) {
+      result.category = 'telecom';
+    } else if (this.isBillType(text, 'district_heating')) {
+      result.category = 'district_heating';
+    } else if (this.isBillType(text, 'waste')) {
+      result.category = 'waste';
+    }
+    
+    return result;
+  }
+  
+  /**
+   * Identify the utility bill type
+   * @param text The text to check
+   * @param type The type to check for
+   * @returns True if the text contains indicators for the specified type
+   */
+  private isBillType(text: string, type: string): boolean {
+    // Get patterns from hungarian-bill-patterns.json
+    const patterns = this.getPatternsByServiceType(type);
+    if (!patterns || patterns.length === 0) {
+      return false;
+    }
+    
+    // Check for matching patterns
+    for (const pattern of patterns) {
+      if (text.toLowerCase().includes(pattern.toLowerCase())) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+  
+  /**
+   * Get patterns for a specific service type
+   * @param type The service type
+   * @returns Array of identifier patterns
+   */
+  private getPatternsByServiceType(type: string): string[] {
+    try {
+      // You'd need to import these patterns from hungarian-bill-patterns.json
+      // This is a simplified version for demonstration
+      const serviceTypes: {[key: string]: {identifiers: string[]}} = {
+        electricity: {
+          identifiers: [
+            "áramszámla", "villanyáram", "MVM", "E.ON", "ELMŰ", "ÉMÁSZ", "villamosenergia",
+            "villamos energia", "áramdíj", "villamos szolgáltatás", "áramfogyasztás"
+          ]
+        },
+        gas: {
+          identifiers: [
+            "gázszámla", "földgáz", "Főgáz", "Tigáz", "gázszolgáltató", "NKM",
+            "gázmérő", "gázdíj", "gázenergia", "gázfogyasztás"
+          ]
+        },
+        water: {
+          identifiers: [
+            "vízszámla", "vízdíj", "vízmű", "vízművek", "csatornadíj", "szennyvíz",
+            "vízfogyasztás", "vízfelhasználás", "csatornaszolgáltatás"
+          ]
+        },
+        telecom: {
+          identifiers: [
+            "telefonszámla", "mobilszámla", "internet", "Telekom", "Telenor", "Vodafone", "Yettel", "Digi", "UPC",
+            "telefonszolgáltatás", "internetszolgáltatás", "tv szolgáltatás", "mobiltelefon", "mobil előfizetés"
+          ]
+        },
+        district_heating: {
+          identifiers: [
+            "távhőszámla", "távfűtés", "Főtáv", "távhőszolgáltatás", "fűtésszámla", "központi fűtés"
+          ]
+        },
+        waste: {
+          identifiers: [
+            "hulladék", "szemét", "szemétszállítás", "FKF", "NHKV", "hulladékgazdálkodás",
+            "hulladékszállítás", "kommunális hulladék"
+          ]
+        }
+      };
+      
+      return serviceTypes[type]?.identifiers || [];
+    } catch (error) {
+      console.error('Error getting service type patterns:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Detect if a document is a Hungarian utility bill
+   * @param text The document text
+   * @returns True if the text likely belongs to a Hungarian utility bill
+   */
+  private isHungarianUtilityBill(text: string): boolean {
+    // Check for common Hungarian utility bill indicators
+    const hungarianBillIndicators = [
+      /számla/i, /fizetendő/i, /fizetési határidő/i, /elszámolt időszak/i, 
+      /szolgáltató/i, /felhasználó/i, /fogyasztó/i, /áram/i, /gáz/i, /víz/i, 
+      /bruttó/i, /nettó/i, /összeg/i, /dátum/i, /időszak/i, /mérőállás/i,
+      /áfa/i, /közüzemi/i, /szolgáltatás/i, /díj/i
+    ];
+    
+    // Count how many indicators are present
+    let indicatorCount = 0;
+    for (const indicator of hungarianBillIndicators) {
+      if (indicator.test(text)) {
+        indicatorCount++;
+      }
+    }
+    
+    // If at least 3 indicators are present, it's likely a Hungarian utility bill
+    return indicatorCount >= 3;
   }
 } 

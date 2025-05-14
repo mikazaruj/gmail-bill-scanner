@@ -32,10 +32,14 @@ export function parseHungarianAmount(amountStr: string): number {
     console.log('After removing currency symbols:', cleanedAmount);
     
     // Step 1: Identify format patterns
+    // Check if there's a dot followed by exactly 3 digits - Hungarian thousands separator pattern
     const hasThousandDots = /\d{1,3}[.]\d{3}/.test(cleanedAmount);
+    // Check if there's a space between groups of digits - another thousands separator pattern
     const hasThousandSpaces = /\d{1,3}\s\d{3}/.test(cleanedAmount);
+    // Check if there's a comma followed by 1 or 2 digits at the end - decimal separator pattern
     const hasCommaDecimals = /,\d{1,2}$/.test(cleanedAmount);
-    const hasShortNumber = /^\d{1,4}$/.test(cleanedAmount); // Short numbers like "6364"
+    // Check if it's a simple number under 10000
+    const hasShortNumber = /^\d{1,4}$/.test(cleanedAmount);
     
     console.log('Format analysis:', { 
       hasThousandDots, 
@@ -43,6 +47,16 @@ export function parseHungarianAmount(amountStr: string): number {
       hasCommaDecimals,
       hasShortNumber
     });
+    
+    // Check specifically for MVM bill format with 4-digit number with dot as thousands separator (6.364)
+    const isMvmFormat = /^\d{1,3}[.]\d{3}$/.test(cleanedAmount);
+    if (isMvmFormat) {
+      console.log('Detected MVM bill format with dot as thousands separator');
+      // For MVM bills, we directly convert to integer by removing the dot
+      cleanedAmount = cleanedAmount.replace(/[.]/g, '');
+      console.log('Converted MVM format to:', cleanedAmount);
+      return parseInt(cleanedAmount, 10);
+    }
     
     // Step 2: Process Hungarian-style amount
     // Keep track of original amount to help diagnose parsing issues
