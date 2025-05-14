@@ -48,19 +48,10 @@ export class BillExtractor {
     try {
       console.log('Initializing extraction strategies');
       
-      // Dynamic import to avoid circular dependencies
-      import("./strategies/userFieldExtractor").then(({ UserFieldExtractor }) => {
-        // User-defined field extractor (highest priority)
-        const userFieldStrategy = new UserFieldExtractor();
-        this.registerStrategy(userFieldStrategy);
-        console.log('Registered UserFieldExtractor as highest priority');
-      }).catch(error => {
-        console.error('Error loading UserFieldExtractor:', error);
-      });
-      
-      // Unified pattern extractor (second priority)
+      // Unified pattern extractor as primary - now enhanced with user field support
       const unifiedStrategy = new UnifiedPatternExtractor();
       this.registerStrategy(unifiedStrategy);
+      console.log('Registered UnifiedPatternExtractor with user field support');
       
       // Pattern-based extractor (fallback)
       const patternStrategy = new PatternBasedExtractor();

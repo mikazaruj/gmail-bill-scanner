@@ -1,0 +1,15 @@
+Version: 1.2.0
+
+Changes:
+- Implemented a hybrid approach for the extraction pipeline to fix service worker compatibility issues
+- Created a DOM-independent userFieldMappingService to handle field mappings without document access
+- Enhanced UnifiedPatternExtractor to handle user-defined fields natively
+- Modified BillExtractor to use the enhanced UnifiedPatternExtractor instead of dynamically loading UserFieldExtractor
+- Updated UnifiedExtractionContext to include userId for passing user context through the extraction pipeline
+- Made the extraction strategy selection service worker compatible
+
+Key files modified:
+- services/userFieldMappingService.ts (new)
+- services/extraction/unifiedPatternMatcher.ts
+- services/extraction/strategies/unifiedPatternExtractor.ts
+- services/extraction/billExtractor.ts 

@@ -116,132 +116,22 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
       // Check if we have a user ID to get user-defined fields
       const userId = 'userId' in context ? context.userId as string : await this.getUserIdFromStorage();
       
-      if (userId) {
-        console.log(`Extracting PDF data based on user-defined fields for user ${userId}`);
-        
-        try {
-          // Get field mappings for this user
-          const { getFieldMappings } = await import('../../../services/fieldMapping');
-          const fieldMappings = await getFieldMappings(userId);
-          
-          // Get enabled fields
-          const enabledFields = fieldMappings.filter(field => field.is_enabled);
-          console.log(`Found ${enabledFields.length} enabled field mappings for extraction`);
-          
-          if (enabledFields.length > 0) {
-            // Create a proper extraction context
-            const extractionContext = {
-              text: extractedText,
-              fileName: context.fileName,
-              messageId: context.messageId,
-              attachmentId: context.attachmentId
-            };
-            
-            // Extract data based on user-defined fields
-            const extractionResult = await this.matcher.extract(
-              extractionContext,
-              { 
-                language: context.language as any || 'hu',
-                applyStemming: true,
-                debug: true
-              }
-            );
-            
-            if (extractionResult.success && extractionResult.bills.length > 0) {
-              console.log('Extracted bill data from PDF with user-defined field guidance:', extractionResult.bills[0]);
-              
-              // Set source information
-              extractionResult.bills.forEach(bill => {
-                if (!bill.source) {
-                  bill.source = {
-                    type: 'pdf',
-                    messageId: context.messageId,
-                    attachmentId: context.attachmentId,
-                    fileName: context.fileName
-                  };
-                }
-              });
-              
-              // Map the extracted bill data to user-defined fields
-              if (extractionResult.bills.length > 0) {
-                try {
-                  const { mapBillToUserFields } = await import('../../../services/fieldMapping/mappingTransformer');
-                  
-                  // Map the first bill (usually there's only one)
-                  const mappedData = await mapBillToUserFields(extractionResult.bills[0], userId);
-                  console.log('Mapped bill to user-defined fields:', mappedData);
-                  
-                  // Update the bill with the mapped data if needed
-                  // This is where we would update fields based on the mapping if required
-                  
-                  // Check if bill has proper amount - if not, let's try to extract it directly from text
-                  const bill = extractionResult.bills[0];
-                  if (!bill.amount || bill.amount === 0) {
-                    console.log('Bill has zero amount, attempting direct extraction from text');
-                    
-                    try {
-                      // Try to find MVM-specific amount pattern
-                      const amountMatch = extractedText.match(/(?:fizetendő összeg|fizetendő)(?:\s*:)?\s*([0-9\s.,]{2,})\s*(?:Ft|HUF)/i);
-                      if (amountMatch && amountMatch[1]) {
-                        const rawAmount = amountMatch[1].replace(/\s/g, '').replace(/\./g, '').replace(/,/g, '.');
-                        const numericAmount = parseFloat(rawAmount);
-                        
-                        if (!isNaN(numericAmount) && numericAmount > 0) {
-                          console.log(`Found amount directly: ${numericAmount}`);
-                          bill.amount = numericAmount;
-                        }
-                      }
-                    } catch (amountError) {
-                      console.error('Error extracting amount directly:', amountError);
-                    }
-                  }
-                  
-                  // Check if bill has proper vendor - if not, try to extract it directly
-                  if (!bill.vendor || bill.vendor === 'Unknown') {
-                    console.log('Bill has unknown vendor, attempting direct extraction from text');
-                    
-                    try {
-                      // Try to find MVM-specific vendor pattern
-                      const vendorMatch = extractedText.match(/(?:szolgáltató\s+neve\s*:|szolgáltató\s*:)\s*([A-Za-z][\w\s]+?)(?:\s+|$)/i);
-                      if (vendorMatch && vendorMatch[1]) {
-                        const vendorName = vendorMatch[1].trim();
-                        console.log(`Found vendor directly: ${vendorName}`);
-                        // Type-safe vendor assignment
-                        bill.vendor = vendorName;
-                      } else if (extractedText.includes('MVM')) {
-                        // Type-safe vendor assignment
-                        bill.vendor = 'MVM';
-                      }
-                    } catch (vendorError) {
-                      console.error('Error extracting vendor directly:', vendorError);
-                    }
-                  }
-                } catch (mappingError) {
-                  console.warn('Error mapping bill to user fields:', mappingError);
-                }
-              }
-              
-              return extractionResult;
-            }
-          }
-        } catch (userFieldError) {
-          console.error('Error processing with user-defined fields:', userFieldError);
-        }
-      }
-      
-      // If user-defined extraction failed or no user ID available, fall back to default extraction
-      console.log('Falling back to default extraction for PDF');
-      
-      // Create a proper extraction context for default extraction
-      const defaultExtractionContext = {
+      // Create a proper extraction context with userId if available
+      const extractionContext: UnifiedExtractionContext = {
         text: extractedText,
         fileName: context.fileName,
         messageId: context.messageId,
         attachmentId: context.attachmentId
       };
       
-      const result = await this.matcher.extract(
-        defaultExtractionContext,
+      // Add userId to the context if available
+      if (userId) {
+        extractionContext.userId = userId;
+      }
+      
+      // Extract data using the enhanced UnifiedPatternMatcher that now handles user fields
+      const extractionResult = await this.matcher.extract(
+        extractionContext,
         { 
           language: context.language as any || 'hu',
           applyStemming: true,
@@ -249,73 +139,65 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         }
       );
       
-      // Update source information
-      result.bills.forEach(bill => {
-        if (!bill.source) {
-          bill.source = {
-            type: 'pdf',
-            messageId: context.messageId,
-            attachmentId: context.attachmentId,
-            fileName: context.fileName
-          };
-        }
+      if (extractionResult.success && extractionResult.bills.length > 0) {
+        console.log('Extracted bill data from PDF:', extractionResult.bills[0]);
         
-        // Ensure vendor and amount are extracted properly
-        if (!bill.vendor || bill.vendor === 'Unknown') {
-          console.log('Bill has unknown vendor, attempting direct extraction from text');
-          
-          try {
-            // Try to find MVM-specific vendor pattern
-            const vendorMatch = extractedText.match(/(?:szolgáltató\s+neve\s*:|szolgáltató\s*:)\s*([A-Za-z][\w\s]+?)(?:\s+|$)/i);
-            if (vendorMatch && vendorMatch[1]) {
-              const vendorName = vendorMatch[1].trim();
-              console.log(`Found vendor directly: ${vendorName}`);
-              // Type-safe vendor assignment
-              bill.vendor = vendorName;
-            } else if (extractedText.includes('MVM')) {
-              // Type-safe vendor assignment
-              bill.vendor = 'MVM';
-            }
-          } catch (vendorError) {
-            console.error('Error extracting vendor directly:', vendorError);
+        // Set source information
+        extractionResult.bills.forEach(bill => {
+          if (!bill.source) {
+            bill.source = {
+              type: 'pdf',
+              messageId: context.messageId,
+              attachmentId: context.attachmentId,
+              fileName: context.fileName
+            };
           }
-        }
+        });
         
-        // Ensure amount is properly extracted
-        if (!bill.amount || bill.amount === 0) {
-          console.log('Bill has zero amount, attempting direct extraction from text');
-          
-          try {
-            // Try to find MVM-specific amount pattern
-            const amountMatch = extractedText.match(/(?:fizetendő összeg|fizetendő)(?:\s*:)?\s*([0-9\s.,]{2,})\s*(?:Ft|HUF)/i);
-            if (amountMatch && amountMatch[1]) {
-              const rawAmount = amountMatch[1].replace(/\s/g, '').replace(/\./g, '').replace(/,/g, '.');
-              const numericAmount = parseFloat(rawAmount);
-              
-              if (!isNaN(numericAmount) && numericAmount > 0) {
-                console.log(`Found amount directly: ${numericAmount}`);
-                bill.amount = numericAmount;
+        // Check if bill has proper amount - if not, let's try to extract it directly from text
+        if (extractionResult.bills.length > 0) {
+          const bill = extractionResult.bills[0];
+          if (!bill.amount || bill.amount === 0) {
+            console.log('Bill has zero amount, attempting direct extraction from text');
+            
+            try {
+              // Try to find MVM-specific amount pattern
+              const amountMatch = extractedText.match(/(?:fizetendő összeg|fizetendő)(?:\s*:)?\s*([0-9\s.,]{2,})\s*(?:Ft|HUF)/i);
+              if (amountMatch && amountMatch[1]) {
+                const rawAmount = amountMatch[1].replace(/\s/g, '').replace(/\./g, '').replace(/,/g, '.');
+                const numericAmount = parseFloat(rawAmount);
+                
+                if (!isNaN(numericAmount) && numericAmount > 0) {
+                  console.log(`Found amount directly: ${numericAmount}`);
+                  bill.amount = numericAmount;
+                }
               }
+            } catch (amountError) {
+              console.error('Error extracting amount directly:', amountError);
             }
-          } catch (amountError) {
-            console.error('Error extracting amount directly:', amountError);
           }
         }
-      });
-      
-      console.log(`${this.name} extractor confidence:`, result.confidence);
-      
-      return result;
+        
+        return {
+          success: true,
+          bills: extractionResult.bills,
+          confidence: extractionResult.confidence
+        };
+      } else {
+        return {
+          success: false,
+          bills: [],
+          confidence: extractionResult.confidence || 0,
+          error: extractionResult.error
+        };
+      }
     } catch (error) {
-      console.error(`Error extracting from PDF in ${this.name}:`, error);
+      console.error('Error in unified pattern PDF extraction:', error);
       return {
         success: false,
         bills: [],
-        error: error instanceof Error ? error.message : String(error),
-        debug: {
-          strategy: this.name,
-          error: error instanceof Error ? error.message : String(error)
-        }
+        confidence: 0,
+        error: error instanceof Error ? error.message : 'Unknown error'
       };
     }
   }
@@ -353,12 +235,16 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
   }
 
   /**
-   * Helper to get user ID from storage
+   * Helper method to get the user ID from storage - service worker compatible
    */
   private async getUserIdFromStorage(): Promise<string | null> {
     try {
-      const userData = await chrome.storage.local.get(['supabase_user_id', 'google_user_id']);
-      return userData?.supabase_user_id || null;
+      // Use chrome.storage which is available in service workers
+      return new Promise((resolve) => {
+        chrome.storage.local.get(['supabase_user_id'], (result) => {
+          resolve(result?.supabase_user_id || null);
+        });
+      });
     } catch (error) {
       console.warn('Error getting user ID from storage:', error);
       return null;

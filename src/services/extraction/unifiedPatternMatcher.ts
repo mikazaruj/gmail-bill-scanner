@@ -37,6 +37,7 @@ export interface UnifiedExtractionContext {
   messageId?: string;
   attachmentId?: string;
   fileName?: string;
+  userId?: string;
 }
 
 export interface UnifiedExtractionResult {
@@ -149,8 +150,65 @@ export class UnifiedPatternMatcher {
         };
       }
       
-      // Step 5: Extract bill fields
-      const fieldsToExtract = ['amount', 'dueDate', 'billingDate', 'vendor', 'accountNumber', 'invoiceNumber'];
+      // Step 5: Determine which fields to extract
+      let fieldsToExtract = ['amount', 'dueDate', 'billingDate', 'vendor', 'accountNumber', 'invoiceNumber'];
+      let userFields: any[] = [];
+      
+      // If we have a user ID, get their field mappings
+      if (context.userId) {
+        try {
+          // Import the user field mapping service
+          const { getUserFieldMappings, mapFieldNameToPatternType } = await import('../userFieldMappingService');
+          
+          // Get user field mappings
+          userFields = await getUserFieldMappings(context.userId);
+          
+          if (userFields.length > 0) {
+            console.log(`Using ${userFields.length} user-defined fields for extraction`);
+            
+            // Set debug info about user fields
+            if (debug) {
+              debugData.userFields = userFields.map(f => ({
+                name: f.name,
+                type: f.field_type,
+                enabled: f.is_enabled
+              }));
+            }
+            
+            // Map user fields to internal field names
+            const mappedFields = userFields.map(field => {
+              const patternType = mapFieldNameToPatternType(field.name, field.field_type);
+              
+              // Map pattern types to internal field names
+              const patternToInternalField: Record<string, string> = {
+                'vendor': 'vendor',
+                'amount': 'amount',
+                'date': 'billingDate',
+                'due_date': 'dueDate',
+                'invoice_number': 'invoiceNumber',
+                'account_number': 'accountNumber'
+              };
+              
+              return patternToInternalField[patternType] || 'text';
+            });
+            
+            // Filter out duplicate fields and invalid ones
+            fieldsToExtract = [...new Set(mappedFields.filter(field => field !== 'text'))];
+            
+            // Ensure we always extract amount at minimum
+            if (!fieldsToExtract.includes('amount')) {
+              fieldsToExtract.push('amount');
+            }
+            
+            console.log('Fields to extract based on user mappings:', fieldsToExtract);
+          }
+        } catch (error) {
+          console.error('Error getting user field mappings:', error);
+          // Continue with default fields
+        }
+      }
+      
+      // Step 6: Extract bill fields
       const extractedFields: Record<string, string | null> = {};
       
       for (const field of fieldsToExtract) {
@@ -161,7 +219,7 @@ export class UnifiedPatternMatcher {
         }
       }
       
-      // Step 6: Process extracted fields
+      // Step 7: Process extracted fields
       // Amount is required - if not found, extraction failed
       if (!extractedFields.amount) {
         return {
