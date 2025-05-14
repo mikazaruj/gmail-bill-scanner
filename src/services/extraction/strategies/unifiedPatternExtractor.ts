@@ -91,7 +91,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
       
       // Check if we already have extracted text
       if ('pdfText' in context && context.pdfText) {
-        extractedText = context.pdfText;
+        extractedText = context.pdfText as string;
       } else if (context.pdfData) {
         try {
           // Use a helper method to extract text since the matcher's method is private
@@ -114,7 +114,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
       }
       
       // Check if we have a user ID to get user-defined fields
-      const userId = 'userId' in context ? context.userId : await this.getUserIdFromStorage();
+      const userId = 'userId' in context ? context.userId as string : await this.getUserIdFromStorage();
       
       if (userId) {
         console.log(`Extracting PDF data based on user-defined fields for user ${userId}`);
@@ -130,7 +130,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
           
           if (enabledFields.length > 0) {
             // Create a proper extraction context
-            const extractionContext: any = {
+            const extractionContext = {
               text: extractedText,
               fileName: context.fileName,
               messageId: context.messageId,
@@ -173,6 +173,49 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
                   
                   // Update the bill with the mapped data if needed
                   // This is where we would update fields based on the mapping if required
+                  
+                  // Check if bill has proper amount - if not, let's try to extract it directly from text
+                  const bill = extractionResult.bills[0];
+                  if (!bill.amount || bill.amount === 0) {
+                    console.log('Bill has zero amount, attempting direct extraction from text');
+                    
+                    try {
+                      // Try to find MVM-specific amount pattern
+                      const amountMatch = extractedText.match(/(?:fizetendő összeg|fizetendő)(?:\s*:)?\s*([0-9\s.,]{2,})\s*(?:Ft|HUF)/i);
+                      if (amountMatch && amountMatch[1]) {
+                        const rawAmount = amountMatch[1].replace(/\s/g, '').replace(/\./g, '').replace(/,/g, '.');
+                        const numericAmount = parseFloat(rawAmount);
+                        
+                        if (!isNaN(numericAmount) && numericAmount > 0) {
+                          console.log(`Found amount directly: ${numericAmount}`);
+                          bill.amount = numericAmount;
+                        }
+                      }
+                    } catch (amountError) {
+                      console.error('Error extracting amount directly:', amountError);
+                    }
+                  }
+                  
+                  // Check if bill has proper vendor - if not, try to extract it directly
+                  if (!bill.vendor || bill.vendor === 'Unknown') {
+                    console.log('Bill has unknown vendor, attempting direct extraction from text');
+                    
+                    try {
+                      // Try to find MVM-specific vendor pattern
+                      const vendorMatch = extractedText.match(/(?:szolgáltató\s+neve\s*:|szolgáltató\s*:)\s*([A-Za-z][\w\s]+?)(?:\s+|$)/i);
+                      if (vendorMatch && vendorMatch[1]) {
+                        const vendorName = vendorMatch[1].trim();
+                        console.log(`Found vendor directly: ${vendorName}`);
+                        // Type-safe vendor assignment
+                        bill.vendor = vendorName;
+                      } else if (extractedText.includes('MVM')) {
+                        // Type-safe vendor assignment
+                        bill.vendor = 'MVM';
+                      }
+                    } catch (vendorError) {
+                      console.error('Error extracting vendor directly:', vendorError);
+                    }
+                  }
                 } catch (mappingError) {
                   console.warn('Error mapping bill to user fields:', mappingError);
                 }
@@ -190,7 +233,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
       console.log('Falling back to default extraction for PDF');
       
       // Create a proper extraction context for default extraction
-      const defaultExtractionContext: any = {
+      const defaultExtractionContext = {
         text: extractedText,
         fileName: context.fileName,
         messageId: context.messageId,
@@ -215,6 +258,48 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
             attachmentId: context.attachmentId,
             fileName: context.fileName
           };
+        }
+        
+        // Ensure vendor and amount are extracted properly
+        if (!bill.vendor || bill.vendor === 'Unknown') {
+          console.log('Bill has unknown vendor, attempting direct extraction from text');
+          
+          try {
+            // Try to find MVM-specific vendor pattern
+            const vendorMatch = extractedText.match(/(?:szolgáltató\s+neve\s*:|szolgáltató\s*:)\s*([A-Za-z][\w\s]+?)(?:\s+|$)/i);
+            if (vendorMatch && vendorMatch[1]) {
+              const vendorName = vendorMatch[1].trim();
+              console.log(`Found vendor directly: ${vendorName}`);
+              // Type-safe vendor assignment
+              bill.vendor = vendorName;
+            } else if (extractedText.includes('MVM')) {
+              // Type-safe vendor assignment
+              bill.vendor = 'MVM';
+            }
+          } catch (vendorError) {
+            console.error('Error extracting vendor directly:', vendorError);
+          }
+        }
+        
+        // Ensure amount is properly extracted
+        if (!bill.amount || bill.amount === 0) {
+          console.log('Bill has zero amount, attempting direct extraction from text');
+          
+          try {
+            // Try to find MVM-specific amount pattern
+            const amountMatch = extractedText.match(/(?:fizetendő összeg|fizetendő)(?:\s*:)?\s*([0-9\s.,]{2,})\s*(?:Ft|HUF)/i);
+            if (amountMatch && amountMatch[1]) {
+              const rawAmount = amountMatch[1].replace(/\s/g, '').replace(/\./g, '').replace(/,/g, '.');
+              const numericAmount = parseFloat(rawAmount);
+              
+              if (!isNaN(numericAmount) && numericAmount > 0) {
+                console.log(`Found amount directly: ${numericAmount}`);
+                bill.amount = numericAmount;
+              }
+            }
+          } catch (amountError) {
+            console.error('Error extracting amount directly:', amountError);
+          }
         }
       });
       

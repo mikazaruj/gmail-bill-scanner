@@ -122,7 +122,7 @@ export class UserFieldExtractor implements ExtractionStrategy {
       console.log(`${this.name} extracting from email: ${context.subject}`);
       
       // Get user ID from storage if not provided in context
-      const userId = 'userId' in context ? context.userId : await this.getUserIdFromStorage();
+      const userId = 'userId' in context ? context.userId as string : await this.getUserIdFromStorage();
       
       if (!userId) {
         console.log(`${this.name}: No user ID available, cannot extract based on user fields`);
@@ -188,7 +188,7 @@ export class UserFieldExtractor implements ExtractionStrategy {
       let extractedText: string | undefined;
       
       if ('pdfText' in context && context.pdfText) {
-        extractedText = context.pdfText;
+        extractedText = context.pdfText as string;
       } else if (context.pdfData) {
         try {
           extractedText = await this.extractTextFromPdf(context.pdfData);
@@ -207,7 +207,7 @@ export class UserFieldExtractor implements ExtractionStrategy {
       }
       
       // Get user ID from storage if not provided in context
-      const userId = 'userId' in context ? context.userId : await this.getUserIdFromStorage();
+      const userId = 'userId' in context ? context.userId as string : await this.getUserIdFromStorage();
       
       if (!userId) {
         console.log(`${this.name}: No user ID available, cannot extract based on user fields`);
