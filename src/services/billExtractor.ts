@@ -1,4 +1,5 @@
 import { BillPattern, allPatterns } from '../services/extraction/patterns';
+import { UserFieldExtractor } from './extraction/strategies/userFieldExtractor';
 
 export interface ExtractedBill {
   type: string;
@@ -11,8 +12,85 @@ export interface ExtractedBill {
   confidence: number;
 }
 
+// Create singleton instance of UserFieldExtractor
+let userFieldExtractor: UserFieldExtractor | null = null;
+
+/**
+ * Get the UserFieldExtractor instance
+ */
+export function getUserFieldExtractor(): UserFieldExtractor {
+  if (!userFieldExtractor) {
+    userFieldExtractor = new UserFieldExtractor();
+  }
+  return userFieldExtractor;
+}
+
+/**
+ * Extract bill data from email subject and body using user-defined field mappings
+ * 
+ * @param subject Email subject
+ * @param body Email body
+ * @param messageId Message ID
+ * @param userId User ID for field mappings
+ * @returns Promise resolving to extracted bill data or null if no bill was detected
+ */
+export async function extractBillDataFromEmail(
+  subject: string, 
+  body: string, 
+  messageId: string,
+  userId?: string
+): Promise<any | null> {
+  try {
+    // Get extractor instance
+    const extractor = getUserFieldExtractor();
+    
+    // Create extraction context
+    const context = {
+      messageId,
+      subject,
+      body,
+      date: new Date().toISOString(),
+      from: '',
+      language: detectLanguage(body),
+      userId
+    };
+    
+    // Extract bill data
+    const result = await extractor.extractFromEmail(context);
+    
+    if (result.success && result.bills.length > 0) {
+      console.log('Successfully extracted bill from email using user-defined fields');
+      return result.bills[0];
+    }
+    
+    // Fall back to legacy extraction if user field extraction failed
+    console.log('User field extraction failed, falling back to legacy extraction');
+    return extractBillData(subject, body);
+  } catch (error) {
+    console.error('Error extracting bill data from email:', error);
+    
+    // Fall back to legacy extraction
+    return extractBillData(subject, body);
+  }
+}
+
+// Simple language detection
+function detectLanguage(text: string): 'en' | 'hu' {
+  const hungarianWords = ['számla', 'fizetendő', 'összeg', 'forint', 'szolgáltató', 'határidő'];
+  
+  // Check if any Hungarian words are in the text
+  for (const word of hungarianWords) {
+    if (text.toLowerCase().includes(word.toLowerCase())) {
+      return 'hu';
+    }
+  }
+  
+  return 'en';
+}
+
 /**
  * Extract bill data from email subject and body using language-specific patterns
+ * Legacy method kept for backward compatibility
  * 
  * @param subject Email subject
  * @param body Email body
@@ -147,5 +225,41 @@ function parseDateFromString(dateStr: string, language: 'en' | 'hu'): Date | und
   } catch (e) {
     console.error('Failed to parse date:', dateStr, e);
     return undefined;
+  }
+}
+
+/**
+ * Process extracted bills through field mapping transformation
+ * 
+ * @param userId User ID for field mappings
+ * @param bills Extracted bills to process
+ * @returns Bills with user-defined field structure
+ */
+export async function processExtractedBills(
+  userId: string, 
+  bills: ExtractedBill[]
+): Promise<Record<string, any>[]> {
+  try {
+    console.log(`Processing ${bills.length} extracted bills for user ${userId}`);
+    
+    // Try to import the mapping transformer
+    try {
+      const { mapBillToUserFields } = await import('./fieldMapping/mappingTransformer');
+      
+      // Map each bill to user-defined field structure
+      const mappedBills = await Promise.all(
+        bills.map(bill => mapBillToUserFields(bill as any, userId))
+      );
+      
+      console.log(`Successfully mapped ${mappedBills.length} bills to user-defined field structure`);
+      return mappedBills;
+    } catch (error) {
+      console.error('Error importing or using field mapping transformer:', error);
+      // Return original bills as fallback
+      return bills as any[];
+    }
+  } catch (error) {
+    console.error('Error processing extracted bills:', error);
+    return bills as any[];
   }
 } 

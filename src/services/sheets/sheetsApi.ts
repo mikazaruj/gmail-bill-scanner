@@ -1,4 +1,4 @@
-import { Bill } from '../../types';
+import { Bill } from '../../types/Bill';
 
 // Google Sheets API scope
 export const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
@@ -99,6 +99,20 @@ export async function appendBillData(
     // Try to get user ID from storage
     const userData = await chrome.storage.local.get(['supabase_user_id', 'google_user_id']);
     const userId = userData?.supabase_user_id || userData?.google_user_id;
+    
+    // Transform bills to user-defined field structure
+    let mappedBills = bills;
+    if (userId) {
+      try {
+        const { mapBillToUserFields } = await import('../fieldMapping/mappingTransformer');
+        mappedBills = await Promise.all(
+          bills.map(bill => mapBillToUserFields(bill, userId))
+        );
+        console.log('Bills mapped to user-defined field structure', mappedBills);
+      } catch (mapError) {
+        console.warn('Error mapping bills to user fields, using original data:', mapError);
+      }
+    }
     
     // Try to get field mappings if we have a userId
     let fieldMappings: any[] = [];
@@ -203,7 +217,7 @@ export async function appendBillData(
     }
     
     // Transform bill data to match field mappings
-    const rows = bills.map(bill => {
+    const rows = mappedBills.map(bill => {
       // Create array with enough space for all enabled fields
       const numColumns = Math.max(...Object.values(fieldToColumnMap)) + 1;
       const row = Array(numColumns).fill('');
@@ -711,13 +725,25 @@ export async function addBillToSheet(spreadsheetId: string, sheetName: string, b
   try {
     const token = await getAuthToken([SHEETS_SCOPE]);
     
-    // Format date values
-    const formattedDate = bill.dueDate.toISOString().split('T')[0]; // YYYY-MM-DD
-    const createdAt = bill.createdAt.toISOString();
+    // Format date values with null checks
+    const formattedDate = bill.dueDate ? bill.dueDate.toISOString().split('T')[0] : ''; // YYYY-MM-DD
+    const createdAt = bill.createdAt ? bill.createdAt.toISOString() : new Date().toISOString();
     
     // Try to get user ID from storage
     const userData = await chrome.storage.local.get(['supabase_user_id', 'google_user_id']);
     const userId = userData?.supabase_user_id || userData?.google_user_id;
+    
+    // Map bill to user-defined field structure if we have userId
+    let mappedBill: Record<string, any> = bill as Record<string, any>;
+    if (userId) {
+      try {
+        const { mapBillToUserFields } = await import('../fieldMapping/mappingTransformer');
+        mappedBill = await mapBillToUserFields(bill, userId);
+        console.log('Bill mapped to user-defined field structure', mappedBill);
+      } catch (mapError) {
+        console.warn('Error mapping bill to user fields, using original data:', mapError);
+      }
+    }
     
     // Try to get field mappings if we have a userId
     let fieldMappings: any[] = [];
@@ -807,7 +833,7 @@ export async function addBillToSheet(spreadsheetId: string, sheetName: string, b
     };
     
     // Log the bill data for debugging
-    console.log('Bill data in addBillToSheet:', bill);
+    console.log('Bill data in addBillToSheet:', mappedBill);
     
     // Get the number of columns we need
     const numColumns = Math.max(...Object.values(fieldToColumnMap)) + 1;
@@ -815,7 +841,7 @@ export async function addBillToSheet(spreadsheetId: string, sheetName: string, b
     const row = Array(numColumns).fill('');
     
     // Map each bill property to its corresponding column
-    Object.entries(bill).forEach(([key, value]) => {
+    Object.entries(mappedBill).forEach(([key, value]) => {
       // Skip id and updatedAt
       if (key === 'id' || key === 'updatedAt') return;
       
