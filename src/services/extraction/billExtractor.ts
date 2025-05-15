@@ -23,6 +23,7 @@ import { extractTextFromPdf } from '../pdf/pdfService';
 import { ExtractionResult } from "../../types";
 import { decodeBase64 } from '../../utils/base64Decode';
 import { createBill } from "../../utils/billTransformers"; // Import createBill
+import { createDynamicBill, ensureBillFormat } from '../dynamicBillFactory'; // Static import
 
 // Gmail message header interface
 interface GmailMessageHeader {
@@ -36,6 +37,9 @@ interface GmailMessageHeader {
 export class BillExtractor {
   private strategies: ExtractionStrategy[] = [];
   private initialized = false;
+  private fieldMappings: any[] = [];
+  private fieldMappingDict: Record<string, any> = {};
+  public isInitializedForUser = false;
   
   constructor() {
     this.initializeStrategies();
@@ -67,6 +71,70 @@ export class BillExtractor {
     } catch (error) {
       console.error('Error initializing extraction strategies:', error);
       this.initialized = false;
+    }
+  }
+
+  /**
+   * Initialize with user field mappings
+   * 
+   * @param fieldMappings Array of field mappings from the database
+   */
+  async initializeWithFieldMappings(fieldMappings: any[]): Promise<void> {
+    try {
+      this.fieldMappings = fieldMappings;
+      
+      // Create a field mapping dictionary for easy lookup
+      this.fieldMappingDict = {};
+      fieldMappings.forEach(mapping => {
+        this.fieldMappingDict[mapping.name] = mapping;
+      });
+      
+      console.log('Bill extractor initialized with user field mappings:', 
+        fieldMappings.map(m => m.name).join(', '));
+      
+      // Initialize extractors with field mappings
+      await this.initializeExtractorsWithFieldMappings(fieldMappings);
+      
+      this.isInitializedForUser = true;
+    } catch (error) {
+      console.error('Error initializing bill extractor with field mappings:', error);
+    }
+  }
+
+  /**
+   * Initialize extractors with field mappings
+   */
+  private async initializeExtractorsWithFieldMappings(fieldMappings: any[]): Promise<void> {
+    try {
+      // Reset strategies
+      this.strategies = [];
+      
+      // Create new extractors with field mappings
+      // Unified pattern extractor as primary with field mappings
+      const unifiedStrategy = new UnifiedPatternExtractor();
+      
+      // Check if the strategy supports field mappings
+      if (typeof (unifiedStrategy as any).setFieldMappings === 'function') {
+        (unifiedStrategy as any).setFieldMappings(fieldMappings);
+        console.log('Set field mappings on UnifiedPatternExtractor');
+      } else {
+        // Try to set mappings directly
+        (unifiedStrategy as any).fieldMappings = fieldMappings;
+      }
+      
+      this.registerStrategy(unifiedStrategy);
+      console.log(`Registered UnifiedPatternExtractor with ${fieldMappings.length} user field mappings`);
+      
+      // Add the other strategies as fallbacks
+      const patternStrategy = new PatternBasedExtractor();
+      this.registerStrategy(patternStrategy);
+      
+      const regexStrategy = new RegexBasedExtractor();
+      this.registerStrategy(regexStrategy);
+      
+      this.initialized = true;
+    } catch (error) {
+      console.error('Error initializing extraction strategies with field mappings:', error);
     }
   }
   
@@ -274,6 +342,22 @@ export class BillExtractor {
       // Log the userId if available in options
       if (options.userId) {
         console.log(`PDF extraction with userId: ${options.userId}`);
+        
+        // If we have a userId but field mappings aren't initialized, try to fetch them
+        if (options.userId && this.fieldMappings.length === 0 && !this.isInitializedForUser) {
+          try {
+            // Try to get field mappings if available
+            const { getUserFieldMappings } = await import('../userFieldMappingService');
+            const mappings = await getUserFieldMappings(options.userId);
+            
+            if (mappings && mappings.length > 0) {
+              await this.initializeWithFieldMappings(mappings);
+              console.log(`Initialized field mappings for PDF extraction: ${mappings.length} mappings`);
+            }
+          } catch (error) {
+            console.error('Error getting field mappings for PDF extraction:', error);
+          }
+        }
       } else {
         console.log(`PDF extraction without userId - no user context available`);
       }
@@ -310,6 +394,20 @@ export class BillExtractor {
       // Store the extracted text in the PDF data for strategies to use
       // Keeping the original PDF data as a backup
       const processedPdfData = extractedText;
+      
+      // If we have field mappings, ensure each strategy has them set
+      if (this.fieldMappings.length > 0) {
+        for (const strategy of this.strategies) {
+          if (typeof (strategy as any).setFieldMappings === 'function') {
+            try {
+              (strategy as any).setFieldMappings(this.fieldMappings);
+              console.log(`Set field mappings on ${strategy.name} for PDF extraction`);
+            } catch (error) {
+              console.error(`Error setting field mappings on ${strategy.name}:`, error);
+            }
+          }
+        }
+      }
       
       // Try each strategy in order, stopping when we find bills
       let highestConfidence = 0;
@@ -375,7 +473,8 @@ export class BillExtractor {
               console.log('Found both email and PDF bills, merging for best results');
               
               // Ensure both bills have required fields before merging
-              const { ensureBillFormat } = await import('../dynamicBillFactory');
+              // Use the statically imported ensureBillFormat
+              // const { ensureBillFormat } = await import('../dynamicBillFactory');
               
               // Convert emailBill to DynamicBill if needed
               const dynamicEmailBill = ensureBillFormat(emailBill);
@@ -599,8 +698,8 @@ export class BillExtractor {
     try {
       // If userId is provided, use the dynamicBillFactory
       if (options.userId) {
-        // Import dynamically to avoid circular dependencies
-        const { createDynamicBill, ensureBillFormat } = await import('../dynamicBillFactory');
+        // Use the statically imported createDynamicBill function
+        // const { createDynamicBill } = await import('../dynamicBillFactory');
         
         // Prepare core bill fields
         const coreBillFields = {

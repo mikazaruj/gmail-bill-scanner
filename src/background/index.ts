@@ -38,6 +38,8 @@ import type { FieldMapping } from '../types/FieldMapping';
 // At the top of the file add these imports
 import { getSupabaseClient } from '../services/supabase/client';
 import { cleanupPdfResources } from '../services/pdf/main';
+// at the top of the file with other imports, add:
+import { initializeBillExtractorForUser } from '../services/extraction/extractorFactory';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -2080,7 +2082,29 @@ async function handleScanEmails(
     console.log(`Found ${messageIds.length} matching emails, processing...`);
     
     // Get the bill extractor
-    const billExtractor = getSharedBillExtractor ? getSharedBillExtractor() : null;
+    let billExtractor;
+    if (getSharedBillExtractor) {
+      // Get the shared bill extractor
+      billExtractor = getSharedBillExtractor();
+      
+      // Initialize with user field mappings if we have a user ID
+      if (userId) {
+        try {
+          console.log(`Initializing bill extractor with field mappings for user ${userId}`);
+          
+          // Use the static import instead of dynamic import
+          // const { initializeBillExtractorForUser } = await import('../services/extraction/extractorFactory');
+          
+          // Initialize the extractor with the user's field mappings
+          billExtractor = await initializeBillExtractorForUser(userId);
+          console.log('Bill extractor initialized with user field mappings');
+        } catch (initError) {
+          console.error('Failed to initialize bill extractor with user field mappings:', initError);
+          // Continue with default fields as fallback
+        }
+      }
+    }
+    
     if (!billExtractor) {
       console.error('Bill extractor not available');
       sendResponse({ success: false, error: 'Bill extractor not available' });
@@ -2260,7 +2284,7 @@ async function handleScanEmails(
                         attachmentData.fileName,
                         {
                           language: settings.inputLanguage as 'en' | 'hu' | undefined,
-                          userId: userId // Pass userId to enable field mapping
+                          userId: userId // Make sure userId is passed here
                         }
                       );
                       
@@ -2999,23 +3023,66 @@ async function storeTokenDirectly(userId: string, token: string): Promise<{ succ
 
 /**
  * Transform a Bill object to the BillData format for UI compatibility
+ * Preserves all dynamic fields from DynamicBill
  */
 function transformBillToBillData(bill: Bill): BillData {
-  return {
+  // Safely get vendor name if vendor is an object
+  let vendorName = bill.vendor;
+  if (bill.vendor && typeof bill.vendor === 'object' && 'name' in bill.vendor) {
+    vendorName = (bill.vendor as any).name;
+  }
+
+  // Log bill fields for debugging purposes
+  const billKeys = Object.keys(bill);
+  console.log(`Bill fields: ${billKeys.join(', ')}`);
+  
+  // Check for user-defined fields
+  const hasUserFields = billKeys.some(key => 
+    key === 'issuer_name' || 
+    key === 'total_amount' || 
+    key === 'invoice_date' || 
+    key === 'due_date' || 
+    key === 'invoice_number' || 
+    key === 'account_number'
+  );
+  
+  if (hasUserFields) {
+    console.log('Found user-defined fields in bill, prioritizing them in transformation');
+  }
+
+  // Start with an empty object
+  const billData: BillData = {
     id: bill.id,
-    vendor: bill.vendor,
-    amount: bill.amount,
-    date: bill.date,
+    // Map fields using user field names (if available) or fall back to default
+    vendor: bill.issuer_name || vendorName,
+    amount: bill.total_amount || bill.amount,
+    date: bill.invoice_date || bill.date,
     currency: bill.currency,
-    category: bill.category,
-    dueDate: bill.dueDate,
-    isPaid: bill.isPaid,
-    notes: bill.notes,
-    accountNumber: bill.accountNumber,
+    category: bill.bill_category || bill.category,
+    dueDate: bill.due_date || bill.dueDate,
+    accountNumber: bill.account_number || bill.accountNumber,
+    invoiceNumber: bill.invoice_number || bill.invoiceNumber,
     emailId: bill.source?.messageId,
-    // Include any attachment ID from the source if available
-    attachmentId: bill.source?.attachmentId
+    attachmentId: bill.source?.attachmentId,
+    isPaid: bill.isPaid || false,
+    notes: bill.notes || '',
+    source: bill.source || { type: 'manual' },
+    extractionMethod: bill.extractionMethod,
+    extractionConfidence: bill.extractionConfidence,
+    language: bill.language
   };
+
+  // Add any other fields that might exist in the bill
+  // This preserves any dynamically added fields
+  for (const [key, value] of Object.entries(bill)) {
+    if (!(key in billData) && value !== undefined && value !== null) {
+      (billData as any)[key] = value;
+    }
+  }
+
+  console.log(`Transformed bill to BillData with fields: ${Object.keys(billData).join(', ')}`);
+  
+  return billData;
 }
 
 /**
@@ -3300,50 +3367,70 @@ function deduplicateBills(bills: BillData[]): BillData[] {
         console.log(`Comparing bills - PDF: ${JSON.stringify({
           id: pdfBill.id,
           vendor: pdfBill.vendor,
+          issuer_name: pdfBill.issuer_name,
           amount: pdfBill.amount,
+          total_amount: pdfBill.total_amount,
           date: pdfBill.date,
-          invoiceNumber: pdfBill.invoiceNumber || 'N/A'
+          invoice_date: pdfBill.invoice_date,
+          invoiceNumber: pdfBill.invoiceNumber,
+          invoice_number: pdfBill.invoice_number
         })} with Email: ${JSON.stringify({
           id: emailBill.id,
           vendor: emailBill.vendor,
+          issuer_name: emailBill.issuer_name,
           amount: emailBill.amount,
+          total_amount: emailBill.total_amount,
           date: emailBill.date,
-          invoiceNumber: emailBill.invoiceNumber || 'N/A'
+          invoice_date: emailBill.invoice_date, 
+          invoiceNumber: emailBill.invoiceNumber,
+          invoice_number: emailBill.invoice_number
         })}`);
 
         // 1. Most important: Check invoice number (if available)
-        if (pdfBill.invoiceNumber && emailBill.invoiceNumber && 
-            pdfBill.invoiceNumber.trim() === emailBill.invoiceNumber.trim()) {
-          console.log(`Found exact invoice number match: ${pdfBill.invoiceNumber}`);
+        const pdfInvoiceNo = pdfBill.invoice_number || pdfBill.invoiceNumber;
+        const emailInvoiceNo = emailBill.invoice_number || emailBill.invoiceNumber;
+        
+        if (pdfInvoiceNo && emailInvoiceNo && 
+            pdfInvoiceNo.trim() === emailInvoiceNo.trim()) {
+          console.log(`Found exact invoice number match: ${pdfInvoiceNo}`);
           return true; // If invoice numbers match exactly, this is definitely the same bill
         }
         
         // Continue with other matching criteria for bills without invoice numbers
         
-        // 2. Check vendor name (exact or partial match)
-        const vendorMatch = pdfBill.vendor && emailBill.vendor && (
-          pdfBill.vendor.toLowerCase().trim() === emailBill.vendor.toLowerCase().trim() ||
-          pdfBill.vendor.toLowerCase().includes(emailBill.vendor.toLowerCase()) ||
-          emailBill.vendor.toLowerCase().includes(pdfBill.vendor.toLowerCase())
+        // 2. Check vendor name (exact or partial match) - check user field first, then fallback
+        const pdfVendor = pdfBill.issuer_name || pdfBill.vendor;
+        const emailVendor = emailBill.issuer_name || emailBill.vendor;
+        
+        const vendorMatch = pdfVendor && emailVendor && (
+          pdfVendor.toLowerCase().trim() === emailVendor.toLowerCase().trim() ||
+          pdfVendor.toLowerCase().includes(emailVendor.toLowerCase()) ||
+          emailVendor.toLowerCase().includes(pdfVendor.toLowerCase())
         );
         
-        // 3. Check amount (exact or close match)
+        // 3. Check amount (exact or close match) - check user field first, then fallback
+        const pdfAmount = pdfBill.total_amount || pdfBill.amount;
+        const emailAmount = emailBill.total_amount || emailBill.amount;
+        
         let amountMatch = false;
-        if (pdfBill.amount && emailBill.amount) {
+        if (pdfAmount && emailAmount) {
           // Simple amount comparison - they should be within 1% of each other to match
-          const difference = Math.abs(pdfBill.amount - emailBill.amount);
-          const maxAmount = Math.max(pdfBill.amount, emailBill.amount);
+          const difference = Math.abs(pdfAmount - emailAmount);
+          const maxAmount = Math.max(pdfAmount, emailAmount);
           amountMatch = difference / maxAmount <= 0.01; // 1% tolerance
         }
         
-        // 4. Check bill date (if available)
+        // 4. Check bill date (if available) - check user field first, then fallback
+        const pdfDate = pdfBill.invoice_date || pdfBill.date;
+        const emailDate = emailBill.invoice_date || emailBill.date;
+        
         let dateMatch = false;
-        if (pdfBill.date && emailBill.date) {
-          const pdfDate = new Date(pdfBill.date);
-          const emailDate = new Date(emailBill.date);
+        if (pdfDate && emailDate) {
+          const pdfDateObj = new Date(pdfDate);
+          const emailDateObj = new Date(emailDate);
           
           // Calculate date difference in days
-          const diffTime = Math.abs(pdfDate.getTime() - emailDate.getTime());
+          const diffTime = Math.abs(pdfDateObj.getTime() - emailDateObj.getTime());
           const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
           
           if (diffDays <= 7) { // Within a week
@@ -3357,7 +3444,7 @@ function deduplicateBills(bills: BillData[]): BillData[] {
           return true; // Same vendor and amount is a strong indicator
         }
         
-        if (vendorMatch && dateMatch && (pdfBill.amount === emailBill.amount)) {
+        if (vendorMatch && dateMatch && (pdfAmount === emailAmount)) {
           console.log(`MATCH: Same vendor, date, and identical amounts`);
           return true; // Same vendor and date with identical amounts is definitely a match
         }
@@ -3399,64 +3486,99 @@ function deduplicateBills(bills: BillData[]): BillData[] {
 }
 
 /**
- * Merges two bills (typically from PDF and email) into a single bill
- * with the best information from each source
+ * Merge bills from email and PDF with the same source
+ * @param pdfBill Bill extracted from PDF
+ * @param emailBill Bill extracted from email
+ * @returns Merged bill with best information from both sources
  */
 function mergeBills(pdfBill: BillData, emailBill: BillData): BillData {
-  // Start with a copy of the PDF bill (generally has more details)
-  const mergedBill: BillData = {
-    ...pdfBill,
-    mergedFromEmail: true
-  };
+  console.log('Merging bills from email and PDF sources');
+  console.log('PDF bill fields:', Object.keys(pdfBill));
+  console.log('Email bill fields:', Object.keys(emailBill));
   
-  // Helper function to select the best value
+  // Check for user-defined fields
+  const hasUserFields = Object.keys(emailBill).some(key => 
+    key === 'issuer_name' || 
+    key === 'total_amount' || 
+    key === 'invoice_date' || 
+    key === 'due_date' || 
+    key === 'invoice_number' || 
+    key === 'account_number'
+  );
+  
+  if (hasUserFields) {
+    console.log('Using user-defined field names for bill merging');
+  }
+
+  // Helper function to select best value between two options
   const selectBest = <T>(pdfValue: T | undefined, emailValue: T | undefined): T | undefined => {
-    // If only one value exists, use it
-    if (!pdfValue && !emailValue) return undefined;
-    if (pdfValue && !emailValue) return pdfValue;
-    if (!pdfValue && emailValue) return emailValue;
+    // If one is undefined, return the other
+    if (pdfValue === undefined) return emailValue;
+    if (emailValue === undefined) return pdfValue;
     
-    // Both values exist - prefer the PDF value in most cases
-    // as it's typically more detailed
+    // For strings, prefer non-empty values
+    if (typeof pdfValue === 'string' && typeof emailValue === 'string') {
+      if (pdfValue === 'Unknown' || pdfValue === 'N/A' || pdfValue === '') return emailValue;
+      if (emailValue === 'Unknown' || emailValue === 'N/A' || emailValue === '') return pdfValue;
+      // Prefer longer strings (likely more information)
+      return pdfValue.length > emailValue.length ? pdfValue : emailValue;
+    }
+    
+    // For numbers, prefer non-zero values
+    if (typeof pdfValue === 'number' && typeof emailValue === 'number') {
+      if (pdfValue === 0) return emailValue;
+      if (emailValue === 0) return pdfValue;
+      // Prefer larger amounts for better accuracy
+      return Math.abs(pdfValue) > Math.abs(emailValue) ? pdfValue : emailValue;
+    }
+    
+    // For dates, prefer more recent dates
+    if (pdfValue instanceof Date && emailValue instanceof Date) {
+      return pdfValue > emailValue ? pdfValue : emailValue;
+    }
+    
+    // Default to PDF value (often more detailed)
     return pdfValue;
   };
-  
-  // Select the best value for each field
-  mergedBill.vendor = selectBest(pdfBill.vendor, emailBill.vendor);
-  mergedBill.category = selectBest(pdfBill.category, emailBill.category);
-  mergedBill.date = selectBest(pdfBill.date, emailBill.date);
-  mergedBill.dueDate = selectBest(pdfBill.dueDate, emailBill.dueDate);
-  mergedBill.accountNumber = selectBest(pdfBill.accountNumber, emailBill.accountNumber);
-  mergedBill.invoiceNumber = selectBest(pdfBill.invoiceNumber, emailBill.invoiceNumber);
-  mergedBill.currency = selectBest(pdfBill.currency, emailBill.currency);
-  
-  // Keep track of both sources
-  mergedBill.emailId = emailBill.emailId || pdfBill.emailId;
-  
-  // Handle the amount field - use the most reliable source
-  if (pdfBill.amount && emailBill.amount) {
-    const pdfAmount = pdfBill.amount;
-    const emailAmount = emailBill.amount;
+
+  // Create a new bill with the best information from both sources
+  const mergedBill: BillData = {
+    ...emailBill, // Start with all email bill data
+
+    // Use PDF data for fields that have better information in PDF
+    // For user-defined fields if they exist
+    issuer_name: selectBest(pdfBill.issuer_name, emailBill.issuer_name),
+    invoice_number: selectBest(pdfBill.invoice_number, emailBill.invoice_number),
+    invoice_date: selectBest(pdfBill.invoice_date, emailBill.invoice_date),
+    due_date: selectBest(pdfBill.due_date, emailBill.due_date),
+    total_amount: selectBest(pdfBill.total_amount, emailBill.total_amount),
+    account_number: selectBest(pdfBill.account_number, emailBill.account_number),
+    bill_category: selectBest(pdfBill.bill_category, emailBill.bill_category),
     
-    // Check if amounts are close (within 5%)
-    const difference = Math.abs(pdfAmount - emailAmount);
-    const maxAmount = Math.max(pdfAmount, emailAmount);
-    const percentDifference = difference / maxAmount;
+    // For standard fields as fallback
+    vendor: selectBest(pdfBill.vendor, emailBill.vendor),
+    amount: selectBest(pdfBill.amount, emailBill.amount),
+    date: selectBest(pdfBill.date, emailBill.date),
+    dueDate: selectBest(pdfBill.dueDate, emailBill.dueDate),
+    accountNumber: selectBest(pdfBill.accountNumber, emailBill.accountNumber),
+    invoiceNumber: selectBest(pdfBill.invoiceNumber, emailBill.invoiceNumber),
+    category: selectBest(pdfBill.category, emailBill.category),
     
-    if (percentDifference <= 0.05) {
-      // Amounts are close, prefer PDF value as it's typically from the source document
-      mergedBill.amount = pdfAmount;
-      console.log(`Using PDF amount in merged bill: ${pdfAmount} (email amount ${emailAmount} is within 5%)`);
-    } else {
-      // Amounts differ significantly, log the discrepancy but still prefer PDF 
-      // since we've already determined these bills should be merged
-      mergedBill.amount = pdfAmount;
-      console.log(`Using PDF amount in merged bill despite difference: PDF ${pdfAmount}, Email ${emailAmount}`);
-    }
-  } else {
-    // One of the amounts is missing, use whichever one exists
-    mergedBill.amount = pdfBill.amount || emailBill.amount || 0;
-  }
+    // Keep track of both sources
+    source: {
+      type: 'combined',
+      messageId: emailBill.emailId || pdfBill.emailId,
+      attachmentId: pdfBill.attachmentId
+    },
+    
+    // Set confidence to the higher of the two
+    extractionConfidence: Math.max(
+      emailBill.extractionConfidence || 0, 
+      pdfBill.extractionConfidence || 0
+    )
+  };
+  
+  console.log('Merged bill created with fields:', Object.keys(mergedBill).join(', '));
   
   return mergedBill;
 }

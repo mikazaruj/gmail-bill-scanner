@@ -1,5 +1,5 @@
 import React from 'react';
-import { ExtractedBill } from '../../services/billExtractor';
+import { DynamicBill as ExtractedBill } from '../../types/Bill';
 
 interface BillsListProps {
   bills: {

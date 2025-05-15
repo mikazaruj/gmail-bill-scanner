@@ -7,6 +7,8 @@
 import { BillExtractor } from "./billExtractor";
 import { PatternBasedExtractor } from "./strategies/patternBasedExtractor";
 import { RegexBasedExtractor } from "./strategies/regexBasedExtractor";
+import { FieldMapping } from "../fieldMapping";
+import { getUserFieldMappings } from "../userFieldMappingService";
 
 /**
  * Creates a fully configured BillExtractor instance with all strategies registered
@@ -44,4 +46,48 @@ export function getSharedBillExtractor(): BillExtractor {
     sharedExtractor = createBillExtractor();
   }
   return sharedExtractor;
+}
+
+/**
+ * Initialize the bill extractor with user field mappings
+ * 
+ * @param userId The user ID to get field mappings for
+ * @returns The initialized bill extractor
+ */
+export async function initializeBillExtractorForUser(userId: string): Promise<BillExtractor> {
+  const extractor = getSharedBillExtractor();
+  
+  try {
+    // Use the statically imported getUserFieldMappings function instead of dynamic import
+    // const { getFieldMappings } = await import('../fieldMapping');
+    
+    // Get user's field mappings
+    const fieldMappings = await getUserFieldMappings(userId);
+    console.log(`Initializing bill extractor with ${fieldMappings.length} field mappings for user ${userId}`);
+    
+    // Only use enabled fields
+    const enabledMappings = fieldMappings.filter(mapping => mapping.is_enabled);
+    console.log(`Using ${enabledMappings.length} enabled field mappings: ${enabledMappings.map(m => m.name).join(', ')}`);
+    
+    // Initialize the extractor with these mappings if there are any
+    if (enabledMappings.length > 0) {
+      // Add the initializeWithFieldMappings method if it exists
+      if (typeof extractor.initializeWithFieldMappings === 'function') {
+        await extractor.initializeWithFieldMappings(enabledMappings);
+        console.log('Bill extractor initialized with user field mappings');
+      } else {
+        console.warn('BillExtractor.initializeWithFieldMappings is not implemented');
+        
+        // Set the field mappings directly as a fallback
+        (extractor as any).fieldMappings = enabledMappings;
+        console.log('Set field mappings directly on bill extractor');
+      }
+    } else {
+      console.log('No enabled field mappings found, using default field names');
+    }
+  } catch (error) {
+    console.error('Error initializing bill extractor with field mappings:', error);
+  }
+  
+  return extractor;
 } 

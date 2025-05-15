@@ -24,6 +24,10 @@ import {
 import { extractTextFromPdfBuffer } from "../pdf/pdfService";
 import { createBill } from "../../utils/billTransformers";
 import { debugPdfExtraction } from "../debug/pdfDebugUtils";
+// Import dynamicBillFactory statically instead of dynamically
+import { createDynamicBill, mapExtractedValues, ensureBillFormat } from "../dynamicBillFactory";
+// Import userFieldMappingService statically instead of dynamically
+import { getUserFieldMappings, mapFieldNameToPatternType } from "../userFieldMappingService";
 
 export interface UnifiedExtractionOptions {
   language?: 'en' | 'hu';
@@ -38,6 +42,7 @@ export interface UnifiedExtractionContext {
   attachmentId?: string;
   fileName?: string;
   userId?: string;
+  userFields?: any[];
 }
 
 export interface UnifiedExtractionResult {
@@ -53,6 +58,47 @@ export interface UnifiedExtractionResult {
  * Combines PDF extraction with Hungarian-specific pattern matching
  */
 export class UnifiedPatternMatcher {
+  private languagePatterns: Record<string, any> = {};
+  private fieldMappings: any[] = [];
+  private hasUserFields: boolean = false;
+  
+  constructor() {
+    this.initialize();
+  }
+  
+  /**
+   * Initialize language patterns and other resources
+   */
+  private initialize(): void {
+    try {
+      // Preload language patterns
+      const languages: Array<'en' | 'hu'> = ['en', 'hu'];
+      
+      // Load patterns for each language
+      languages.forEach(lang => {
+        try {
+          this.languagePatterns[lang] = getLanguagePatterns(lang);
+        } catch (e) {
+          console.error(`Error loading patterns for ${lang}:`, e);
+        }
+      });
+      
+      console.log(`Initialized language patterns for unified matcher: ${Object.keys(this.languagePatterns).join(', ')}`);
+    } catch (error) {
+      console.error('Error initializing unified pattern matcher:', error);
+    }
+  }
+  
+  /**
+   * Set field mappings for extraction
+   * @param fieldMappings User's field mappings
+   */
+  setFieldMappings(fieldMappings: any[]): void {
+    this.fieldMappings = fieldMappings;
+    this.hasUserFields = fieldMappings.length > 0;
+    console.log(`UnifiedPatternMatcher: Set ${fieldMappings.length} field mappings: ${fieldMappings.map(m => m.name).join(', ')}`);
+  }
+  
   /**
    * Extract bill information using a unified approach
    * 
@@ -65,25 +111,25 @@ export class UnifiedPatternMatcher {
     options: UnifiedExtractionOptions = {}
   ): Promise<UnifiedExtractionResult> {
     try {
-      const language = options.language || 'hu';
-      const debug = options.debug || false;
-      const debugData: any = {};
+      // Set default options
+      const { 
+        language = 'en', 
+        applyStemming = true,
+        debug = false
+      } = options;
       
-      // Step 1: Get the text to analyze
-      let textToAnalyze = context.text || '';
+      let text = context.text;
       
-      // If we have PDF data but no text, extract the text
-      if (!textToAnalyze && context.pdfData) {
+      // Check for existing field mappings passed in context
+      if (context.userFields && Array.isArray(context.userFields) && context.userFields.length > 0) {
+        console.log(`Using ${context.userFields.length} field mappings from context`);
+        this.setFieldMappings(context.userFields);
+      }
+      
+      // If we don't have text but have PDF data, extract text
+      if (!text && context.pdfData) {
         try {
-          console.log('Extracting text from PDF data');
-          textToAnalyze = await this.extractTextFromPdf(context.pdfData);
-          
-          // Add a debug log to show the first part of the extracted text
-          console.log('PDF Text (first 500 chars):', textToAnalyze.substring(0, 500));
-          
-          if (debug) {
-            debugData.extractedText = textToAnalyze.substring(0, 1000); // Truncate for debug output
-          }
+          text = await this.extractTextFromPdf(context.pdfData);
         } catch (error) {
           console.error('Error extracting text from PDF:', error);
           return {
@@ -94,357 +140,224 @@ export class UnifiedPatternMatcher {
         }
       }
       
-      if (!textToAnalyze) {
+      if (!text) {
         return {
           success: false,
           bills: [],
-          error: 'No text to analyze'
+          error: 'No text to extract from'
         };
       }
       
-      // Step 2: Apply stemming and normalization if requested
-      let processedText = textToAnalyze;
-      if (options.applyStemming && language === 'hu') {
-        // Normalize text for better pattern matching
-        processedText = normalizeHungarianText(textToAnalyze);
-        if (debug) {
-          debugData.normalizedText = processedText.substring(0, 500);
-        }
+      // Apply language-specific text normalization
+      let normalizedText = text;
+      if (language === 'hu' && applyStemming) {
+        normalizedText = normalizeHungarianText(text);
       }
       
-      // Step 3: Load language-specific patterns
-      const patterns = getLanguagePatterns(language);
+      // Detect bill type from the text
+      const billTypeObj = detectServiceType(normalizedText, language as 'en' | 'hu');
+      // Convert to string to fix type error
+      const billType = typeof billTypeObj === 'string' ? billTypeObj : 
+                      (billTypeObj && typeof billTypeObj === 'object' && 'type' in billTypeObj) ? 
+                      billTypeObj.type : 'unknown';
       
-      // Step 4: Calculate confidence using stem-based matching for Hungarian
-      let confidence = 0;
-      if (language === 'hu') {
-        // Get important stems for Hungarian bills
-        const billStems = ['számla', 'fizet', 'összeg', 'határidő', 'díj'];
-        
-        // Check if text contains bill-related stems
-        if (textContainsStemVariations(textToAnalyze, billStems)) {
-          confidence += 0.3;
-        }
-        
-        // Calculate stem match score
-        const stemScore = calculateStemMatchScore(textToAnalyze, billStems);
-        confidence += stemScore * 0.5;
-        
-        if (debug) {
-          debugData.stemScore = stemScore;
-        }
-      } else {
-        // Use standard confidence calculation for non-Hungarian
-        confidence = calculateConfidence(textToAnalyze, language);
-      }
+      console.log(`Detected bill type: ${billType}`);
       
-      if (debug) {
-        debugData.confidence = confidence;
-      }
+      // Extract vendor based on patterns
+      const vendorInfo = await this.extractVendor(normalizedText, language as 'en' | 'hu');
+      console.log(`Detected vendor: ${vendorInfo?.name || 'unknown'}`);
       
-      // If confidence is too low, return early
-      if (confidence < 0.3) {
-        return {
-          success: false,
-          bills: [],
-          confidence,
-          error: 'Confidence too low to be a bill',
-          debugData: debug ? debugData : undefined
-        };
-      }
+      // Use bill type-specific extraction
+      let extractionType = billType === 'unknown' ? 'generic' : billType;
+      console.log(`Using ${extractionType} bill extraction patterns`);
       
-      // Step 5: Determine which fields to extract
-      let fieldsToExtract = ['amount', 'dueDate', 'billingDate', 'vendor', 'accountNumber', 'invoiceNumber'];
-      let userFields: any[] = [];
+      // Create a basic bill with common fields
+      let bill = await createBill({
+        id: `extraction-${Date.now()}`,
+        vendor: vendorInfo?.name || 'Unknown',
+        amount: 0, // Will be updated during extraction
+        currency: 'HUF', // Default currency
+        date: new Date(), // Will be updated during extraction
+        // Add bill category from detected type if available
+        category: billType,  // billType is now a string
+        source: {
+          type: context.pdfData ? 'pdf' : 'email',
+          messageId: context.messageId,
+          attachmentId: context.attachmentId,
+          fileName: context.fileName
+        },
+        extractionMethod: 'unified-pattern-matcher',
+        language
+      });
       
-      // If we have a user ID, get their field mappings
+      // Use context.userId if available to create a dynamic bill
       if (context.userId) {
         try {
-          console.log(`Getting user field mappings for user ID: ${context.userId}`);
+          // Create a dynamic bill but note that it might not meet all Bill interface requirements
+          const dynamicBill = await createDynamicBill({
+            id: `extraction-${Date.now()}`,
+            source: {
+              type: context.pdfData ? 'pdf' : 'email',
+              messageId: context.messageId,
+              attachmentId: context.attachmentId,
+              fileName: context.fileName
+            },
+            extractionMethod: 'unified-pattern-matcher',
+            language
+            // Do not include category here, as CoreBillFields doesn't have it
+          }, context.userId);
           
-          // Import the user field mapping service
-          const { getUserFieldMappings, mapFieldNameToPatternType } = await import('../userFieldMappingService');
-          
-          // Get user field mappings
-          userFields = await getUserFieldMappings(context.userId);
-          
-          console.log(`Retrieved ${userFields.length} user field mappings:`, userFields);
-          
-          if (userFields.length > 0) {
-            console.log(`Using ${userFields.length} user-defined fields for extraction`);
+          // Ensure the dynamic bill has the required fields for the Bill interface
+          if (dynamicBill) {
+            // The bill might be missing required fields from the Bill interface
+            // Use type assertion to work around this or set missing fields
+            if (!dynamicBill.vendor) dynamicBill.vendor = 'Unknown';
+            if (!dynamicBill.category) dynamicBill.category = billType;
             
-            // Set debug info about user fields
-            if (debug) {
-              debugData.userFields = userFields.map(f => ({
-                name: f.name,
-                type: f.field_type,
-                enabled: f.is_enabled
-              }));
-            }
-            
-            // Map user fields to internal field names
-            const mappedFields = userFields.map(field => {
-              const patternType = mapFieldNameToPatternType(field.name, field.field_type);
-              console.log(`Mapped user field ${field.name} (${field.field_type}) to pattern type: ${patternType}`);
-              
-              // Map pattern types to internal field names
-              const patternToInternalField: Record<string, string> = {
-                'vendor': 'vendor',
-                'amount': 'amount',
-                'date': 'billingDate',
-                'due_date': 'dueDate',
-                'invoice_number': 'invoiceNumber',
-                'account_number': 'accountNumber'
-              };
-              
-              return patternToInternalField[patternType] || 'text';
-            });
-            
-            // Filter out duplicate fields and invalid ones
-            fieldsToExtract = [...new Set(mappedFields.filter(field => field !== 'text'))];
-            
-            // Ensure we always extract amount at minimum
-            if (!fieldsToExtract.includes('amount')) {
-              fieldsToExtract.push('amount');
-            }
-            
-            console.log('Fields to extract based on user mappings:', fieldsToExtract);
+            // Use type assertion to treat it as a Bill
+            bill = dynamicBill as Bill;
           }
         } catch (error) {
-          console.error('Error getting user field mappings:', error);
-          console.error('Error details:', JSON.stringify(error));
-          // Continue with default fields
+          console.error('Error creating dynamic bill:', error);
         }
       }
       
-      // Step 6: Extract bill fields
-      const extractedFields: Record<string, string | null> = {};
+      // Extract all standard and user-defined fields
+      const extractedFields: Record<string, any> = {};
       
-      for (const field of fieldsToExtract) {
-        extractedFields[field] = extractBillField(textToAnalyze, field, language);
+      // First extract standard fields
+      const amount = this.extractAmount(normalizedText, language);
+      const dueDate = this.extractDueDate(normalizedText, language);
+      const invoiceDate = this.extractDate(normalizedText, language);
+      const accountNumber = this.extractAccountNumber(normalizedText, language);
+      const invoiceNumber = this.extractInvoiceNumber(normalizedText, language);
+      const category = billType !== 'unknown' ? billType : 'Other';
+      
+      // Store in both standard and user-defined fields
+      if (amount !== null) {
+        extractedFields.amount = amount;
+        bill.amount = amount;
+      }
+      
+      if (dueDate) {
+        extractedFields.dueDate = dueDate;
+        bill.dueDate = dueDate;
+      }
+      
+      if (invoiceDate) {
+        extractedFields.date = invoiceDate;
+        bill.date = invoiceDate;
+      }
+      
+      if (accountNumber) {
+        extractedFields.accountNumber = accountNumber;
+        bill.accountNumber = accountNumber;
+      }
+      
+      if (invoiceNumber) {
+        extractedFields.invoiceNumber = invoiceNumber;
+        bill.invoiceNumber = invoiceNumber;
+      }
+      
+      if (category) {
+        extractedFields.category = category;
+        bill.category = category;
+      }
+      
+      // Map standard fields to user-defined fields if we have them
+      if (this.hasUserFields) {
+        console.log(`Mapping to ${this.fieldMappings.length} user-defined fields`);
         
-        if (debug && extractedFields[field]) {
-          debugData[`extracted_${field}`] = extractedFields[field];
-        }
-      }
-      
-      // Step 7: Process extracted fields
-      // Amount is required - if not found, extraction failed
-      if (!extractedFields.amount) {
-        return {
-          success: false,
-          bills: [],
-          confidence,
-          error: 'Could not extract amount',
-          debugData: debug ? debugData : undefined
-        };
-      }
-      
-      // Parse amount
-      let amount = 0;
-      try {
-        amount = parseHungarianAmount(extractedFields.amount);
-      } catch (e) {
-        console.error('Error parsing amount:', e);
-        return {
-          success: false,
-          bills: [],
-          confidence,
-          error: 'Error parsing amount',
-          debugData: debug ? debugData : undefined
-        };
-      }
-      
-      // Determine currency
-      let currency = "HUF"; // Default for Hungarian bills
-      
-      if (language !== 'hu') {
-        // For non-Hungarian, try to detect currency
-        if (textToAnalyze.includes('€') || textToAnalyze.toLowerCase().includes('eur')) {
-          currency = "EUR";
-        } else if (textToAnalyze.includes('$') || textToAnalyze.toLowerCase().includes('usd')) {
-          currency = "USD";
-        } else if (textToAnalyze.includes('£') || textToAnalyze.toLowerCase().includes('gbp')) {
-          currency = "GBP";
-        }
-      }
-      
-      // Detect service type
-      const serviceTypeInfo = detectServiceType(textToAnalyze, language);
-      let category: string | undefined = serviceTypeInfo?.category || "Other";
-      
-      // Parse dates
-      let billingDate = new Date();
-      let dueDate: Date | undefined = undefined;
-      
-      if (extractedFields.billingDate) {
-        try {
-          const parsedDate = new Date(extractedFields.billingDate);
-          if (!isNaN(parsedDate.getTime())) {
-            billingDate = parsedDate;
+        this.fieldMappings.forEach(mapping => {
+          // Map fields based on field type and naming pattern
+          if (mapping.is_enabled) {
+            // Map vendor/issuer name
+            if (mapping.name.includes('issuer') && vendorInfo?.name) {
+              bill[mapping.name] = vendorInfo.name;
+              extractedFields[mapping.name] = vendorInfo.name;
+              console.log(`Mapped vendor '${vendorInfo.name}' to user field '${mapping.name}'`);
+            } 
+            // Map amount/total_amount
+            else if ((mapping.name.includes('total') || mapping.name.includes('amount')) && amount !== null) {
+              bill[mapping.name] = amount;
+              extractedFields[mapping.name] = amount;
+              console.log(`Mapped amount ${amount} to user field '${mapping.name}'`);
+            } 
+            // Map date/invoice_date
+            else if (mapping.name.includes('invoice_date') && invoiceDate) {
+              bill[mapping.name] = invoiceDate;
+              extractedFields[mapping.name] = invoiceDate;
+              console.log(`Mapped invoice date to user field '${mapping.name}'`);
+            } 
+            // Map dueDate/due_date
+            else if (mapping.name.includes('due_date') && dueDate) {
+              bill[mapping.name] = dueDate;
+              extractedFields[mapping.name] = dueDate;
+              console.log(`Mapped due date to user field '${mapping.name}'`);
+            } 
+            // Map invoiceNumber/invoice_number
+            else if (mapping.name.includes('invoice_number') && invoiceNumber) {
+              bill[mapping.name] = invoiceNumber;
+              extractedFields[mapping.name] = invoiceNumber;
+              console.log(`Mapped invoice number to user field '${mapping.name}'`);
+            } 
+            // Map accountNumber/account_number
+            else if (mapping.name.includes('account') && accountNumber) {
+              bill[mapping.name] = accountNumber;
+              extractedFields[mapping.name] = accountNumber;
+              console.log(`Mapped account number to user field '${mapping.name}'`);
+            } 
+            // Map category/bill_category
+            else if (mapping.name.includes('category') && category) {
+              bill[mapping.name] = category;
+              extractedFields[mapping.name] = category;
+              console.log(`Mapped category to user field '${mapping.name}'`);
+            }
           }
-        } catch (e) {
-          console.error('Error parsing billing date:', e);
-        }
-      }
-      
-      if (extractedFields.dueDate) {
-        try {
-          const parsedDate = new Date(extractedFields.dueDate);
-          if (!isNaN(parsedDate.getTime())) {
-            dueDate = parsedDate;
-          }
-        } catch (e) {
-          console.error('Error parsing due date:', e);
-        }
-      }
-      
-      // Get vendor
-      const vendor = extractedFields.vendor || 
-                    (context.fileName ? context.fileName.split('.')[0] : 'Unknown');
-      
-      // Detect bill type using the new method
-      const billType = this.detectBillType(processedText);
-      console.log(`Detected bill type: ${billType}`);
-
-      // Extract vendor based on bill type
-      const detectedVendor = this.extractVendorByBillType(processedText, billType);
-      if (detectedVendor !== 'Unknown') {
-        console.log(`Detected vendor: ${detectedVendor}`);
-        extractedFields.vendor = detectedVendor;
-      }
-
-      // Apply bill type specific extraction
-      if (billType === 'utility') {
-        console.log('Using utility bill extraction patterns');
-        const utilityFields = this.extractHungarianUtilityBill(processedText);
-        
-        // Override extracted fields with utility-specific ones
-        if (utilityFields.amount) {
-          extractedFields.amount = utilityFields.amount;
-        }
-        
-        if (utilityFields.invoiceNumber) {
-          extractedFields.invoiceNumber = utilityFields.invoiceNumber;
-        }
-        
-        if (utilityFields.accountNumber) {
-          extractedFields.accountNumber = utilityFields.accountNumber;
-        }
-        
-        if (utilityFields.billingPeriod) {
-          // Store in debug data
-          if (debug && debugData) {
-            debugData.billingPeriod = utilityFields.billingPeriod;
-          }
-        }
-        
-        if (utilityFields.dueDate) {
-          extractedFields.dueDate = utilityFields.dueDate;
-        }
-        
-        if (utilityFields.vendor) {
-          extractedFields.vendor = utilityFields.vendor;
-        }
-      }
-      
-      // Import dynamicBillFactory
-      try {
-        // Import dynamically to avoid circular dependencies
-        const { createDynamicBill, mapExtractedValues, ensureBillFormat } = await import('../dynamicBillFactory');
-        
-        // Prepare core bill fields
-        const coreBillFields = {
-          id: context.messageId && context.attachmentId 
-              ? `pdf-${context.messageId}-${context.attachmentId}`
-              : `extraction-${Date.now()}`,
-          source: {
-            type: (context.pdfData ? 'pdf' : 'manual') as 'pdf' | 'manual' | 'email' | 'combined',
-            messageId: context.messageId,
-            attachmentId: context.attachmentId,
-            fileName: context.fileName
-          },
-          extractionMethod: 'unified-pattern-matcher',
-          extractionConfidence: confidence,
-        };
-        
-        // Map all extracted fields to user-defined fields if userId is available
-        let mappedValues: Record<string, any> = {
-          vendor,
-          amount,
-          currency,
-          date: billingDate,
-          dueDate,
-          category,
-          accountNumber: extractedFields.accountNumber || undefined,
-          invoiceNumber: extractedFields.invoiceNumber || undefined,
-          language,
-        };
-        
-        // If userId is available, map values according to user-defined fields
-        if (context.userId) {
-          console.log(`Mapping bill fields using user ID: ${context.userId}`);
-          mappedValues = await mapExtractedValues(
-            { ...extractedFields, amount, currency, billingDate }, 
-            context.userId
-          );
-        }
-        
-        // Create dynamic bill based on user field mappings if userId is available
-        let bill;
-        if (context.userId) {
-          bill = await createDynamicBill(coreBillFields, context.userId, mappedValues);
-        } else {
-          // For compatibility with existing code when no userId is available
-          bill = ensureBillFormat({
-            ...coreBillFields,
-            ...mappedValues
-          });
-        }
-        
-        return {
-          success: true,
-          bills: [bill],
-          confidence,
-          debugData: debug ? debugData : undefined
-        };
-      } catch (error) {
-        console.error('Error creating dynamic bill:', error);
-        
-        // Fallback to old bill creation method
-        // Create the bill using the old approach
-        const bill = createBill({
-          id: context.messageId && context.attachmentId 
-              ? `pdf-${context.messageId}-${context.attachmentId}`
-              : `extraction-${Date.now()}`,
-          vendor,
-          amount,
-          currency,
-          date: billingDate,
-          category,
-          dueDate,
-          accountNumber: extractedFields.accountNumber || undefined,
-          invoiceNumber: extractedFields.invoiceNumber || undefined,
-          source: {
-            type: context.pdfData ? 'pdf' : 'manual',
-            messageId: context.messageId,
-            attachmentId: context.attachmentId,
-            fileName: context.fileName
-          },
-          extractionMethod: 'unified-pattern-matcher',
-          language,
-          extractionConfidence: confidence
         });
         
-        return {
-          success: true,
-          bills: [bill],
-          confidence,
-          debugData: debug ? debugData : undefined
-        };
+        // Log all mapped user fields
+        const userFieldValues = Object.entries(bill)
+          .filter(([key]) => this.fieldMappings.some(m => m.name === key))
+          .map(([key, value]) => `${key}: ${value}`);
+        
+        if (userFieldValues.length > 0) {
+          console.log(`Successfully mapped ${userFieldValues.length} user fields: ${userFieldValues.join(', ')}`);
+        } else {
+          console.log('No user fields were mapped during extraction');
+        }
       }
+      
+      // Calculate confidence score based on how many fields we found
+      const confidenceFactors = [
+        vendorInfo?.name ? 0.2 : 0,
+        amount ? 0.2 : 0,
+        dueDate ? 0.15 : 0,
+        invoiceDate ? 0.15 : 0,
+        accountNumber ? 0.1 : 0,
+        invoiceNumber ? 0.1 : 0,
+        category ? 0.1 : 0
+      ];
+      
+      const confidence = confidenceFactors.reduce((sum, factor) => sum + factor, 0);
+      bill.extractionConfidence = confidence;
+      
+      // Only consider successful if we have at least vendor or amount
+      const success = confidence >= 0.2; // At least one major field
+      
+      // Create a single bill as the result
+      return {
+        success,
+        bills: success ? [bill] : [],
+        confidence,
+        debugData: debug ? {
+          strategy: 'unified-pattern',
+          extractedFields,
+          text: text.substring(0, 500) // First 500 chars for debugging
+        } : undefined
+      };
     } catch (error) {
-      console.error('Error in unified pattern matcher:', error);
+      console.error('Error in unified pattern extraction:', error);
       return {
         success: false,
         bills: [],
@@ -887,7 +800,7 @@ export class UnifiedPatternMatcher {
   /**
    * Extract vendor name based on bill type
    * @param text The text to extract from
-   * @param billType The detected bill type
+   * @param billType The detected bill type as a string
    * @returns The extracted vendor name
    */
   private extractVendorByBillType(text: string, billType: string): string {
@@ -926,5 +839,279 @@ export class UnifiedPatternMatcher {
     
     // If no vendor found, try to extract from file name or other context
     return 'Unknown';
+  }
+
+  /**
+   * Extract vendor information from text
+   * @param text Text to extract from
+   * @param language Language of the text
+   * @returns Vendor information object or null
+   */
+  private async extractVendor(text: string, language: 'en' | 'hu'): Promise<{name: string, category?: string} | null> {
+    try {
+      // Detect bill type - convert to string
+      const billTypeResult = detectServiceType(text, language);
+      const billType = typeof billTypeResult === 'string' ? billTypeResult : 
+                     (billTypeResult && typeof billTypeResult === 'object' && 'type' in billTypeResult ? 
+                       billTypeResult.type : 'unknown');
+      
+      // Extract vendor based on bill type
+      const vendorName = this.extractVendorByBillType(text, billType);
+      
+      if (!vendorName || vendorName === 'Unknown') {
+        // Try alternative patterns for vendor extraction
+        const utilityBillData = this.extractHungarianUtilityBill(text);
+        if (utilityBillData.vendor) {
+          return {
+            name: utilityBillData.vendor,
+            category: utilityBillData.category
+          };
+        }
+        
+        return null;
+      }
+      
+      return {
+        name: vendorName,
+        category: billType
+      };
+    } catch (error) {
+      console.error('Error extracting vendor:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Extract amount from text
+   * @param text Text to extract from
+   * @param language Language of the text
+   * @returns Extracted amount or null
+   */
+  private extractAmount(text: string, language: string): number | null {
+    try {
+      // For Hungarian text, use specialized extraction
+      if (language === 'hu') {
+        const utilityBillData = this.extractHungarianUtilityBill(text);
+        if (utilityBillData.amount) {
+          // Convert to number
+          const amountStr = utilityBillData.amount
+            .replace(/\s/g, '')    // Remove spaces
+            .replace(/\./g, '')    // Remove thousand separators
+            .replace(/,/g, '.');   // Convert decimal comma to point
+          
+          const amount = parseFloat(amountStr);
+          return isNaN(amount) ? null : amount;
+        }
+      }
+      
+      // Try to extract with pattern matching
+      const amountPatterns = [
+        /(?:összesen|fizetendő|végösszeg)(?:[^0-9]+)(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)(?:\s*|-)?(?:Ft|HUF)?/i,
+        /(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)(?:\s*|-)[Ff][Tt]\.?/i,
+        /(\d{1,3}(?:[., ]\d{3})*(?:[.,]\d{1,2})?)(?:\s*)[Hh][Uu][Ff]/i
+      ];
+      
+      for (const pattern of amountPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+          const amountStr = match[1]
+            .replace(/\s/g, '')    // Remove spaces
+            .replace(/\./g, '')    // Remove thousand separators
+            .replace(/,/g, '.');   // Convert decimal comma to point
+          
+          const amount = parseFloat(amountStr);
+          return isNaN(amount) ? null : amount;
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error extracting amount:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Extract due date from text
+   * @param text Text to extract from
+   * @param language Language of the text
+   * @returns Extracted due date or null
+   */
+  private extractDueDate(text: string, language: string): Date | null {
+    try {
+      // Hungarian date patterns
+      if (language === 'hu') {
+        const utilityBillData = this.extractHungarianUtilityBill(text);
+        if (utilityBillData.dueDate) {
+          return this.parseHungarianDate(utilityBillData.dueDate);
+        }
+      }
+      
+      // Try general patterns
+      const dueDatePatterns = [
+        /Fizetési határidő:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+        /Fizetési határidő:?\s*(\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4})/i,
+        /esedékesség:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+        /esedékesség:?\s*(\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4})/i
+      ];
+      
+      for (const pattern of dueDatePatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+          return this.parseHungarianDate(match[1]);
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error extracting due date:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Extract invoice date from text
+   * @param text Text to extract from
+   * @param language Language of the text
+   * @returns Extracted date or null
+   */
+  private extractDate(text: string, language: string): Date | null {
+    try {
+      // Hungarian date patterns
+      const datePatterns = [
+        /Számla kelte:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+        /Számla kelte:?\s*(\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4})/i,
+        /kiállítás dátuma:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+        /kiállítás dátuma:?\s*(\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4})/i,
+        /kelt:?\s*(\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2})/i,
+        /kelt:?\s*(\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4})/i
+      ];
+      
+      for (const pattern of datePatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+          return this.parseHungarianDate(match[1]);
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error extracting invoice date:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Extract account number from text
+   * @param text Text to extract from
+   * @param language Language of the text
+   * @returns Extracted account number or null
+   */
+  private extractAccountNumber(text: string, language: string): string | null {
+    try {
+      if (language === 'hu') {
+        const utilityBillData = this.extractHungarianUtilityBill(text);
+        if (utilityBillData.accountNumber) {
+          return utilityBillData.accountNumber;
+        }
+      }
+      
+      // Try general patterns
+      const accountNumberPatterns = [
+        /(?:ügyfél|fogyasztó)?\s*(?:azonosító|szám):\s*([A-Z0-9\-]+)/i,
+        /felhasználói\s+azonosító:\s*([A-Za-z0-9\-]+)/i,
+        /ügyfél\s+azonosító:\s*([A-Za-z0-9\-]+)/i,
+        /szerz[.őÖ]\s*szám:\s*([A-Za-z0-9\-]+)/i,
+        /(?:fogyasztási|felhasználási)\s+hely\s+(?:azonosító|szám):\s*([A-Z0-9\-]+)/i,
+        /Felhasználási\s+hely\s+(?:azonosító|szám)?:\s*([A-Za-z0-9\-]+)/i
+      ];
+      
+      for (const pattern of accountNumberPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+          return match[1].trim();
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error extracting account number:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Extract invoice number from text
+   * @param text Text to extract from
+   * @param language Language of the text
+   * @returns Extracted invoice number or null
+   */
+  private extractInvoiceNumber(text: string, language: string): string | null {
+    try {
+      if (language === 'hu') {
+        const utilityBillData = this.extractHungarianUtilityBill(text);
+        if (utilityBillData.invoiceNumber) {
+          return utilityBillData.invoiceNumber;
+        }
+      }
+      
+      // Try general patterns
+      const invoiceNumberPatterns = [
+        /Számla sorszáma:\s*([A-Z0-9-]+)/i,
+        /Számla sorszáma:\s*([0-9]+)/i,
+        /Sorszám:\s*([A-Za-z0-9\-\/]+)/i,
+        /Számlaszám:\s*([A-Za-z0-9\-\/]+)/i,
+        /Számla\s+azonosító:\s*([A-Za-z0-9\-\/]+)/i,
+        /Számlaszám:\s*\n?\s*([A-Za-z0-9\-\/]+)/i
+      ];
+      
+      for (const pattern of invoiceNumberPatterns) {
+        const match = text.match(pattern);
+        if (match && match[1]) {
+          return match[1].trim();
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error extracting invoice number:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Parse Hungarian date formats into Date object
+   * @param dateStr Date string in various formats
+   * @returns Date object or null if parsing fails
+   */
+  private parseHungarianDate(dateStr: string): Date | null {
+    try {
+      // Replace all separators with dash for consistency
+      const normalizedStr = dateStr.replace(/[.\/]/g, '-');
+      
+      // Check different date formats
+      let match;
+      
+      // Format: yyyy-mm-dd
+      match = normalizedStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+      if (match) {
+        const [_, year, month, day] = match;
+        return new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+      }
+      
+      // Format: dd-mm-yyyy
+      match = normalizedStr.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+      if (match) {
+        const [_, day, month, year] = match;
+        return new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+      }
+      
+      // If no format matched, try parsing directly
+      const date = new Date(dateStr);
+      return isNaN(date.getTime()) ? null : date;
+    } catch (error) {
+      console.error('Error parsing Hungarian date:', error);
+      return null;
+    }
   }
 } 
