@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PDF Processing</title>
+  <script src="pdf-worker.js"></script>
+  <script src="offscreen-pdf.js"></script>
+</head>
+<body>
+  <div id="pdf-container" style="display: none;"></div>
+  <script>
+    console.log('Offscreen PDF processing context initialized');
+    
+    // Listen for messages from the service worker
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      console.log('Offscreen document received message:', message.type);
+      
+      if (message.type === 'EXTRACT_PDF_TEXT') {
+        processPdf(message.pdfData, message.options)
+          .then(result => sendResponse(result))
+          .catch(error => {
+            console.error('Error processing PDF:', error);
+            sendResponse({
+              success: false,
+              error: error.message || 'Failed to process PDF'
+            });
+          });
+          
+        return true; // Keep the message channel open for async response
+      }
+      
+      // Other PDF-related operations can be added here
+    });
+    
+    // Notify the service worker that the offscreen document is ready
+    chrome.runtime.sendMessage({
+      type: 'OFFSCREEN_PDF_READY'
+    });
+  </script>
+</body>
+</html> 

@@ -24,14 +24,25 @@ export async function searchEmails(
   maxResults: number = 20
 ): Promise<string[]> {
   try {
+    console.log(`=== Gmail Search: Starting search with query: ${query} ===`);
+    console.log(`Gmail Search: Requesting max ${maxResults} results`);
+    
+    console.log('Gmail Search: Getting access token...');
     const accessToken = await getAccessTokenWithRefresh();
     
     if (!accessToken) {
+      console.error('Gmail Search: Not authenticated - no access token available');
       throw new Error("Not authenticated");
     }
+    console.log('Gmail Search: Access token received');
     
+    // Build the search URL
+    const searchUrl = `${GMAIL_API_BASE_URL}/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
+    console.log(`Gmail Search: Sending request to: ${searchUrl.substring(0, 100)}...`);
+    
+    console.log('Gmail Search: Fetching emails from Gmail API...');
     const response = await fetch(
-      `${GMAIL_API_BASE_URL}/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`,
+      searchUrl,
       {
         method: "GET",
         headers: {
@@ -41,13 +52,24 @@ export async function searchEmails(
       }
     );
     
+    console.log(`Gmail Search: Response received with status: ${response.status}`);
+    
     if (!response.ok) {
       const error = await response.json();
+      console.error('Gmail Search: API error response:', error);
       throw new Error(`Gmail API error: ${error.error?.message || "Unknown error"}`);
     }
     
+    console.log('Gmail Search: Parsing response...');
     const data = await response.json();
-    return (data.messages || []).map((message: { id: string }) => message.id);
+    
+    const messageCount = data.messages?.length || 0;
+    console.log(`Gmail Search: Found ${messageCount} matching emails`);
+    
+    const messageIds = (data.messages || []).map((message: { id: string }) => message.id);
+    console.log(`=== Gmail Search: Completed successfully ===`);
+    
+    return messageIds;
   } catch (error) {
     console.error("Error searching emails:", error);
     throw error;
@@ -121,7 +143,21 @@ export async function scanEmailsForBills(
         
         // Add any extracted bills to our results
         if (extractionResult.success && extractionResult.bills.length > 0) {
-          bills.push(...extractionResult.bills);
+          // Filter and convert DynamicBill objects to Bill objects by ensuring required fields are present
+          const validBills = extractionResult.bills.filter(bill => 
+            bill.vendor && bill.amount && bill.date && 
+            typeof bill.vendor === 'string' && 
+            typeof bill.amount === 'number' &&
+            bill.date instanceof Date
+          ) as Bill[];
+          
+          // Only add bills that have all required fields
+          bills.push(...validBills);
+          
+          // Log any bills that were filtered out
+          if (validBills.length < extractionResult.bills.length) {
+            console.warn(`Filtered out ${extractionResult.bills.length - validBills.length} bills due to missing required fields`);
+          }
         }
       } catch (error) {
         console.error(`Error processing email ${messageId}:`, error);
