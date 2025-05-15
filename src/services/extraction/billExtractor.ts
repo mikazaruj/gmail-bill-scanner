@@ -39,6 +39,7 @@ export class BillExtractor {
   private initialized = false;
   private fieldMappings: any[] = [];
   private fieldMappingDict: Record<string, any> = {};
+  private fieldsByType: Record<string, string[]> = {};
   public isInitializedForUser = false;
   
   constructor() {
@@ -89,8 +90,13 @@ export class BillExtractor {
         this.fieldMappingDict[mapping.name] = mapping;
       });
       
+      // Create a field type mapping for semantic field access
+      this.fieldsByType = this.buildFieldTypeMap(fieldMappings);
+      
       console.log('Bill extractor initialized with user field mappings:', 
         fieldMappings.map(m => m.name).join(', '));
+      
+      console.log('Field types available:', Object.keys(this.fieldsByType).join(', '));
       
       // Initialize extractors with field mappings
       await this.initializeExtractorsWithFieldMappings(fieldMappings);
@@ -99,6 +105,100 @@ export class BillExtractor {
     } catch (error) {
       console.error('Error initializing bill extractor with field mappings:', error);
     }
+  }
+
+  /**
+   * Build a mapping of field types to field names
+   * This enables semantic access to fields regardless of their actual names
+   */
+  private buildFieldTypeMap(fieldMappings: any[]): Record<string, string[]> {
+    const typeMap: Record<string, string[]> = {
+      vendor: [],
+      amount: [],
+      date: [],
+      dueDate: [],
+      invoiceNumber: [],
+      accountNumber: [],
+      category: []
+    };
+    
+    // Map fields by their explicit field_type if available
+    fieldMappings.forEach(mapping => {
+      const name = mapping.name;
+      const type = mapping.field_type || this.inferFieldType(name);
+      
+      if (type) {
+        if (!typeMap[type]) {
+          typeMap[type] = [];
+        }
+        typeMap[type].push(name);
+        console.log(`Mapped field ${name} to type ${type}`);
+      }
+    });
+    
+    // Add standard field names as fallbacks
+    if (typeMap.vendor.length === 0) typeMap.vendor.push('vendor');
+    if (typeMap.amount.length === 0) typeMap.amount.push('amount');
+    if (typeMap.date.length === 0) typeMap.date.push('date');
+    if (typeMap.dueDate.length === 0) typeMap.dueDate.push('dueDate');
+    if (typeMap.invoiceNumber.length === 0) typeMap.invoiceNumber.push('invoiceNumber');
+    if (typeMap.accountNumber.length === 0) typeMap.accountNumber.push('accountNumber');
+    if (typeMap.category.length === 0) typeMap.category.push('category');
+    
+    return typeMap;
+  }
+  
+  /**
+   * Infer field type from field name if not explicitly specified
+   */
+  private inferFieldType(fieldName: string): string | null {
+    const lowerName = fieldName.toLowerCase();
+    
+    if (lowerName.includes('vendor') || lowerName.includes('issuer') || lowerName.includes('company')) {
+      return 'vendor';
+    } else if (lowerName.includes('amount') || lowerName.includes('total') || lowerName.includes('cost')) {
+      return 'amount';
+    } else if (lowerName.includes('due') || lowerName.includes('payment') || lowerName.includes('deadline')) {
+      return 'dueDate';
+    } else if (lowerName.includes('invoice') && lowerName.includes('date') || lowerName.includes('issued')) {
+      return 'date';
+    } else if (lowerName.includes('invoice') && lowerName.includes('number') || lowerName.includes('reference')) {
+      return 'invoiceNumber';
+    } else if (lowerName.includes('account') || lowerName.includes('customer')) {
+      return 'accountNumber';
+    } else if (lowerName.includes('category') || lowerName.includes('type')) {
+      return 'category';
+    }
+    
+    return null;
+  }
+
+  /**
+   * Get field names by semantic type
+   * Returns all user-defined field names for a given type, falling back to standard names
+   */
+  getFieldsByType(type: string): string[] {
+    return this.fieldsByType[type] || [];
+  }
+
+  /**
+   * Get the best value for a field from a bill using semantic type
+   * Checks all user-defined fields of the given type, falling back to standard fields
+   */
+  getFieldValueByType(bill: any, type: string): any {
+    const fieldNames = this.getFieldsByType(type);
+    
+    // Try each field name in order
+    for (const fieldName of fieldNames) {
+      if (bill[fieldName] !== undefined && 
+          bill[fieldName] !== null && 
+          bill[fieldName] !== '' &&
+          bill[fieldName] !== 'Unknown') {
+        return bill[fieldName];
+      }
+    }
+    
+    return undefined;
   }
 
   /**

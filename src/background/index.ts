@@ -3023,45 +3023,72 @@ async function storeTokenDirectly(userId: string, token: string): Promise<{ succ
 
 /**
  * Transform a Bill object to the BillData format for UI compatibility
- * Preserves all dynamic fields from DynamicBill
+ * Dynamically handles user-defined field names
  */
 function transformBillToBillData(bill: Bill): BillData {
+  // Get all bill fields for logging
+  const billKeys = Object.keys(bill);
+  console.log(`Bill fields: ${billKeys.join(', ')}`);
+  
+  // Detect which type of field mapping is being used by looking for common user fields
+  const userFieldPatterns = {
+    vendor: ['issuer_name', 'company_name', 'provider'],
+    amount: ['total_amount', 'bill_amount', 'price'],
+    date: ['invoice_date', 'issue_date', 'bill_date'],
+    dueDate: ['due_date', 'payment_date', 'deadline'],
+    accountNumber: ['account_number', 'account_id', 'customer_id'],
+    invoiceNumber: ['invoice_number', 'reference_number', 'bill_id'],
+    category: ['bill_category', 'bill_type', 'expense_category']
+  };
+  
+  // Check if we have any user-defined fields
+  const hasUserFields = Object.values(userFieldPatterns).some(patterns => 
+    patterns.some(pattern => billKeys.includes(pattern))
+  );
+  
+  if (hasUserFields) {
+    console.log('Found user-defined fields in bill, using dynamic field mapping');
+  }
+  
   // Safely get vendor name if vendor is an object
   let vendorName = bill.vendor;
   if (bill.vendor && typeof bill.vendor === 'object' && 'name' in bill.vendor) {
     vendorName = (bill.vendor as any).name;
   }
 
-  // Log bill fields for debugging purposes
-  const billKeys = Object.keys(bill);
-  console.log(`Bill fields: ${billKeys.join(', ')}`);
-  
-  // Check for user-defined fields
-  const hasUserFields = billKeys.some(key => 
-    key === 'issuer_name' || 
-    key === 'total_amount' || 
-    key === 'invoice_date' || 
-    key === 'due_date' || 
-    key === 'invoice_number' || 
-    key === 'account_number'
-  );
-  
-  if (hasUserFields) {
-    console.log('Found user-defined fields in bill, prioritizing them in transformation');
-  }
+  // Helper function to get the best value for a field type
+  const getBestValue = (fieldType: string, defaultValue?: any): any => {
+    const patterns = userFieldPatterns[fieldType as keyof typeof userFieldPatterns] || [];
+    
+    // Try user-defined fields first
+    for (const pattern of patterns) {
+      if (bill[pattern] !== undefined && bill[pattern] !== null && bill[pattern] !== '' && bill[pattern] !== 'Unknown') {
+        console.log(`Using user-defined field ${pattern} for ${fieldType}`);
+        return bill[pattern];
+      }
+    }
+    
+    // Fall back to standard field
+    const standardValue = bill[fieldType];
+    if (standardValue !== undefined && standardValue !== null && standardValue !== '' && standardValue !== 'Unknown') {
+      return standardValue;
+    }
+    
+    // Last resort: return the default value
+    return defaultValue;
+  };
 
-  // Start with an empty object
+  // Start with the primary fields needed for UI display
   const billData: BillData = {
     id: bill.id,
-    // Map fields using user field names (if available) or fall back to default
-    vendor: bill.issuer_name || vendorName,
-    amount: bill.total_amount || bill.amount,
-    date: bill.invoice_date || bill.date,
+    vendor: getBestValue('vendor', vendorName),
+    amount: getBestValue('amount', bill.amount),
+    date: getBestValue('date', bill.date),
     currency: bill.currency,
-    category: bill.bill_category || bill.category,
-    dueDate: bill.due_date || bill.dueDate,
-    accountNumber: bill.account_number || bill.accountNumber,
-    invoiceNumber: bill.invoice_number || bill.invoiceNumber,
+    category: getBestValue('category', bill.category),
+    dueDate: getBestValue('dueDate', bill.dueDate),
+    accountNumber: getBestValue('accountNumber', bill.accountNumber),
+    invoiceNumber: getBestValue('invoiceNumber', bill.invoiceNumber),
     emailId: bill.source?.messageId,
     attachmentId: bill.source?.attachmentId,
     isPaid: bill.isPaid || false,
@@ -3072,8 +3099,8 @@ function transformBillToBillData(bill: Bill): BillData {
     language: bill.language
   };
 
-  // Add any other fields that might exist in the bill
-  // This preserves any dynamically added fields
+  // Copy over any additional fields from the bill that aren't already in billData
+  // This preserves any user-defined fields and any dynamic fields
   for (const [key, value] of Object.entries(bill)) {
     if (!(key in billData) && value !== undefined && value !== null) {
       (billData as any)[key] = value;
@@ -3294,7 +3321,10 @@ const initializePdfWorker = async () => {
 // Signal extension ready and initialize PDF worker
 signalExtensionReady();
 
-// Add this function for bill deduplication outside handleScanEmails
+/**
+ * Deduplicate bills by combining PDF and email bills from the same source
+ * Uses semantic field comparison to handle user-defined fields
+ */
 function deduplicateBills(bills: BillData[]): BillData[] {
   // Group bills by message ID (same email)
   const billsByMessageId = new Map<string, BillData[]>();
@@ -3364,89 +3394,64 @@ function deduplicateBills(bills: BillData[]): BillData[] {
         if (mergedEmailBillIds.has(emailBill.id)) return false;
         
         // Debug log to show what bills we're trying to match
-        console.log(`Comparing bills - PDF: ${JSON.stringify({
+        const pdfBillProperties = {
           id: pdfBill.id,
-          vendor: pdfBill.vendor,
-          issuer_name: pdfBill.issuer_name,
-          amount: pdfBill.amount,
-          total_amount: pdfBill.total_amount,
-          date: pdfBill.date,
-          invoice_date: pdfBill.invoice_date,
-          invoiceNumber: pdfBill.invoiceNumber,
-          invoice_number: pdfBill.invoice_number
-        })} with Email: ${JSON.stringify({
-          id: emailBill.id,
-          vendor: emailBill.vendor,
-          issuer_name: emailBill.issuer_name,
-          amount: emailBill.amount,
-          total_amount: emailBill.total_amount,
-          date: emailBill.date,
-          invoice_date: emailBill.invoice_date, 
-          invoiceNumber: emailBill.invoiceNumber,
-          invoice_number: emailBill.invoice_number
-        })}`);
-
-        // 1. Most important: Check invoice number (if available)
-        const pdfInvoiceNo = pdfBill.invoice_number || pdfBill.invoiceNumber;
-        const emailInvoiceNo = emailBill.invoice_number || emailBill.invoiceNumber;
+          // Get all available vendor fields
+          vendors: getFieldValues(pdfBill, ['issuer_name', 'vendor', 'company_name']),
+          // Get all available amount fields
+          amounts: getFieldValues(pdfBill, ['total_amount', 'amount', 'sum', 'cost']),
+          // Get all available date fields
+          dates: getFieldValues(pdfBill, ['invoice_date', 'date', 'bill_date']),
+          // Get all available invoice number fields
+          invoices: getFieldValues(pdfBill, ['invoice_number', 'invoiceNumber', 'reference'])
+        };
         
-        if (pdfInvoiceNo && emailInvoiceNo && 
-            pdfInvoiceNo.trim() === emailInvoiceNo.trim()) {
-          console.log(`Found exact invoice number match: ${pdfInvoiceNo}`);
-          return true; // If invoice numbers match exactly, this is definitely the same bill
+        const emailBillProperties = {
+          id: emailBill.id,
+          vendors: getFieldValues(emailBill, ['issuer_name', 'vendor', 'company_name']),
+          amounts: getFieldValues(emailBill, ['total_amount', 'amount', 'sum', 'cost']),
+          dates: getFieldValues(emailBill, ['invoice_date', 'date', 'bill_date']),
+          invoices: getFieldValues(emailBill, ['invoice_number', 'invoiceNumber', 'reference'])
+        };
+        
+        console.log('Comparing bills with properties:', {
+          pdf: pdfBillProperties,
+          email: emailBillProperties
+        });
+
+        // 1. First check: exact invoice number match
+        if (hasMatchingValue(pdfBillProperties.invoices, emailBillProperties.invoices)) {
+          console.log('Bills match by invoice number');
+          return true;
         }
         
-        // Continue with other matching criteria for bills without invoice numbers
-        
-        // 2. Check vendor name (exact or partial match) - check user field first, then fallback
-        const pdfVendor = pdfBill.issuer_name || pdfBill.vendor;
-        const emailVendor = emailBill.issuer_name || emailBill.vendor;
-        
-        const vendorMatch = pdfVendor && emailVendor && (
-          pdfVendor.toLowerCase().trim() === emailVendor.toLowerCase().trim() ||
-          pdfVendor.toLowerCase().includes(emailVendor.toLowerCase()) ||
-          emailVendor.toLowerCase().includes(pdfVendor.toLowerCase())
+        // 2. Check vendor names (exact or partial match)
+        const vendorMatch = hasMatchingValueFuzzy(
+          pdfBillProperties.vendors, 
+          emailBillProperties.vendors
         );
         
-        // 3. Check amount (exact or close match) - check user field first, then fallback
-        const pdfAmount = pdfBill.total_amount || pdfBill.amount;
-        const emailAmount = emailBill.total_amount || emailBill.amount;
+        // 3. Check amounts (exact or close match)
+        const amountMatch = hasMatchingAmounts(
+          pdfBillProperties.amounts, 
+          emailBillProperties.amounts
+        );
         
-        let amountMatch = false;
-        if (pdfAmount && emailAmount) {
-          // Simple amount comparison - they should be within 1% of each other to match
-          const difference = Math.abs(pdfAmount - emailAmount);
-          const maxAmount = Math.max(pdfAmount, emailAmount);
-          amountMatch = difference / maxAmount <= 0.01; // 1% tolerance
-        }
+        // 4. Check dates (if available)
+        const dateMatch = hasMatchingDates(
+          pdfBillProperties.dates,
+          emailBillProperties.dates
+        );
         
-        // 4. Check bill date (if available) - check user field first, then fallback
-        const pdfDate = pdfBill.invoice_date || pdfBill.date;
-        const emailDate = emailBill.invoice_date || emailBill.date;
-        
-        let dateMatch = false;
-        if (pdfDate && emailDate) {
-          const pdfDateObj = new Date(pdfDate);
-          const emailDateObj = new Date(emailDate);
-          
-          // Calculate date difference in days
-          const diffTime = Math.abs(pdfDateObj.getTime() - emailDateObj.getTime());
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-          
-          if (diffDays <= 7) { // Within a week
-            dateMatch = true;
-          }
-        }
-        
-        // Determine if it's a match - simplified logic with clear conditions
+        // Determine if it's a match based on combinations of matching fields
         if (vendorMatch && amountMatch) {
           console.log(`MATCH: Same vendor and amount`);
           return true; // Same vendor and amount is a strong indicator
         }
         
-        if (vendorMatch && dateMatch && (pdfAmount === emailAmount)) {
+        if (vendorMatch && dateMatch && hasExactMatch(pdfBillProperties.amounts, emailBillProperties.amounts)) {
           console.log(`MATCH: Same vendor, date, and identical amounts`);
-          return true; // Same vendor and date with identical amounts is definitely a match
+          return true;
         }
         
         // No match found for these bills
@@ -3486,6 +3491,151 @@ function deduplicateBills(bills: BillData[]): BillData[] {
 }
 
 /**
+ * Helper function to get all values for a set of possible field names
+ */
+function getFieldValues(bill: any, possibleFields: string[]): any[] {
+  console.log(`Getting values for field types: ${possibleFields.join(', ')}`);
+  
+  // Log all available fields in the bill
+  const allFields = Object.keys(bill);
+  console.log(`Available fields in bill: ${allFields.join(', ')}`);
+  
+  // Find matching fields
+  const matchingFields = possibleFields.filter(field => 
+    bill[field] !== undefined && bill[field] !== null && bill[field] !== ''
+  );
+  
+  console.log(`Found ${matchingFields.length} matching fields: ${matchingFields.join(', ')}`);
+  
+  // Get values from matching fields
+  const values = matchingFields.map(field => {
+    const value = bill[field];
+    console.log(`  - ${field}: ${value} (${typeof value})`);
+    return value;
+  });
+  
+  return values;
+}
+
+/**
+ * Helper function to check if two arrays have at least one matching value
+ */
+function hasMatchingValue(values1: any[], values2: any[]): boolean {
+  if (values1.length === 0 || values2.length === 0) return false;
+  
+  return values1.some(v1 => 
+    values2.some(v2 => v1 === v2)
+  );
+}
+
+/**
+ * Helper function to check if two arrays have at least one fuzzy matching string value
+ */
+function hasMatchingValueFuzzy(values1: any[], values2: any[]): boolean {
+  if (values1.length === 0 || values2.length === 0) return false;
+  
+  const stringValues1 = values1.filter(v => typeof v === 'string').map(v => v.toLowerCase().trim());
+  const stringValues2 = values2.filter(v => typeof v === 'string').map(v => v.toLowerCase().trim());
+  
+  if (stringValues1.length === 0 || stringValues2.length === 0) return false;
+  
+  return stringValues1.some(v1 => 
+    stringValues2.some(v2 => 
+      v1 === v2 || 
+      v1.includes(v2) || 
+      v2.includes(v1)
+    )
+  );
+}
+
+/**
+ * Helper function to check if two arrays have at least one matching amount value within 1% tolerance
+ */
+function hasMatchingAmounts(values1: any[], values2: any[]): boolean {
+  if (values1.length === 0 || values2.length === 0) {
+    console.log('Amount matching failed: One or both bills have no amount values');
+    console.log('Values from first bill:', values1);
+    console.log('Values from second bill:', values2);
+    return false;
+  }
+  
+  const numValues1 = values1.filter(v => typeof v === 'number');
+  const numValues2 = values2.filter(v => typeof v === 'number');
+  
+  if (numValues1.length === 0 || numValues2.length === 0) {
+    console.log('Amount matching failed: One or both bills have no numeric amount values');
+    console.log('Numeric values from first bill:', numValues1);
+    console.log('Numeric values from second bill:', numValues2);
+    return false;
+  }
+  
+  console.log('Comparing amount values:');
+  console.log('- First bill amounts:', numValues1);
+  console.log('- Second bill amounts:', numValues2);
+  
+  let match = false;
+  
+  numValues1.forEach(v1 => {
+    numValues2.forEach(v2 => {
+      if (v1 === 0 || v2 === 0) {
+        console.log(`Skipping comparison with zero value: ${v1} vs ${v2}`);
+        return;
+      }
+      
+      const difference = Math.abs(v1 - v2);
+      const maxAmount = Math.max(Math.abs(v1), Math.abs(v2));
+      const percentDiff = (difference / maxAmount) * 100;
+      
+      if (percentDiff <= 1) {
+        console.log(`✅ AMOUNT MATCH: ${v1} ≈ ${v2} (difference: ${difference}, ${percentDiff.toFixed(2)}%)`);
+        match = true;
+      } else {
+        console.log(`❌ AMOUNT MISMATCH: ${v1} ≠ ${v2} (difference: ${difference}, ${percentDiff.toFixed(2)}%)`);
+      }
+    });
+  });
+  
+  return match;
+}
+
+/**
+ * Helper function to check if two arrays have exactly matching values
+ */
+function hasExactMatch(values1: any[], values2: any[]): boolean {
+  if (values1.length === 0 || values2.length === 0) return false;
+  
+  return values1.some(v1 => 
+    values2.some(v2 => v1 === v2)
+  );
+}
+
+/**
+ * Helper function to check if two arrays have dates within 7 days of each other
+ */
+function hasMatchingDates(values1: any[], values2: any[]): boolean {
+  if (values1.length === 0 || values2.length === 0) return false;
+  
+  // Convert all values to Date objects
+  const dateValues1 = values1
+    .map(v => v instanceof Date ? v : new Date(v))
+    .filter(d => !isNaN(d.getTime()));
+    
+  const dateValues2 = values2
+    .map(v => v instanceof Date ? v : new Date(v))
+    .filter(d => !isNaN(d.getTime()));
+  
+  if (dateValues1.length === 0 || dateValues2.length === 0) return false;
+  
+  return dateValues1.some(d1 => 
+    dateValues2.some(d2 => {
+      const diffTime = Math.abs(d1.getTime() - d2.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      return diffDays <= 7; // Within a week
+    })
+  );
+}
+
+/**
  * Merge bills from email and PDF with the same source
  * @param pdfBill Bill extracted from PDF
  * @param emailBill Bill extracted from email
@@ -3496,20 +3646,15 @@ function mergeBills(pdfBill: BillData, emailBill: BillData): BillData {
   console.log('PDF bill fields:', Object.keys(pdfBill));
   console.log('Email bill fields:', Object.keys(emailBill));
   
-  // Check for user-defined fields
-  const hasUserFields = Object.keys(emailBill).some(key => 
-    key === 'issuer_name' || 
-    key === 'total_amount' || 
-    key === 'invoice_date' || 
-    key === 'due_date' || 
-    key === 'invoice_number' || 
-    key === 'account_number'
-  );
+  // Get all possible field names from both bills
+  const allFields = new Set([
+    ...Object.keys(pdfBill),
+    ...Object.keys(emailBill)
+  ]);
   
-  if (hasUserFields) {
-    console.log('Using user-defined field names for bill merging');
-  }
-
+  console.log(`Total fields to process: ${allFields.size}`, 
+    Array.from(allFields).join(', '));
+  
   // Helper function to select best value between two options
   const selectBest = <T>(pdfValue: T | undefined, emailValue: T | undefined): T | undefined => {
     // If one is undefined, return the other
@@ -3541,316 +3686,44 @@ function mergeBills(pdfBill: BillData, emailBill: BillData): BillData {
     return pdfValue;
   };
 
-  // Create a new bill with the best information from both sources
-  const mergedBill: BillData = {
-    ...emailBill, // Start with all email bill data
-
-    // Use PDF data for fields that have better information in PDF
-    // For user-defined fields if they exist
-    issuer_name: selectBest(pdfBill.issuer_name, emailBill.issuer_name),
-    invoice_number: selectBest(pdfBill.invoice_number, emailBill.invoice_number),
-    invoice_date: selectBest(pdfBill.invoice_date, emailBill.invoice_date),
-    due_date: selectBest(pdfBill.due_date, emailBill.due_date),
-    total_amount: selectBest(pdfBill.total_amount, emailBill.total_amount),
-    account_number: selectBest(pdfBill.account_number, emailBill.account_number),
-    bill_category: selectBest(pdfBill.bill_category, emailBill.bill_category),
+  // Create merged bill starting with email bill data
+  const mergedBill: BillData = { ...emailBill };
+  
+  // Process all available fields from both bills
+  allFields.forEach(field => {
+    // Skip fields that shouldn't be merged
+    if (field === 'id' || field === 'source' || field === 'emailId') return;
     
-    // For standard fields as fallback
-    vendor: selectBest(pdfBill.vendor, emailBill.vendor),
-    amount: selectBest(pdfBill.amount, emailBill.amount),
-    date: selectBest(pdfBill.date, emailBill.date),
-    dueDate: selectBest(pdfBill.dueDate, emailBill.dueDate),
-    accountNumber: selectBest(pdfBill.accountNumber, emailBill.accountNumber),
-    invoiceNumber: selectBest(pdfBill.invoiceNumber, emailBill.invoiceNumber),
-    category: selectBest(pdfBill.category, emailBill.category),
+    // Apply the best selection logic to each field
+    mergedBill[field] = selectBest(pdfBill[field], emailBill[field]);
     
-    // Keep track of both sources
-    source: {
-      type: 'combined',
-      messageId: emailBill.emailId || pdfBill.emailId,
-      attachmentId: pdfBill.attachmentId
-    },
-    
-    // Set confidence to the higher of the two
-    extractionConfidence: Math.max(
-      emailBill.extractionConfidence || 0, 
-      pdfBill.extractionConfidence || 0
-    )
+    // Debug which value was selected
+    if (pdfBill[field] !== undefined || emailBill[field] !== undefined) {
+      const selected = mergedBill[field];
+      const source = 
+        (pdfBill[field] === selected) ? 'PDF' :
+        (emailBill[field] === selected) ? 'Email' : 'Computed';
+      
+      if (selected !== undefined) {
+        console.log(`Field '${field}': Selected ${source} value: ${selected}`);
+      }
+    }
+  });
+  
+  // Keep track of both sources
+  mergedBill.source = {
+    type: 'combined',
+    messageId: emailBill.emailId || pdfBill.emailId,
+    attachmentId: pdfBill.attachmentId
   };
+  
+  // Set confidence to the higher of the two
+  mergedBill.extractionConfidence = Math.max(
+    emailBill.extractionConfidence || 0, 
+    pdfBill.extractionConfidence || 0
+  );
   
   console.log('Merged bill created with fields:', Object.keys(mergedBill).join(', '));
   
   return mergedBill;
 }
-
-/**
- * Process PDF extraction using the offscreen document
- * 
- * @deprecated This function is being phased out in favor of the module-based approach in pdfProcessor.ts.
- * Please use the processPdfExtraction function from that module instead.
- * 
- * TODO: Remove this function and update all callsites to use the module-based approach.
- */
-async function processPdfExtraction(message: any, sendResponse: Function) {
-  console.warn('Using deprecated processPdfExtraction in index.ts - please migrate to pdfProcessor.ts');
-  
-  // Import and delegate to the new module-based implementation
-  try {
-    const { processPdfExtraction: newProcessPdfExtraction } = await import('./pdfProcessor');
-    return newProcessPdfExtraction(message, sendResponse);
-  } catch (error) {
-    console.error('Failed to import pdfProcessor module, falling back to new unified approach:', error);
-    
-    // Use our new unified PDF processing approach
-    try {
-      const { base64String, language = 'en' } = message;
-      
-      if (!base64String) {
-        sendResponse({ success: false, error: 'No PDF data provided' });
-        return;
-      }
-      
-      // Convert base64 to ArrayBuffer
-      let pdfData: ArrayBuffer;
-      try {
-        // For data URLs, extract the base64 part
-        let base64 = base64String;
-        if (base64.startsWith('data:')) {
-          const parts = base64.split(',');
-          if (parts.length > 1) {
-            base64 = parts[1];
-          }
-        }
-        
-        // Standard base64 conversion
-        const binaryString = atob(base64);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        pdfData = bytes.buffer;
-      } catch (conversionError) {
-        console.error('Error converting base64 to ArrayBuffer:', conversionError);
-        sendResponse({
-          success: false,
-          error: 'Failed to convert PDF data'
-        });
-        return;
-      }
-      
-      // Import the new unified PDF extraction API
-      const { extractPdfText } = await import('../services/pdf/main');
-      
-      // Process the PDF using our prioritized approach
-      const result = await extractPdfText(pdfData, {
-        language,
-        includePosition: true,
-        timeout: 60000 // 60 second timeout
-      });
-      
-      if (!result.success || !result.text || result.text.length < 10) {
-        sendResponse({
-          success: false,
-          error: result.error || 'Insufficient text extracted from PDF'
-        });
-        return;
-      }
-      
-      sendResponse({
-        success: true,
-        text: result.text,
-        // Include bill data if it was extracted
-        ...(result.billData ? { billData: result.billData } : {})
-      });
-    } catch (error) {
-      console.error('Error processing PDF extraction:', error);
-      sendResponse({
-        success: false,
-        error: error instanceof Error ? error.message : 'PDF extraction failed'
-      });
-    }
-  }
-}
-
-/**
- * Process PDF in background context (fallback if offscreen API not available)
- * 
- * @deprecated This function is being phased out in favor of the module-based approach in pdfProcessor.ts.
- * This is an internal function used by the deprecated processPdfExtraction function.
- * 
- * TODO: Remove this function once processPdfExtraction is fully migrated to the module-based approach.
- */
-async function processInBackground(message: any, sendResponse: Function) {
-  console.warn('Using deprecated processInBackground in index.ts - please migrate to pdfProcessor.ts');
-  
-  try {
-    const { base64String, language = 'en' } = message;
-    
-    if (!base64String) {
-      sendResponse({ success: false, error: 'No PDF data provided' });
-      return;
-    }
-    
-    // Import the new unified PDF extraction API
-    const { extractPdfText } = await import('../services/pdf/main');
-    
-    // Convert base64 to ArrayBuffer
-    let pdfData: ArrayBuffer;
-    try {
-      // For data URLs, extract the base64 part
-      let base64 = base64String;
-      if (base64.startsWith('data:')) {
-        const parts = base64.split(',');
-        if (parts.length > 1) {
-          base64 = parts[1];
-        }
-      }
-      
-      // Standard base64 conversion
-      const binaryString = atob(base64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      pdfData = bytes.buffer;
-    } catch (conversionError) {
-      console.error('Error converting base64 to ArrayBuffer:', conversionError);
-      sendResponse({
-        success: false,
-        error: 'Failed to convert PDF data'
-      });
-      return;
-    }
-    
-    // Process the PDF using our prioritized approach
-    const result = await extractPdfText(pdfData, {
-      language,
-      includePosition: true,
-      timeout: 60000 // 60 second timeout
-    });
-    
-    if (!result.success || !result.text || result.text.length < 10) {
-      sendResponse({
-        success: false,
-        error: result.error || 'Insufficient text extracted from PDF'
-      });
-      return;
-    }
-    
-    sendResponse({
-      success: true,
-      text: result.text,
-      // Include bill data if it was extracted
-      ...(result.billData ? { billData: result.billData } : {})
-    });
-  } catch (error) {
-    console.error('Background PDF processing error:', error);
-    sendResponse({
-      success: false,
-      error: error instanceof Error ? error.message : 'PDF extraction failed'
-    });
-  }
-}
-
-// Import createSpreadsheet from sheets API
-const { createSpreadsheet } = await import('../services/sheets/sheetsApi');
-
-// Create a new spreadsheet
-async function createNewSpreadsheet(token: string) {
-  return await createSpreadsheet(token, 'Gmail Bill Scanner - Bills Tracker');
-}
-
-// Update settings in Supabase
-async function updateSettingsInSupabase(userId: string, preferences: Record<string, any>) {
-  const { updateMultipleUserPreferences } = await import('../services/settings');
-  return await updateMultipleUserPreferences(userId, preferences);
-}
-
-// Function to append data to sheets
-async function appendToSheet(token: string, spreadsheetId: string, values: any[][], valueInputOption: string = 'USER_ENTERED') {
-  if (!token) {
-    throw new Error('No authentication token provided');
-  }
-  
-  const response = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Bills!A2:Z:append?valueInputOption=${valueInputOption}&insertDataOption=INSERT_ROWS`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        values: values,
-      }),
-    }
-  );
-  
-  if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(`Sheets API error: ${errorData.error?.message || 'Unknown error'}`);
-  }
-  
-  return response.json();
-}
-
-// Fix userId initialization
-let userId: string | null = null;
-
-// Add this new function
-async function ensureGoogleIdentityMap() {
-  try {
-    // Get Supabase client for RPC calls
-    const supabase = await getSupabaseClient();
-    
-    // Check if the view exists instead of the table
-    const { data: viewExists, error: viewError } = await supabase.rpc('check_if_view_exists', {
-      view_name: 'google_identity_map_view'
-    });
-    
-    if (viewError) {
-      console.error('Error checking if google_identity_map_view view exists:', viewError);
-      
-      // Fall back to checking if we can query the view
-      try {
-        const { data, error } = await supabase
-          .from('google_identity_map_view')
-          .select('supabase_user_id')
-          .limit(1);
-          
-        // If we get here without an error, the view exists
-        console.log('google_identity_map_view exists and is accessible');
-        return true;
-      } catch (queryError) {
-        console.error('Error querying google_identity_map_view:', queryError);
-        return false;
-      }
-    }
-    
-    // If the view doesn't exist, log that but there's nothing to create - it should be created via migrations
-    if (!viewExists || !viewExists.exists) {
-      console.log('google_identity_map_view does not exist. It should be created via migrations.');
-      return false;
-    }
-    
-    return true;
-  } catch (error) {
-    console.error('Error ensuring google_identity_map_view:', error);
-    return false;
-  }
-}
-
-// Helper functions for text detection
-
-/**
- * Detect vendor from extracted text
- * @param text Extracted text from PDF
- * @returns Detected vendor name or undefined
- */
-// function detectVendorFromText(text: string): string | undefined {
-//   // This function has been intentionally removed to improve robustness
-//   // Vendor detection now relies on the structured data extraction from PDF documents
-//   return undefined;
-// }
-
-// Removed duplicate initializePdfWorker function
