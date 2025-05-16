@@ -96,8 +96,64 @@ export async function extractPdfText(
     // Use the clean PDF extraction
     const result = await cleanExtractPdfText(pdfData, {
       includePosition: options.includePosition !== false,
-      timeout: options.timeout || 60000
+      timeout: options.timeout || 60000,
+      language: options.language // Pass the language for better extraction
     });
+    
+    // Apply Hungarian character encoding fixes if language is Hungarian
+    if (result.success && result.text) {
+      const isHungarian = options.language === 'hu';
+      
+      // Import the fix function from our background code
+      try {
+        // See if we can access the background via chrome runtime
+        if (typeof chrome !== 'undefined' && chrome.runtime) {
+          // Try to send a message to the background to fix the encoding
+          const fixedText = await new Promise<string>((resolve) => {
+            chrome.runtime.sendMessage({
+              type: 'FIX_HUNGARIAN_ENCODING',
+              text: result.text,
+              isHungarian
+            }, (response) => {
+              if (response && response.fixedText) {
+                resolve(response.fixedText);
+              } else {
+                // If message fails, apply a simple fix directly
+                resolve(applySimpleHungarianFix(result.text, isHungarian));
+              }
+            });
+          }).catch(() => {
+            // If messaging fails, apply a simple fix directly
+            return applySimpleHungarianFix(result.text, isHungarian);
+          });
+          
+          // Update the result text
+          result.text = fixedText;
+          
+          // Also update text in pages
+          if (result.pages) {
+            result.pages = result.pages.map(page => ({
+              ...page,
+              text: applySimpleHungarianFix(page.text, isHungarian)
+            }));
+          }
+        } else {
+          // No chrome runtime available, apply simple fix directly
+          result.text = applySimpleHungarianFix(result.text, isHungarian);
+          
+          // Also update text in pages
+          if (result.pages) {
+            result.pages = result.pages.map(page => ({
+              ...page,
+              text: applySimpleHungarianFix(page.text, isHungarian)
+            }));
+          }
+        }
+      } catch (encodingFixError) {
+        console.error('[PDF Service] Error applying Hungarian encoding fix:', encodingFixError);
+        // Continue with original text - don't fail the extraction due to encoding fixes
+      }
+    }
     
     // Process and extract bill data if needed
     if (options.extractBillData) {
@@ -116,6 +172,39 @@ export async function extractPdfText(
       text: '',
       error: `PDF extraction error: ${error.message || 'Unknown error'}`
     };
+  }
+}
+
+/**
+ * Simple helper function for Hungarian character encoding fixes
+ * This is a fallback in case we can't access the background script
+ */
+function applySimpleHungarianFix(text: string, isHungarian: boolean = false): string {
+  if (!text) return '';
+  
+  try {
+    // Only apply fixes if the content is likely Hungarian
+    if (!isHungarian) return text;
+    
+    // Check for common encoding issues with Hungarian characters
+    const hasEncodingIssues = /Ã/.test(text);
+    let fixedText = text;
+    
+    if (hasEncodingIssues) {
+      console.log('[PDF Service] Detected encoding issues in PDF content, applying UTF-8 fix...');
+      try {
+        fixedText = decodeURIComponent(escape(text));
+      } catch (decodeError) {
+        console.error('[PDF Service] Error in decodeURIComponent fix:', decodeError);
+        fixedText = text; // Fallback to original
+      }
+    }
+    
+    return fixedText;
+  } catch (error) {
+    console.error('[PDF Service] Error fixing Hungarian encoding:', error);
+    // If any error occurs during encoding fix, return the original text
+    return text;
   }
 }
 

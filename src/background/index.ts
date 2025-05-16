@@ -1653,6 +1653,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           return true;
 
+        case 'FIX_HUNGARIAN_ENCODING':
+          try {
+            const { text, isHungarian } = message;
+            if (!text) {
+              sendResponse({ success: false, error: 'No text provided' });
+              return;
+            }
+            
+            // Apply our Hungarian encoding fix
+            const fixedText = fixHungarianPdfEncoding(text, isHungarian);
+            
+            // Return the fixed text
+            sendResponse({
+              success: true,
+              fixedText
+            });
+          } catch (error) {
+            console.error('Error fixing Hungarian encoding:', error);
+            sendResponse({
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error',
+              fixedText: message.text // Return original text on error
+            });
+          }
+          break;
+
         default:
           console.warn(`Unknown message type: ${message.type}`);
           sendResponse({ success: false, error: `Unknown message type: ${message.type}` });
@@ -2276,9 +2302,13 @@ async function handleScanEmails(
                       if (pdfResult.success && pdfResult.text && pdfResult.text.length > 100) {
                         console.log(`Successfully extracted ${pdfResult.text.length} characters from PDF using optimized approach`);
                         
-                        // Log the extracted PDF text
+                        // Apply Hungarian character encoding fixes if language is Hungarian
+                        const isHungarian = settings.inputLanguage === 'hu';
+                        const fixedPdfText = fixHungarianPdfEncoding(pdfResult.text, isHungarian);
+                        
+                        // Log the extracted PDF text with fixed encoding
                         console.log("===== BEGIN PDF EXTRACTED TEXT (BACKGROUND) =====");
-                        console.log(pdfResult.text.substring(0, 2000)); // First 2000 chars
+                        console.log(fixedPdfText.substring(0, 2000)); // First 2000 chars
                         console.log("===== END PDF EXTRACTED TEXT (BACKGROUND) =====");
                         
                         // Create a bill object that matches the Bill interface properly
@@ -2299,7 +2329,7 @@ async function handleScanEmails(
                             attachmentId: attachmentData.id,
                             fileName: attachmentData.fileName
                           },
-                          notes: pdfResult.text.slice(0, 500), // Store first 500 chars of extracted text as notes
+                          notes: fixedPdfText.slice(0, 500), // Store first 500 chars of fixed text as notes
                           extractionMethod: 'direct-binary',
                           language: settings.inputLanguage as 'en' | 'hu' || 'en'
                         };
@@ -2334,14 +2364,36 @@ async function handleScanEmails(
                       );
                       
                       if (pdfResult.success && pdfResult.bills.length > 0) {
+                        // Apply encoding fixes to text content in each bill if needed
+                        const isHungarian = settings.inputLanguage === 'hu';
+                        const fixedBills = pdfResult.bills.map(bill => {
+                          // Fix notes field which might contain extracted text
+                          if (bill.notes) {
+                            bill.notes = fixHungarianPdfEncoding(bill.notes, isHungarian);
+                          }
+                          
+                          // Try to find any other text fields that might need fixing
+                          Object.keys(bill).forEach(key => {
+                            if (typeof bill[key] === 'string' && 
+                                bill[key].length > 10 && 
+                                key !== 'id' && 
+                                key !== 'source') {
+                              // This could be a text field that needs encoding fixes
+                              bill[key] = fixHungarianPdfEncoding(bill[key], isHungarian);
+                            }
+                          });
+                          
+                          return bill;
+                        });
+                        
                         // Convert each Bill to BillData
-                        const pdfBills = pdfResult.bills.map(bill => transformBillToBillData(bill, userFieldMappings));
+                        const pdfBills = fixedBills.map(bill => transformBillToBillData(bill, userFieldMappings));
                         
                         // Add to bills array
                         bills.push(...pdfBills);
                         stats.billsFound += pdfBills.length;
                         
-                        console.log(`Successfully extracted ${pdfBills.length} bills from PDF attachment`);
+                        console.log(`Successfully extracted ${pdfBills.length} bills from PDF attachment with encoding fixes`);
                       }
                     } catch (pdfError) {
                       console.error(`Error processing PDF attachment ${attachmentData.id}:`, pdfError);
@@ -2351,10 +2403,9 @@ async function handleScanEmails(
                   console.error(`Error processing PDF attachment ${attachmentData.id}:`, pdfError);
                 }
               }
+            } catch (attachmentError) {
+              console.error(`Error processing attachments for ${messageId}:`, attachmentError);
             }
-          } catch (attachmentError) {
-            console.error(`Error processing attachments for ${messageId}:`, attachmentError);
-          }
         }
       } catch (emailError) {
         console.error(`Error processing email ${messageId}:`, emailError);
@@ -3962,6 +4013,70 @@ function fixEmailEncoding(text: string): string {
     return text;
   } catch (error) {
     console.error('Error fixing email encoding:', error);
+    // If any error occurs during encoding fix, return the original text
+    return text;
+  }
+}
+
+/**
+ * Fix Hungarian character encoding issues in PDF extracted text
+ */
+function fixHungarianPdfEncoding(text: string, isHungarian: boolean = false): string {
+  if (!text) return '';
+  
+  try {
+    // First apply the standard email encoding fix which works for many cases
+    const hasEncodingIssues = /Ã/.test(text);
+    let fixedText = text;
+    
+    if (hasEncodingIssues) {
+      console.log('Detected encoding issues in PDF content, applying UTF-8 fix...');
+      try {
+        fixedText = decodeURIComponent(escape(text));
+      } catch (decodeError) {
+        console.error('Error in decodeURIComponent fix:', decodeError);
+        fixedText = text; // Fallback to original
+      }
+    }
+    
+    // Additional replacements for common Hungarian character encoding issues in PDFs
+    // Apply these only if we're specifically looking for Hungarian content or detected issues
+    if (isHungarian || hasEncodingIssues) {
+      // Map of common encoding issues in PDFs with Hungarian characters
+      const charMap = new Map([
+        ['\u00E1', 'á'], // a with acute
+        ['\u00E9', 'é'], // e with acute
+        ['\u00ED', 'í'], // i with acute
+        ['\u00F3', 'ó'], // o with acute
+        ['\u00F6', 'ö'], // o with diaeresis
+        ['\u0151', 'ő'], // o with double acute
+        ['\u00FA', 'ú'], // u with acute
+        ['\u00FC', 'ü'], // u with diaeresis
+        ['\u0171', 'ű'], // u with double acute
+        // Capital letters
+        ['\u00C1', 'Á'], // A with acute
+        ['\u00C9', 'É'], // E with acute
+        ['\u00CD', 'Í'], // I with acute
+        ['\u00D3', 'Ó'], // O with acute
+        ['\u00D6', 'Ö'], // O with diaeresis
+        ['\u0150', 'Ő'], // O with double acute
+        ['\u00DA', 'Ú'], // U with acute
+        ['\u00DC', 'Ü'], // U with diaeresis
+        ['\u0170', 'Ű']  // U with double acute
+      ]);
+      
+      // Replace each potentially problematic character
+      for (const [encoded, decoded] of charMap.entries()) {
+        // Look for the specific character code
+        if (fixedText.includes(encoded)) {
+          fixedText = fixedText.replace(new RegExp(encoded, 'g'), decoded);
+        }
+      }
+    }
+    
+    return fixedText;
+  } catch (error) {
+    console.error('Error fixing Hungarian PDF encoding:', error);
     // If any error occurs during encoding fix, return the original text
     return text;
   }

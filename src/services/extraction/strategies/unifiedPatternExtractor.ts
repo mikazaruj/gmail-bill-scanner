@@ -10,6 +10,7 @@ import { UnifiedPatternMatcher, UnifiedExtractionContext } from "../unifiedPatte
 import { pdfDebugTools } from "../../debug/pdfDebugUtils";
 import { FieldMapping } from "../../../types/FieldMapping";
 import { extractTextFromPdfBuffer } from "../../../services/pdf/main";
+import { extractPdfText } from "../../../services/pdf/cleanPdfExtractor";
 
 /**
  * Extraction strategy that uses the unified pattern matcher
@@ -235,7 +236,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
   }
 
   /**
-   * Extract bills from PDF content
+   * Extract bills from PDF content with improved Hungarian character handling
    */
   async extractFromPdf(context: PdfExtractionContext): Promise<BillExtractionResult> {
     try {
@@ -249,150 +250,105 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         console.log(`⚠️ PDF extraction running without user-defined fields`);
       }
       
-      // Extract text from PDF
-      let extractedText: string | undefined;
+      const { pdfData, messageId, attachmentId, language = 'en' } = context;
       
-      // Check if we already have extracted text
-      if ('pdfText' in context && context.pdfText) {
-        extractedText = context.pdfText as string;
-        console.log(`Using pre-extracted PDF text (${extractedText.length} chars)`);
-      } else if (context.pdfData) {
-        try {
-          // Use a helper method to extract text since the matcher's method is private
-          console.log('Extracting text from PDF data...');
-          extractedText = await this.extractTextFromPdf(context.pdfData);
-          console.log(`Successfully extracted ${extractedText.length} chars from PDF`);
-        } catch (error) {
-          console.error('Error extracting text from PDF:', error);
-        }
-      }
+      // Use our improved PDF text extraction for better Hungarian character handling
+      const extractedText = await this.extractPdfTextWithImprovedEncoding(
+        pdfData, 
+        language as 'en' | 'hu'
+      );
       
-      if (!extractedText) {
-        return {
-          success: false,
-          bills: [],
-          error: 'Failed to extract text from PDF',
-          debug: {
-            strategy: this.name,
-            reason: 'No text could be extracted from PDF'
-          }
-        };
-      }
+      // Add logging to debug the extracted PDF content
+      console.log("===== BEGIN PDF CONTENT =====");
+      console.log(extractedText.substring(0, 2000)); // First 2000 chars for logging
+      console.log("===== END PDF CONTENT =====");
       
-      // Add logging to display extracted PDF text
-      console.log("===== BEGIN PDF CONTENT FROM EXTRACTOR =====");
-      console.log(extractedText.substring(0, 2000)); // First 2000 chars
-      console.log("===== END PDF CONTENT FROM EXTRACTOR =====");
-      
-      // Output first few characters of extracted text for debugging
-      if (extractedText.length > 0) {
-        console.log(`First 100 chars of PDF text: "${extractedText.substring(0, 100).replace(/\n/g, ' ')}..."`);
-      }
-      
-      // Check if we have a user ID to get user-defined fields
-      const userId = 'userId' in context ? context.userId as string : await this.getUserIdFromStorage();
-      
-      // Create a proper extraction context with userId if available
+      // Create extraction context
       const extractionContext: UnifiedExtractionContext = {
         text: extractedText,
-        fileName: context.fileName,
-        messageId: context.messageId,
-        attachmentId: context.attachmentId
+        messageId,
+        attachmentId
       };
       
-      // Add userId to the context if available
-      if (userId) {
-        extractionContext.userId = userId;
-        console.log(`Adding userId ${userId} to PDF extraction context`);
+      // Add userId to context if available
+      if ('userId' in context && context.userId) {
+        extractionContext.userId = context.userId as string;
+        console.log(`Adding userId ${context.userId} to PDF extraction context`);
       }
       
       // Add user fields directly if available
       if (this.hasUserFields) {
         extractionContext.userFields = this.fieldMappings;
-        console.log(`Adding ${this.fieldMappings.length} user fields to PDF extraction context`);
+        console.log(`Adding ${this.fieldMappings.length} user fields to PDF extraction context with names: ${this.fieldMappings.map(f => f.name).join(', ')}`);
       }
       
-      // Extract data using the enhanced UnifiedPatternMatcher that now handles user fields
-      console.log('Extracting bill data from PDF using pattern matcher...');
-      const extractionResult = await this.matcher.extract(
-        extractionContext,
-        { 
-          language: context.language as any || 'hu',
-          applyStemming: true,
-          debug: true
-        }
-      );
+      // Use unified matcher with Hungarian stemming enabled
+      const result = await this.matcher.extract(extractionContext, {
+        language: language as 'en' | 'hu',
+        applyStemming: language === 'hu',
+        debug: false
+      });
       
-      if (extractionResult.success && extractionResult.bills.length > 0) {
-        console.log('Successfully extracted bill data from PDF:');
-        
-        // Set source information and map fields
-        extractionResult.bills.forEach((bill, index) => {
-          console.log(`Processing extracted PDF bill #${index + 1}:`);
-          console.log('Initial PDF bill fields:', Object.keys(bill).join(', '));
+      if (result.success && result.bills.length > 0) {
+        // Process each bill to ensure it has the proper source and extra fields
+        const processedBills = result.bills.map(bill => {
+          const processedBill = {
+            ...bill,
+            source: {
+              type: 'pdf' as 'email' | 'pdf' | 'manual',
+              messageId,
+              attachmentId
+            }
+          };
           
-          // Set source information for the bill
-          if (!bill.source) {
-            bill.source = {
-              type: 'pdf',
-              messageId: context.messageId,
-              attachmentId: context.attachmentId,
-              fileName: context.fileName
-            };
-            console.log('Added source information to PDF bill');
+          // Try to extract missing fields directly from the text if needed
+          if (!this.hasBillAmount(processedBill) || !this.hasVendorName(processedBill)) {
+            this.extractMissingFields(processedBill, extractedText);
           }
           
-          // Map standard fields to user-defined fields
-          console.log('Mapping standard fields to user-defined fields...');
-          this.mapFieldsToUserFields(bill);
-          
-          // Check if we need to try direct extraction for missing fields
-          console.log('Checking for missing fields in PDF bill...');
-          const missingFields: string[] = [];
-          
-          // Check amount fields
-          if (!this.hasBillAmount(bill)) {
-            missingFields.push('amount');
-          }
-          
-          // Check vendor fields
-          if (!this.hasVendorName(bill)) {
-            missingFields.push('vendor');
-          }
-          
-          if (missingFields.length > 0) {
-            console.log(`Need to extract missing fields from PDF: ${missingFields.join(', ')}`);
-            this.extractMissingFields(bill, extractedText);
-          } else {
-            console.log('All required fields present in PDF bill');
-          }
-          
-          // Log the final bill fields after all processing
-          console.log('Final PDF bill fields after processing:', Object.keys(bill).join(', '));
-          // Log the critical fields with values
-          console.log('Critical field values:', {
-            id: bill.id,
-            vendor: bill.vendor,
-            issuer_name: bill.issuer_name,
-            amount: bill.amount,
-            total_amount: bill.total_amount,
-            invoice_number: bill.invoice_number,
-            invoiceNumber: bill.invoiceNumber
-          });
+          return processedBill;
         });
         
         return {
           success: true,
-          bills: extractionResult.bills,
-          confidence: extractionResult.confidence
+          bills: processedBills,
+          confidence: result.confidence
         };
       } else {
-        console.log('PDF extraction failed:', extractionResult.error);
+        // If the matcher failed to extract bills, try a direct approach with regular expressions
+        console.log('Unified matcher failed to extract bills, trying direct approach');
+        
+        // Create a new bill with basic information
+        const bill = {
+          id: `pdf-${attachmentId}`,
+          source: {
+            type: 'pdf' as 'email' | 'pdf' | 'manual',
+            messageId,
+            attachmentId
+          },
+          language: language as 'en' | 'hu'
+        };
+        
+        // Try to extract fields directly
+        this.extractMissingFields(bill, extractedText);
+        
+        // Check if we have enough data to consider this a valid bill
+        if (this.hasBillAmount(bill) || this.hasVendorName(bill)) {
+          console.log('Created bill from direct extraction:', bill);
+          
+          return {
+            success: true,
+            bills: [bill],
+            confidence: 0.5
+          };
+        }
+        
+        // If we couldn't extract enough data, return the original error
         return {
           success: false,
           bills: [],
-          confidence: extractionResult.confidence || 0,
-          error: extractionResult.error
+          confidence: result.confidence,
+          error: result.error
         };
       }
     } catch (error) {
@@ -401,8 +357,170 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         success: false,
         bills: [],
         confidence: 0,
-        error: error instanceof Error ? error.message : 'Unknown error'
+        error: error instanceof Error ? error.message : 'Unknown PDF extraction error'
       };
+    }
+  }
+  
+  /**
+   * Extract PDF text with improved encoding handling, especially for Hungarian characters
+   * 
+   * This method uses multiple approaches to extract text from PDFs to ensure the best
+   * possible extraction of text with special characters like Hungarian accents
+   */
+  private async extractPdfTextWithImprovedEncoding(
+    pdfData: ArrayBuffer | Uint8Array | string,
+    language: 'en' | 'hu' = 'en'
+  ): Promise<string> {
+    try {
+      // Prepare the data in the correct format
+      let binaryData: ArrayBuffer | Uint8Array;
+      
+      if (typeof pdfData === 'string') {
+        // Convert base64 string to binary data
+        if (pdfData.startsWith('data:application/pdf;base64,')) {
+          const base64Data = pdfData.substring(pdfData.indexOf(',') + 1);
+          const binaryString = atob(base64Data);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          binaryData = bytes;
+        } else {
+          // If it's already text, just return it
+          return this.fixHungarianPdfEncoding(pdfData, language === 'hu');
+        }
+      } else {
+        binaryData = pdfData;
+      }
+      
+      // First try using our enhanced PDF extractor with field mappings for early stopping
+      console.log(`Extracting PDF text with language setting: ${language}`);
+      
+      // Create field mapping patterns for early stopping if available
+      const fieldMappingsMap: Record<string, string | RegExp> = {};
+      
+      if (this.hasUserFields) {
+        this.fieldMappings.forEach(mapping => {
+          if (mapping.name && mapping.pattern) {
+            fieldMappingsMap[mapping.name] = new RegExp(mapping.pattern, 'i');
+          } else if (mapping.name) {
+            // Create default patterns based on field name
+            if (mapping.name.includes('amount') || mapping.name.includes('total')) {
+              fieldMappingsMap[mapping.name] = language === 'hu'
+                ? /(?:összeg|fizetendő|végösszeg)(?:\s*:)?\s*([0-9\s.,]+)/i
+                : /(?:amount|total|sum)(?:\s*:)?\s*([0-9\s.,]+)/i;
+            } else if (mapping.name.includes('vendor') || mapping.name.includes('issuer')) {
+              fieldMappingsMap[mapping.name] = language === 'hu'
+                ? /(?:szolgáltató|kibocsátó|eladó)(?:\s*:)?\s*([^,\n]+)/i
+                : /(?:vendor|issuer|supplier)(?:\s*:)?\s*([^,\n]+)/i;
+            } else if (mapping.name.includes('date')) {
+              fieldMappingsMap[mapping.name] = language === 'hu'
+                ? /(?:dátum|kelte|kiállítás)(?:\s*:)?\s*([0-9.\/-]+)/i
+                : /(?:date|issued)(?:\s*:)?\s*([0-9.\/-]+)/i;
+            } else if (mapping.name.includes('due')) {
+              fieldMappingsMap[mapping.name] = language === 'hu'
+                ? /(?:fizetési\s*határidő|esedékesség)(?:\s*:)?\s*([0-9.\/-]+)/i
+                : /(?:due\s*date|payment\s*deadline)(?:\s*:)?\s*([0-9.\/-]+)/i;
+            }
+          }
+        });
+      }
+      
+      // Use our improved clean PDF extractor with all the enhancements
+      const extractionResult = await extractPdfText(binaryData, {
+        language: language,
+        includePosition: false,
+        fieldMappings: Object.keys(fieldMappingsMap).length > 0 ? fieldMappingsMap : undefined,
+        shouldEarlyStop: true,
+        timeout: 30000 // 30 second timeout
+      });
+      
+      if (extractionResult.success && extractionResult.text) {
+        // Apply additional Hungarian character fixes
+        const fixedText = this.fixHungarianPdfEncoding(extractionResult.text, language === 'hu');
+        
+        console.log(`Successfully extracted ${fixedText.length} characters from PDF with enhanced extractor`);
+        return fixedText;
+      }
+      
+      // Fallback: Use the regular PDF buffer extraction
+      console.log('Enhanced PDF extraction failed, falling back to regular extraction');
+      const regularExtractedText = await extractTextFromPdfBuffer(binaryData);
+      
+      if (regularExtractedText) {
+        const fixedText = this.fixHungarianPdfEncoding(regularExtractedText, language === 'hu');
+        console.log(`Extracted ${fixedText.length} characters with regular extractor`);
+        return fixedText;
+      }
+      
+      // If both methods failed, return empty string
+      console.error('All PDF extraction methods failed');
+      return '';
+    } catch (error) {
+      console.error('Error in improved PDF text extraction:', error);
+      return '';
+    }
+  }
+  
+  /**
+   * Fix Hungarian character encoding issues in PDF extracted text
+   */
+  private fixHungarianPdfEncoding(text: string, isHungarian: boolean): string {
+    if (!text) return '';
+    
+    try {
+      // Only apply fixes if the content is likely Hungarian
+      if (!isHungarian) return text;
+      
+      // Check for common encoding issues with Hungarian characters
+      const hasEncodingIssues = /Ã/.test(text);
+      
+      if (hasEncodingIssues) {
+        console.log('Detected encoding issues in PDF content, applying fix...');
+        // This is a common fix for UTF-8 characters being incorrectly decoded as Latin1/ISO-8859-1
+        // It works for most Hungarian characters (á, é, í, ó, ö, ő, ú, ü, ű)
+        const fixed = decodeURIComponent(escape(text));
+        console.log('Applied encoding fix for Hungarian characters in PDF');
+        return fixed;
+      }
+      
+      // Additional replacements for common Hungarian character encoding issues in PDFs
+      let fixed = text;
+      
+      // Map of common encoding issues in PDFs with Hungarian characters
+      const charMap = new Map([
+        ['\u00E1', 'á'], // a with acute
+        ['\u00E9', 'é'], // e with acute
+        ['\u00ED', 'í'], // i with acute
+        ['\u00F3', 'ó'], // o with acute
+        ['\u00F6', 'ö'], // o with diaeresis
+        ['\u0151', 'ő'], // o with double acute
+        ['\u00FA', 'ú'], // u with acute
+        ['\u00FC', 'ü'], // u with diaeresis
+        ['\u0171', 'ű'], // u with double acute
+        // Capital letters
+        ['\u00C1', 'Á'], // A with acute
+        ['\u00C9', 'É'], // E with acute
+        ['\u00CD', 'Í'], // I with acute
+        ['\u00D3', 'Ó'], // O with acute
+        ['\u00D6', 'Ö'], // O with diaeresis
+        ['\u0150', 'Ő'], // O with double acute
+        ['\u00DA', 'Ú'], // U with acute
+        ['\u00DC', 'Ü'], // U with diaeresis
+        ['\u0170', 'Ű']  // U with double acute
+      ]);
+      
+      // Replace each problematic character
+      for (const [encoded, decoded] of charMap.entries()) {
+        fixed = fixed.replace(new RegExp(encoded, 'g'), decoded);
+      }
+      
+      return fixed;
+    } catch (error) {
+      console.error('Error fixing Hungarian PDF encoding:', error);
+      // If any error occurs during encoding fix, return the original text
+      return text;
     }
   }
   
@@ -556,38 +674,6 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
           bill.vendor = vendor;
         }
       }
-    }
-  }
-
-  /**
-   * Helper method to extract text from PDF data since matcher's method is private
-   */
-  private async extractTextFromPdf(pdfData: ArrayBuffer | Uint8Array | string): Promise<string> {
-    try {
-      // Use the statically imported extractTextFromPdfBuffer function
-      // const { extractTextFromPdfBuffer } = await import('../../../services/pdf/main');
-      
-      // Need to convert string to Uint8Array if it's a string
-      if (typeof pdfData === 'string') {
-        // Convert base64 string to Uint8Array if it's base64
-        if (pdfData.startsWith('data:application/pdf;base64,')) {
-          const base64Data = pdfData.substring(pdfData.indexOf(',') + 1);
-          const binaryString = atob(base64Data);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          return await extractTextFromPdfBuffer(bytes);
-        }
-        
-        // If it's a regular string, it might be already extracted text
-        return pdfData;
-      }
-      
-      return await extractTextFromPdfBuffer(pdfData);
-    } catch (error) {
-      console.error('Error extracting text in helper method:', error);
-      throw error;
     }
   }
 
