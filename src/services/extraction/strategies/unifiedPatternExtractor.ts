@@ -54,8 +54,17 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
     try {
       const { messageId, from, subject, body, date, language } = context;
       
+      // Fix encoding issues with Hungarian characters
+      const fixedSubject = this.fixEmailEncoding(subject);
+      const fixedBody = this.fixEmailEncoding(body);
+      
       // Combine subject and body for better extraction
-      const fullText = `${subject}\n\n${body}`;
+      const fullText = `${fixedSubject}\n\n${fixedBody}`;
+      
+      // Add logging to display the email content
+      console.log("===== BEGIN EMAIL CONTENT =====");
+      console.log(fullText.substring(0, 2000)); // First 2000 chars
+      console.log("===== END EMAIL CONTENT =====");
       
       // Create extraction context
       const extractionContext: UnifiedExtractionContext = {
@@ -269,6 +278,11 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
           }
         };
       }
+      
+      // Add logging to display extracted PDF text
+      console.log("===== BEGIN PDF CONTENT FROM EXTRACTOR =====");
+      console.log(extractedText.substring(0, 2000)); // First 2000 chars
+      console.log("===== END PDF CONTENT FROM EXTRACTOR =====");
       
       // Output first few characters of extracted text for debugging
       if (extractedText.length > 0) {
@@ -591,6 +605,36 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
     } catch (error) {
       console.warn('Error getting user ID from storage:', error);
       return null;
+    }
+  }
+
+  /**
+   * Helper method to fix email encoding issues with Hungarian characters
+   */
+  private fixEmailEncoding(text: string): string {
+    if (!text) return '';
+    
+    try {
+      // Check if the text contains encoding issues (common for Hungarian characters)
+      const hasEncodingIssues = /Ã/.test(text);
+      
+      if (hasEncodingIssues) {
+        console.log('Detected encoding issues in email content, applying fix...');
+        
+        // This is a common fix for UTF-8 characters being incorrectly decoded as Latin1/ISO-8859-1
+        // It works for most Hungarian characters (á, é, í, ó, ö, ő, ú, ü, ű)
+        const fixed = decodeURIComponent(escape(text));
+        
+        console.log('Applied encoding fix for Hungarian characters');
+        return fixed;
+      }
+      
+      // If no encoding issues detected, return the original text
+      return text;
+    } catch (error) {
+      console.error('Error fixing email encoding:', error);
+      // If any error occurs during encoding fix, return the original text
+      return text;
     }
   }
 } 

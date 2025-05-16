@@ -2137,9 +2137,39 @@ async function handleScanEmails(
         // Get email content using Gmail API
         const email = await getEmailById(messageId);
         
-        // Check if this email is from a trusted source
+        // Log the email content for debugging
         const headers = email.payload?.headers || [];
         const from = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || '';
+        const subject = headers.find((h: any) => h.name.toLowerCase() === 'subject')?.value || '';
+        
+        // Extract the email body from the payload
+        let body = '';
+        if (email.payload?.body?.data) {
+          // Body is directly in the payload
+          const base64 = email.payload.body.data.replace(/-/g, '+').replace(/_/g, '/');
+          body = atob(base64);
+        } else if (email.payload?.parts) {
+          // Body is in one of the parts
+          const textPart = email.payload.parts.find(
+            (part: any) => part.mimeType === 'text/plain' || part.mimeType === 'text/html'
+          );
+          if (textPart?.body?.data) {
+            const base64 = textPart.body.data.replace(/-/g, '+').replace(/_/g, '/');
+            body = atob(base64);
+          }
+        }
+        
+        // Fix encoding issues with Hungarian characters
+        body = fixEmailEncoding(body);
+        const fixedSubject = fixEmailEncoding(subject);
+        
+        console.log("===== BEGIN EMAIL CONTENT (BACKGROUND) =====");
+        console.log(`From: ${from}`);
+        console.log(`Subject: ${fixedSubject}`);
+        console.log(body.substring(0, 2000) || "No body content"); // First 2000 chars
+        console.log("===== END EMAIL CONTENT (BACKGROUND) =====");
+        
+        // Check if this email is from a trusted source
         const fromEmail = extractEmailAddress(from);
         const isTrustedSource = settings.trustedSourcesOnly && trustedSources.some(
           source => source.email_address.toLowerCase() === fromEmail.toLowerCase()
@@ -2245,6 +2275,11 @@ async function handleScanEmails(
                       
                       if (pdfResult.success && pdfResult.text && pdfResult.text.length > 100) {
                         console.log(`Successfully extracted ${pdfResult.text.length} characters from PDF using optimized approach`);
+                        
+                        // Log the extracted PDF text
+                        console.log("===== BEGIN PDF EXTRACTED TEXT (BACKGROUND) =====");
+                        console.log(pdfResult.text.substring(0, 2000)); // First 2000 chars
+                        console.log("===== END PDF EXTRACTED TEXT (BACKGROUND) =====");
                         
                         // Create a bill object that matches the Bill interface properly
                         const bill: Bill = {
@@ -3904,4 +3939,30 @@ function inferFieldType(fieldName: string): string | null {
   }
   
   return null;
+}
+
+/**
+ * Fix encoding issues with Hungarian characters in email content
+ */
+function fixEmailEncoding(text: string): string {
+  if (!text) return '';
+  
+  try {
+    // Check if the text contains encoding issues (common for Hungarian characters)
+    const hasEncodingIssues = /Ã/.test(text);
+    
+    if (hasEncodingIssues) {
+      console.log('Detected encoding issues in email content, applying fix...');
+      // This is a common fix for UTF-8 characters being incorrectly decoded as Latin1/ISO-8859-1
+      // It works for most Hungarian characters (á, é, í, ó, ö, ő, ú, ü, ű)
+      return decodeURIComponent(escape(text));
+    }
+    
+    // If no encoding issues detected, return the original text
+    return text;
+  } catch (error) {
+    console.error('Error fixing email encoding:', error);
+    // If any error occurs during encoding fix, return the original text
+    return text;
+  }
 }

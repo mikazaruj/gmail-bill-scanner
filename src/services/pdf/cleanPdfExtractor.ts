@@ -426,6 +426,11 @@ function extractTextFromBinary(data: Uint8Array, options: PdfExtractionOptions =
       .trim()
       .substring(0, 5000); // Cap total result size
     
+    // Add logging to display the extracted PDF text
+    console.log("===== BEGIN PDF EXTRACTED TEXT =====");
+    console.log(result.substring(0, 2000)); // First 2000 chars
+    console.log("===== END PDF EXTRACTED TEXT =====");
+    
     // Log the result
     console.log(`[PDF Extractor] Successfully extracted ${result.length} characters from PDF`);
     return result;
