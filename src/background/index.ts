@@ -9,6 +9,14 @@
 // Import PDF worker initialization first to ensure it's loaded early
 import '../services/pdf/initPdfWorker';
 
+// Import configuration and logger
+import config from '../config';
+import { initializeLogger } from './initLogger';
+import logger from '../utils/logger';
+
+// Import service worker context utilities
+import * as ServiceWorkerContext from './context';
+
 // Import core dependencies and types
 import { getEmailContent, getAttachments } from '../services/gmail/gmailApi';
 import { 
@@ -54,28 +62,30 @@ const SCOPES = [
 // Add global flag for tracking initialization
 let isInitialized = false;
 
+// Initialize logger first
+initializeLogger();
+
 // Initialize background extension
 if (!isInitialized) {
   isInitialized = true;
   
-  console.log('=== DEBUG: Background script with trusted sources handlers loaded ===');
-  console.log('=== Gmail Bill Scanner background service worker starting up... ===');
-  console.log('Background worker started - this log should be visible');
+  logger.info('=== Gmail Bill Scanner background service worker starting up... ===');
+  logger.info('Background worker started - this log should be visible');
   
   // Log chrome API availability for debugging
   if (typeof chrome !== 'undefined') {
-    console.log('Chrome API available, features:', Object.keys(chrome).join(', '));
+    logger.debug('Chrome API available, features:', Object.keys(chrome).join(', '));
     
     // Check specific APIs we need
-    console.log('offscreen API available:', typeof chrome.offscreen !== 'undefined');
-    console.log('identity API available:', typeof chrome.identity !== 'undefined');
-    console.log('storage API available:', typeof chrome.storage !== 'undefined');
+    logger.debug('offscreen API available:', typeof chrome.offscreen !== 'undefined');
+    logger.debug('identity API available:', typeof chrome.identity !== 'undefined');
+    logger.debug('storage API available:', typeof chrome.storage !== 'undefined');
   } else {
-    console.warn('Chrome API not available!');
+    logger.warn('Chrome API not available!');
   }
   
   // Log browser environment info
-  console.log('Service worker context:', typeof self !== 'undefined' && 
+  logger.debug('Service worker context:', typeof self !== 'undefined' && 
              typeof (self as any).WorkerGlobalScope !== 'undefined' && 
              self instanceof (self as any).WorkerGlobalScope);
   
@@ -166,17 +176,17 @@ declare const self: ServiceWorkerGlobalScope;
 
 // Service worker lifecycle
 self.addEventListener('install', (event: ExtendableEvent) => {
-  console.log('Service worker install event');
+  logger.info('Service worker install event');
   // Skip waiting to become active immediately
   event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', (event: ExtendableEvent) => {
-  console.log('Service worker activate event');
+  logger.info('Service worker activate event');
   // Claim all clients to ensure the service worker controls all tabs/windows
   event.waitUntil(
     self.clients.claim().then(() => {
-      console.log('Service worker has claimed all clients');
+      logger.info('Service worker has claimed all clients');
       signalExtensionReady(); // Signal extension ready after service worker is activated
       // Don't initialize PDF worker here - wait for it to be needed
     })
@@ -187,21 +197,21 @@ self.addEventListener('activate', (event: ExtendableEvent) => {
 chrome.alarms.create('keepAlive', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'keepAlive') {
-    console.warn('Background service worker is alive');
+    logger.debug('Background service worker is alive');
   }
 });
 
 self.addEventListener('unload', () => {
   chrome.alarms.clear('keepAlive');
-  console.log('Gmail Bill Scanner background service worker shutting down');
+  logger.info('Gmail Bill Scanner background service worker shutting down');
   
   // Clean up PDF processing resources
   try {
     cleanupPdfResources().catch(err => {
-      console.error('Error cleaning up PDF resources:', err);
+      logger.error('Error cleaning up PDF resources:', err);
     });
   } catch (error) {
-    console.error('Error during PDF cleanup:', error);
+    logger.error('Error during PDF cleanup:', error);
   }
 });
 

@@ -1,118 +1,175 @@
 /**
  * Background Script for Gmail Bill Scanner
  * 
- * Main entry point for the service worker that handles background operations
- * Uses a modular approach with the MessageHandlerRegistry for better organization
+ * Handles communication between content scripts, popup, and Google APIs
  */
 
 /// <reference lib="webworker" />
 
-// DO NOT import PDF worker initialization directly - it causes "document is not defined" errors
-// We'll import it dynamically when needed instead
-// import '../services/pdf/initPdfWorker';
+// Import PDF worker initialization first to ensure it's loaded early
+import '../services/pdf/initPdfWorker';
 
-// Import the MessageHandlerRegistry
-import messageHandlerRegistry from './handlers/MessageHandlerRegistry';
+// Import configuration and initialize logger
+import config from '../config';
+import { initializeLogger } from './initLogger';
+import logger from '../utils/logger';
 
-// Import core dependencies
-import { handleError } from '../services/error/errorService';
-import { cleanupPdfResources } from '../services/pdf/main';
+// Import service worker context management tools
+import * as ServiceWorkerContext from './context';
+
+// Import utility modules
+import { extractEmailAddress, fixEmailEncoding, parseUrlHash } from '../utils/stringUtils';
+import { transformBillToBillData, deduplicateBills } from '../utils/billUtils';
+import * as gmailUtils from '../utils/gmailUtils';
 
 // Import handlers
+import { handleAuthentication } from './handlers/authHandler';
+
+// Import core dependencies and types
+import { getEmailContent, getAttachments } from '../services/gmail/gmailApi';
 import { 
-  handleAuthentication, 
-  handleSignOut, 
-  handleAuthStatus 
-} from './handlers/authenticationHandler';
-import { handleScanEmails } from './handlers/scanEmailsHandler';
-import { handleExportToSheets } from './handlers/exportToSheetsHandler';
+  createSpreadsheet as createSheetsSpreadsheet, 
+  appendBillData
+} from '../services/sheets/sheetsApi';
+import { Message, ScanEmailsRequest, ScanEmailsResponse, BillData } from '../types/Message';
+import { 
+  isAuthenticated,
+  getAccessToken,
+  authenticate,
+  fetchGoogleUserInfo,
+  fetchGoogleUserInfoExtended,
+  signOut as googleSignOut
+} from '../services/auth/googleAuth';
+import { signInWithGoogle, syncAuthState } from '../services/supabase/client';
+import { searchEmails } from '../services/gmail/gmailService';
+import { ensureUserRecord } from '../services/identity/userIdentityService';
+import { handleError } from '../services/error/errorService';
+import { buildBillSearchQuery } from '../services/gmailSearchBuilder';
+import { Bill } from '../types/Bill';
+import { getUserSettings } from '../services/settings';
+// Import the new PDF processing handlers
+import { initializePdfProcessingHandlers } from './handlers/pdfProcessingHandler';
+// Add FieldMapping import at the top level
+import type { FieldMapping } from '../types/FieldMapping';
+// At the top of the file add these imports
+import { getSupabaseClient } from '../services/supabase/client';
+import { cleanupPdfResources } from '../services/pdf/main';
+// at the top of the file with other imports, add:
+import { initializeBillExtractorForUser } from '../services/extraction/extractorFactory';
+// Add getUserFieldMappings import
+import { getUserFieldMappings } from '../services/userFieldMappingService';
 
 // Add global flag for tracking initialization
 let isInitialized = false;
-let authInitializationComplete = false;
 
-// Add global flag to track PDF initialization
-let pdfWorkerInitialized = false;
-let pdfWorkerInitializationAttempted = false;
+// Initialize the logger
+initializeLogger();
 
-declare const self: ServiceWorkerGlobalScope;
+// Required OAuth scopes - now using the config
+const SCOPES = config.oauth.scopes;
 
 // Initialize background extension
 if (!isInitialized) {
   isInitialized = true;
   
-  console.log('=== Gmail Bill Scanner background service worker starting up... ===');
+  logger.info('=== Gmail Bill Scanner background service worker starting up... ===');
   
   // Log chrome API availability for debugging
   if (typeof chrome !== 'undefined') {
-    console.log('Chrome API available, features:', Object.keys(chrome).join(', '));
+    logger.debug('Chrome API available, features:', Object.keys(chrome).join(', '));
     
     // Check specific APIs we need
-    console.log('offscreen API available:', typeof chrome.offscreen !== 'undefined');
-    console.log('identity API available:', typeof chrome.identity !== 'undefined');
-    console.log('storage API available:', typeof chrome.storage !== 'undefined');
+    logger.debug('offscreen API available:', typeof chrome.offscreen !== 'undefined');
+    logger.debug('identity API available:', typeof chrome.identity !== 'undefined');
+    logger.debug('storage API available:', typeof chrome.storage !== 'undefined');
   } else {
-    console.warn('Chrome API not available!');
+    logger.warn('Chrome API not available!');
   }
   
-  // Register all message handlers
-  registerMessageHandlers();
+  // Log browser environment info
+  logger.debug('Service worker context:', ServiceWorkerContext.isServiceWorker());
 }
 
-/**
- * Signal that the extension is ready to load
- */
+// Initialize PDF processing handlers for chunked transfers
+initializePdfProcessingHandlers();
+
+// Add global flag to track PDF initialization
+let pdfWorkerInitialized = false;
+let pdfWorkerInitializationAttempted = false;
+let authInitializationComplete = false; // New flag to track authentication initialization
+
+// Signal that the extension is ready to load
 const signalExtensionReady = () => {
-  console.log('=== Extension core is ready to use ===');
+  logger.info('=== Extension core is ready to use ===');
   
   // Broadcast this to any listeners
   try {
-    if (typeof self !== 'undefined' && self.clients) {
-      self.clients.matchAll().then(clients => {
-        clients.forEach(client => {
-          client.postMessage({
-            type: 'EXTENSION_LOADED',
-            status: 'ready'
-          });
-        });
-      }).catch(err => {
-        console.error('Error broadcasting extension status:', err);
-      });
-    }
+    ServiceWorkerContext.postMessageToClients({
+      type: 'EXTENSION_LOADED',
+      status: 'ready'
+    }).catch(err => {
+      logger.error('Error broadcasting extension status:', err);
+    });
     
-    // Only focus on authentication initialization
+    // Only focus on authentication initialization, don't start PDF worker
     setTimeout(() => {
-      console.log('Starting authentication initialization...');
+      logger.debug('Starting authentication initialization...');
       authInitializationComplete = true;
     }, 500);
   } catch (error) {
-    console.error('Error signaling extension ready:', error);
+    logger.error('Error signaling extension ready:', error);
   }
 };
 
-// Add global error handling for the service worker
-self.addEventListener('error', (event: ErrorEvent) => {
-  console.error('Service worker global error:', event.error);
-});
-
-self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
-  console.error('Unhandled promise rejection in service worker:', event.reason);
-});
+// Initialize PDF worker only when needed (called before scanning operations)
+const initializePdfWorkerIfNeeded = async (): Promise<boolean> => {
+  // If already initialized, return immediately
+  if (pdfWorkerInitialized) {
+    logger.debug('PDF worker already initialized, skipping initialization');
+    return true;
+  }
+  
+  logger.info('Initializing PDF worker on-demand for scanning operation');
+  
+  try {
+    // First check if our early initialization worked
+    const { isWorkerInitialized } = await import('../services/pdf/initPdfWorker');
+    if (isWorkerInitialized()) {
+      logger.debug('PDF worker was already initialized by the initialization module');
+      pdfWorkerInitialized = true;
+      pdfWorkerInitializationAttempted = true;
+      return true;
+    }
+    
+    // If not, try with the existing initialization function
+    const result = await initializePdfWorker();
+    pdfWorkerInitialized = result;
+    pdfWorkerInitializationAttempted = true;
+    
+    logger.debug('PDF worker on-demand initialization result:', result ? 'success' : 'failed');
+    return result;
+  } catch (error) {
+    logger.error('Error during on-demand PDF worker initialization:', error);
+    pdfWorkerInitializationAttempted = true;
+    return false;
+  }
+};
 
 // Service worker lifecycle
-self.addEventListener('install', (event: ExtendableEvent) => {
-  console.log('Service worker install event');
+ServiceWorkerContext.onInstall((event: ExtendableEvent) => {
+  logger.info('Service worker install event');
   // Skip waiting to become active immediately
-  event.waitUntil(self.skipWaiting());
+  event.waitUntil(ServiceWorkerContext.skipWaiting());
 });
 
-self.addEventListener('activate', (event: ExtendableEvent) => {
-  console.log('Service worker activate event');
+ServiceWorkerContext.onActivate((event: ExtendableEvent) => {
+  logger.info('Service worker activate event');
   // Claim all clients to ensure the service worker controls all tabs/windows
   event.waitUntil(
-    self.clients.claim().then(() => {
-      console.log('Service worker has claimed all clients');
+    ServiceWorkerContext.claimClients().then(() => {
+      logger.info('Service worker has claimed all clients');
       signalExtensionReady(); // Signal extension ready after service worker is activated
+      // Don't initialize PDF worker here - wait for it to be needed
     })
   );
 });
@@ -121,43 +178,218 @@ self.addEventListener('activate', (event: ExtendableEvent) => {
 chrome.alarms.create('keepAlive', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'keepAlive') {
-    console.warn('Background service worker is alive');
+    logger.debug('Background service worker is alive');
   }
 });
 
-self.addEventListener('unload', () => {
+ServiceWorkerContext.onUnload(() => {
   chrome.alarms.clear('keepAlive');
-  console.log('Gmail Bill Scanner background service worker shutting down');
+  logger.info('Gmail Bill Scanner background service worker shutting down');
   
   // Clean up PDF processing resources
   try {
     cleanupPdfResources().catch(err => {
-      console.error('Error cleaning up PDF resources:', err);
+      logger.error('Error cleaning up PDF resources:', err);
     });
   } catch (error) {
-    console.error('Error during PDF cleanup:', error);
+    logger.error('Error during PDF cleanup:', error);
   }
 });
 
-// Register message listener using the MessageHandlerRegistry
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Verify the message has a type
-  if (!message?.type) {
-    console.warn('Received message without type:', message);
-    sendResponse({ success: false, error: 'Invalid message format: missing type' });
+// Token storage key for compatibility
+const TOKEN_STORAGE_KEY = "gmail_bill_scanner_auth_token";
+
+// Helper functions for token storage safety
+async function storeGoogleTokenSafely(userId: string, googleId: string, token: string): Promise<boolean> {
+  try {
+    logger.debug(`Storing Google token for user ${userId} with Google ID ${googleId}`);
+    
+    // Store via RPC to service worker if available (preferred)
+    const rpcResult = await storeTokenViaRPC(userId, token);
+    if (rpcResult.success) {
+      return true;
+    }
+    
+    // Fall back to direct storage if RPC fails
+    const directResult = await storeTokenDirectly(userId, token);
+    return directResult.success;
+  } catch (error) {
+    logger.error("Error storing Google token:", error);
     return false;
   }
+}
+
+// Sign out helper function - simplify to use the imported signOut
+async function signOut(): Promise<void> {
+  try {
+    await googleSignOut();
+  } catch (error) {
+    logger.error("Error during sign out:", error);
+    handleError(error instanceof Error ? error : new Error(String(error)), {
+      severity: 'medium', 
+      shouldNotify: true,
+      context: { operation: 'sign_out' }
+    });
+  }
+}
+
+// Logout function - simplified to use googleSignOut
+async function logout(): Promise<{ success: boolean; error?: string }> {
+  try {
+    await googleSignOut();
+    return { success: true };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    handleError(error instanceof Error ? error : new Error(errorMessage), {
+      severity: 'medium',
+      shouldNotify: true,
+      context: { operation: 'logout' }
+    });
+    return { success: false, error: errorMessage };
+  }
+}
+
+// Message handlers
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Log the message for debugging (omit large payloads)
+  if (message.type !== 'extractTextFromPdf' && message.type !== 'extractPdfWithTransfer') {
+    logger.debug('Background received message:', message.type);
+  } else {
+    logger.debug('Background received PDF extraction request');
+  }
   
-  // Use the registry to handle the message
-  return messageHandlerRegistry.handleMessage(message, sender, sendResponse);
+  // Handle PING message for checking if background script is active
+  if (message.type === 'PING') {
+    sendResponse({ success: true, message: 'Background script is active' });
+    return;
+  }
+  
+  // Handle AUTHENTICATE with high priority - respond even if PDF is loading
+  if (message.type === 'AUTHENTICATE') {
+    logger.info('Prioritizing authentication request');
+    
+    // If PDF worker is still initializing, mark it as initialized to avoid blocking auth
+    if (!pdfWorkerInitialized) {
+      logger.debug('Setting PDF worker as initialized to prioritize auth');
+      pdfWorkerInitialized = true;
+    }
+    
+    // Continue with authentication handling immediately
+    handleAuthentication(message, sendResponse);
+    return true;
+  }
+  
+  // More message handlers will be added here...
+  
+  return true; // Keep the message channel open for async response
 });
 
 /**
- * Handle OAuth callback after Supabase authentication
+ * Complete replacement for storeTokenViaRPC that was causing JWSError.
+ * This version completely bypasses Supabase and only stores in Chrome storage.
+ */
+async function storeTokenViaRPC(userId: string, token: string): Promise<{ success: boolean; error?: any }> {
+  logger.debug('Safe replacement for storeTokenViaRPC called - bypassing Supabase entirely');
+  
+  try {
+    // Store in Chrome storage instead of trying RPC
+    await chrome.storage.local.set({
+      'google_access_token': token,
+      'google_token_user_id': userId,
+      'google_token_expiry': Date.now() + (3600 * 1000)
+    });
+    
+    return { success: true };
+  } catch (error) {
+    logger.error('Error in storeTokenViaRPC replacement:', error);
+    return { success: false, error };
+  }
+}
+
+/**
+ * Complete replacement for storeTokenDirectly that was causing JWSError.
+ * This version completely bypasses Supabase and only stores in Chrome storage.
+ */
+async function storeTokenDirectly(userId: string, token: string): Promise<{ success: boolean; error?: any }> {
+  logger.debug('Safe replacement for storeTokenDirectly called - bypassing Supabase entirely');
+  
+  try {
+    // Store in Chrome storage instead of direct database insert
+    await chrome.storage.local.set({
+      'google_access_token': token,
+      'google_token_user_id': userId,
+      'google_token_expiry': Date.now() + (3600 * 1000)
+    });
+    
+    return { success: true };
+  } catch (error) {
+    logger.error('Error in storeTokenDirectly replacement:', error);
+    return { success: false, error };
+  }
+}
+
+/**
+ * Safely execute a Supabase operation with proper error handling for auth session
+ * @param operation The operation to execute
+ * @returns Result of the operation or null if it fails
+ */
+async function safeSupabaseOperation<T>(
+  operation: () => Promise<T>, 
+  fallback: T | null = null
+): Promise<T | null> {
+  try {
+    return await operation();
+  } catch (error) {
+    // Check if this is an auth session missing error
+    if (
+      error instanceof Error && 
+      (error.name === 'AuthSessionMissingError' || 
+       error.message.includes('Auth session missing'))
+    ) {
+      logger.error('Auth session missing, attempting to initialize Supabase client again');
+      
+      try {
+        // Try to get a new Supabase client
+        const { getSupabaseClient } = await import('../services/supabase/client');
+        const supabase = await getSupabaseClient();
+        
+        // Try to refresh the session
+        const { data, error: refreshError } = await supabase.auth.refreshSession();
+        
+        if (refreshError) {
+          logger.error('Failed to refresh auth session:', refreshError);
+          return fallback;
+        }
+        
+        if (data.session) {
+          logger.info('Successfully refreshed auth session');
+          // Try the operation again
+          return await operation();
+        }
+      } catch (retryError) {
+        logger.error('Failed to retry after auth session error:', retryError);
+      }
+    } else {
+      logger.error('Error during Supabase operation:', error);
+    }
+    
+    return fallback;
+  }
+}
+
+// Add tab listener when background script loads
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url?.startsWith(chrome.identity.getRedirectURL())) {
+    finishUserOAuth(changeInfo.url);
+  }
+});
+
+/**
+ * Handles the OAuth callback after Supabase authentication
  */
 async function finishUserOAuth(url: string) {
   try {
-    console.log(`Handling OAuth callback from Supabase...`);
+    logger.info(`Handling OAuth callback from Supabase...`);
     const { getSupabaseClient } = await import('../services/supabase/client');
     const supabase = await getSupabaseClient();
 
@@ -167,7 +399,7 @@ async function finishUserOAuth(url: string) {
     const refresh_token = hashMap.get('refresh_token');
     
     if (!access_token || !refresh_token) {
-      console.error('No Supabase tokens found in URL hash');
+      logger.error('No Supabase tokens found in URL hash');
       return;
     }
 
@@ -178,11 +410,11 @@ async function finishUserOAuth(url: string) {
     });
     
     if (error) {
-      console.error('Error setting Supabase session:', error);
+      logger.error('Error setting Supabase session:', error);
       return;
     }
 
-    console.log('Successfully authenticated with Supabase');
+    logger.info('Successfully authenticated with Supabase');
 
     // Save session to Chrome storage
     await chrome.storage.local.set({ 
@@ -202,493 +434,42 @@ async function finishUserOAuth(url: string) {
       user: data.user
     });
 
-    console.log('OAuth authentication flow completed successfully');
+    logger.info('OAuth authentication flow completed successfully');
   } catch (error) {
-    console.error('OAuth callback error:', error);
+    logger.error('OAuth callback error:', error);
   }
 }
 
-/**
- * Helper method to parse URL hash parameters
- */
-function parseUrlHash(url: string): Map<string, string> {
-  const hashParts = new URL(url).hash.slice(1).split('&');
-  const hashMap = new Map(
-    hashParts.map((part) => {
-      const [name, value] = part.split('=');
-      return [name, decodeURIComponent(value)];
-    })
-  );
-  return hashMap;
-}
-
-/**
- * Register all message handlers with the registry
- */
-function registerMessageHandlers() {
-  console.log('=== Registering message handlers... ===');
-  
-  // Authentication handlers (high priority)
-  messageHandlerRegistry.register('AUTHENTICATE', handleAuthentication, { priority: true });
-  messageHandlerRegistry.register('SIGN_OUT', handleSignOut);
-  messageHandlerRegistry.register('AUTH_STATUS', handleAuthStatus);
-  
-  // Email scanning handlers - make sure this is properly set up
-  console.log('Registering SCAN_EMAILS handler...');
-  messageHandlerRegistry.register('SCAN_EMAILS', async (payload, sendResponse) => {
-    console.log('SCAN_EMAILS message received, forwarding to handler...');
-    await handleScanEmails(payload, sendResponse);
-    console.log('handleScanEmails function called');
-    // Do not return anything - the sendResponse is handled in the handler
-  });
-  
-  // Sheets export handlers
-  console.log('Registering EXPORT_TO_SHEETS handler...');
-  messageHandlerRegistry.register('EXPORT_TO_SHEETS', async (payload, sendResponse) => {
-    console.log('EXPORT_TO_SHEETS message received, forwarding to handler...');
-    await handleExportToSheets(payload, sendResponse);
-    console.log('handleExportToSheets function called');
-    // Do not return anything - the sendResponse is handled in the handler
-  });
-  
-  // PDF processing handlers
-  messageHandlerRegistry.register('INIT_PDF_WORKER', async (message, sendResponse) => {
-    console.log('Received request to initialize PDF extraction');
-    // We no longer need to initialize PDF.js - our PDF service works without it
-    sendResponse({ 
-      success: true, 
-      message: 'PDF service is ready (no initialization needed)',
-      isAsync: false
-    });
-  });
-  
-  // Register remaining handlers from specialized modules
-  registerPdfHandlers();
-  registerSheetHandlers();
-  registerTrustedSourcesHandlers();
-  
-  console.log('=== All message handlers registered successfully ===');
-}
-
-/**
- * Register PDF-related handlers
- */
-function registerPdfHandlers() {
-  // Import and register PDF processing handlers
-  import('./handlers/pdfProcessingHandler').then(({ initializePdfProcessingHandlers }) => {
-    initializePdfProcessingHandlers();
-    console.log('PDF processing handlers initialized');
-  }).catch(error => {
-    console.error('Error initializing PDF processing handlers:', error);
-  });
-}
-
-/**
- * Register Google Sheets-related handlers
- */
-function registerSheetHandlers() {
-  // Create Spreadsheet handler
-  messageHandlerRegistry.register('CREATE_SPREADSHEET', async (message, sendResponse) => {
-    try {
-      console.log('CREATE_SPREADSHEET message received:', message);
-      const { name } = message.payload || { name: 'Bills Tracker' };
-      
-      // Import necessary functions
-      const { getAccessToken } = await import('../services/auth/googleAuth');
-      const { createSpreadsheet } = await import('../services/sheets/sheetsApi');
-      
-      // Get authentication token
-      const token = await getAccessToken();
-      if (!token) {
-        sendResponse({ success: false, error: 'Not authenticated' });
-        return;
-      }
-      
-      // Create a new spreadsheet
-      const spreadsheet = await createSpreadsheet(token, name || 'Bills Tracker');
-      
-      // Return the spreadsheet ID and name
-      sendResponse({ 
-        success: true, 
-        spreadsheetId: spreadsheet.spreadsheetId,
-        spreadsheetName: name || 'Bills Tracker'
-      });
-    } catch (error) {
-      console.error('Error creating spreadsheet:', error);
-      sendResponse({ 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      });
-    }
-  });
-  
-  // Available Sheets handler
-  messageHandlerRegistry.register('GET_AVAILABLE_SHEETS', async (message, sendResponse) => {
-    try {
-      console.log('Fetching available Google Sheets...');
-      
-      // Import necessary functions
-      const { getAccessToken } = await import('../services/auth/googleAuth');
-      
-      // Get authentication token
-      const token = await getAccessToken();
-      if (!token) {
-        console.error('No auth token available for GET_AVAILABLE_SHEETS');
-        sendResponse({ success: false, error: 'Not authenticated' });
-        return;
-      }
-      
-      // Get stored spreadsheet data
-      const storageData = await chrome.storage.local.get(['lastSpreadsheetId', 'recentSpreadsheets']);
-      const lastSpreadsheetId = storageData.lastSpreadsheetId;
-      const recentSpreadsheets = storageData.recentSpreadsheets || [];
-      
-      // Prepare array for spreadsheet info
-      interface SpreadsheetInfo {
-        id: string;
-        name: string;
-      }
-      
-      const sheets: SpreadsheetInfo[] = [];
-      
-      // Add last used spreadsheet if available
-      if (lastSpreadsheetId) {
-        try {
-          // Validate the spreadsheet exists
-          const response = await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${lastSpreadsheetId}?fields=properties.title`,
-            {
-              method: "GET",
-              headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-              },
-            }
-          );
-          
-          if (response.ok) {
-            const data = await response.json();
-            sheets.push({
-              id: lastSpreadsheetId,
-              name: data.properties.title || 'Last Used Spreadsheet'
-            });
-          }
-        } catch (error) {
-          console.warn('Error validating last spreadsheet:', error);
-        }
-      }
-      
-      // Add recent spreadsheets
-      if (recentSpreadsheets?.length > 0) {
-        for (const recent of recentSpreadsheets) {
-          // Skip if already added
-          if (recent.id === lastSpreadsheetId) continue;
-          
-          try {
-            // Validate the spreadsheet
-            const response = await fetch(
-              `https://sheets.googleapis.com/v4/spreadsheets/${recent.id}?fields=properties.title`,
-              {
-                method: "GET",
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  "Content-Type": "application/json",
-                },
-              }
-            );
-            
-            if (response.ok) {
-              const data = await response.json();
-              sheets.push({
-                id: recent.id,
-                name: data.properties?.title || recent.name || 'Unnamed Spreadsheet'
-              });
-            }
-          } catch (error) {
-            console.warn(`Error validating spreadsheet ${recent.id}:`, error);
-          }
-        }
-      }
-      
-      console.log(`Returning ${sheets.length} available spreadsheets`);
-      sendResponse({ success: true, sheets });
-    } catch (error) {
-      console.error('Error fetching spreadsheets:', error);
-      sendResponse({ 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Error fetching spreadsheets' 
-      });
-    }
-  });
-}
-
-/**
- * Register trusted sources handlers
- */
-function registerTrustedSourcesHandlers() {
-  // Insert trusted source handler
-  messageHandlerRegistry.register('INSERT_TRUSTED_SOURCE', async (message, sendResponse) => {
-    try {
-      const { userId, emailAddress, description, isActive } = message.payload || {};
-      
-      if (!userId || !emailAddress) {
-        sendResponse({ 
-          success: false, 
-          error: 'Missing required parameters: userId and emailAddress are required' 
-        });
-        return;
-      }
-      
-      // Import Supabase client
-      const { getSupabaseClient } = await import('../services/supabase/client');
-      const supabase = await getSupabaseClient();
-      
-      // Insert the trusted source
-      const { data, error } = await supabase
-        .from('email_sources')
-        .insert({
-          user_id: userId,
-          email_address: emailAddress,
-          description: description || null,
-          is_active: isActive !== false
-        })
-        .select()
-        .single();
-      
-      if (error) {
-        // Check if it might be a unique constraint error
-        if (error.code === '23505') {
-          // Try to fetch the existing record instead
-          const { data: existingData, error: fetchError } = await supabase
-            .from('email_sources')
-            .select('*')
-            .eq('user_id', userId)
-            .eq('email_address', emailAddress)
-            .is('deleted_at', null)
-            .single();
-          
-          if (fetchError) {
-            sendResponse({ 
-              success: false, 
-              error: fetchError.message || 'Failed to fetch existing record'
-            });
-            return;
-          }
-          
-          if (existingData) {
-            sendResponse({ 
-              success: true, 
-              data: existingData,
-              message: 'Retrieved existing record'
-            });
-            return;
-          }
-        }
-        
-        sendResponse({ 
-          success: false, 
-          error: error.message || 'Failed to insert trusted source'
-        });
-        return;
-      }
-      
-      sendResponse({ 
-        success: true, 
-        data,
-        message: 'Successfully inserted trusted source'
-      });
-    } catch (error) {
-      console.error('Error inserting trusted source:', error);
-      sendResponse({ 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  });
-  
-  // Remove trusted source handler
-  messageHandlerRegistry.register('REMOVE_TRUSTED_SOURCE', async (message, sendResponse) => {
-    try {
-      const { userId, emailAddress } = message.payload || {};
-      
-      if (!userId || !emailAddress) {
-        sendResponse({ 
-          success: false, 
-          error: 'Missing required parameters: userId and emailAddress are required' 
-        });
-        return;
-      }
-      
-      // Import Supabase client
-      const { getSupabaseClient } = await import('../services/supabase/client');
-      const supabase = await getSupabaseClient();
-      
-      // Update the record to mark as inactive
-      const { data, error } = await supabase
-        .from('email_sources')
-        .update({ is_active: false })
-        .eq('user_id', userId)
-        .eq('email_address', emailAddress)
-        .is('deleted_at', null)
-        .select()
-        .single();
-      
-      if (error) {
-        sendResponse({ 
-          success: false, 
-          error: error.message || 'Failed to remove trusted source'
-        });
-        return;
-      }
-      
-      sendResponse({ 
-        success: true, 
-        data,
-        message: 'Successfully removed trusted source'
-      });
-    } catch (error) {
-      console.error('Error removing trusted source:', error);
-      sendResponse({ 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  });
-  
-  // Delete trusted source handler
-  messageHandlerRegistry.register('DELETE_TRUSTED_SOURCE', async (message, sendResponse) => {
-    try {
-      const { userId, emailAddress } = message.payload || {};
-      
-      if (!userId || !emailAddress) {
-        sendResponse({ 
-          success: false, 
-          error: 'Missing required parameters: userId and emailAddress are required' 
-        });
-        return;
-      }
-      
-      // Import Supabase client
-      const { getSupabaseClient } = await import('../services/supabase/client');
-      const supabase = await getSupabaseClient();
-      
-      // Set deleted_at timestamp
-      const { data, error } = await supabase
-        .from('email_sources')
-        .update({ deleted_at: new Date().toISOString() })
-        .eq('user_id', userId)
-        .eq('email_address', emailAddress)
-        .select()
-        .single();
-      
-      if (error) {
-        sendResponse({ 
-          success: false, 
-          error: error.message || 'Failed to delete trusted source'
-        });
-        return;
-      }
-      
-      sendResponse({ 
-        success: true, 
-        data,
-        message: 'Successfully deleted trusted source'
-      });
-    } catch (error) {
-      console.error('Error deleting trusted source:', error);
-      sendResponse({ 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  });
-}
-
-// Add tab listener for OAuth redirection
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.url?.startsWith(chrome.identity.getRedirectURL())) {
-    finishUserOAuth(changeInfo.url);
-  }
-});
-
-// When extension is installed
-chrome.runtime.onInstalled.addListener((details) => {
-  console.log('Extension installed. Reason:', details.reason);
-  
-  // Initialize settings with default values if not already set
-  chrome.storage.sync.get(
-    ['scanDays', 'maxResults', 'supabaseUrl', 'supabaseAnonKey', 'googleClientId'],
-    (items) => {
-      const updates: Record<string, any> = {};
-      
-      // Only set defaults for missing values
-      if (items.scanDays === undefined) updates.scanDays = 30;
-      if (items.maxResults === undefined) updates.maxResults = 20;
-      
-      // If we have any updates to make
-      if (Object.keys(updates).length > 0) {
-        chrome.storage.sync.set(updates, () => {
-          console.log('Default settings initialized');
-        });
-      }
-    }
-  );
-});
-
-// Signal that the extension is ready
-signalExtensionReady();
-
-// Initialize PDF worker only when needed (called before scanning operations)
-const initializePdfWorkerIfNeeded = async (): Promise<boolean> => {
-  // If already initialized, return immediately
-  if (pdfWorkerInitialized) {
-    console.log('PDF worker already initialized, skipping initialization');
-    return true;
-  }
-  
-  console.log('Initializing PDF worker on-demand for scanning operation');
-  
+// Simplified PDF worker initialization with reliable error handling
+const initializePdfWorker = async () => {
   try {
-    // Import the initializer function dynamically
-    const { initializePdfWorker, isWorkerInitialized } = await import('../services/pdf/initPdfWorker');
+    logger.info('Initializing PDF.js worker with Node.js compatible approach');
     
-    // Check if already initialized
-    if (isWorkerInitialized()) {
-      console.log('PDF worker was already initialized');
-      pdfWorkerInitialized = true;
-      pdfWorkerInitializationAttempted = true;
-      return true;
+    // Import the PDF.js modules using the Node.js compatible paths
+    const pdfjsLib = await import('pdfjs-dist/build/pdf');
+    const pdfjsWorker = await import('pdfjs-dist/build/pdf.worker.entry');
+    
+    // Set the worker source to the imported worker entry point
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker.default;
+    
+    logger.info('Successfully set PDF.js worker source to imported worker entry');
+    
+    // Try to initialize our PDF processing handler if needed
+    try {
+      const { initPdfHandler } = await import('../services/pdf/pdfProcessingHandler');
+      const success = initPdfHandler();
+      logger.debug("PDF handler initialization result:", success ? "success" : "failed");
+    } catch (handlerError) {
+      logger.warn("Non-critical error initializing PDF handler:", handlerError);
+      // Non-critical error, continue
     }
     
-    // Initialize the worker explicitly
-    const success = initializePdfWorker();
-    
-    if (success) {
-      console.log('Successfully initialized PDF worker');
-      
-      // Try to initialize our PDF processing handler if needed
-      try {
-        const { initPdfHandler } = await import('../services/pdf/pdfProcessingHandler');
-        const handlerSuccess = initPdfHandler();
-        console.log("PDF handler initialization result:", handlerSuccess ? "success" : "failed");
-      } catch (handlerError) {
-        console.warn("Non-critical error initializing PDF handler:", handlerError);
-        // Non-critical error, continue
-      }
-      
-      pdfWorkerInitialized = true;
-      pdfWorkerInitializationAttempted = true;
-      
-      console.log('PDF worker on-demand initialization result: success');
-      return true;
-    } else {
-      console.error('Failed to initialize PDF worker');
-      pdfWorkerInitializationAttempted = true;
-      return false;
-    }
+    return true;
   } catch (error) {
-    console.error('Error during on-demand PDF worker initialization:', error);
-    pdfWorkerInitializationAttempted = true;
+    logger.error('Error in PDF worker initialization:', error);
     return false;
   }
-}; 
+};
+
+// Signal extension ready and initialize PDF worker
+signalExtensionReady(); 
