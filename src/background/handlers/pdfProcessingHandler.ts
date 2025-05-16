@@ -114,24 +114,13 @@ function handlePdfProcessingPort(port: chrome.runtime.Port) {
           offset += chunk.byteLength;
         }
         
-        // Process the PDF using the available methods in the consolidated service
-        let result;
-        if (transfer.metadata.extractFields) {
-          // Use billData extraction if fields are needed
-          result = await pdfService.extractBillDataFromPdf(
-            combinedBuffer,
-            transfer.metadata.language
-          );
-        } else {
-          // Use text extraction if only text is needed
-          result = await pdfService.extractTextFromPdf(
-            combinedBuffer,
-            {
-              language: transfer.metadata.language,
-              includePosition: false
-            }
-          );
-        }
+        // Process the PDF using consolidated service
+        const result = await pdfService.extractPdfContent(
+          combinedBuffer,
+          transfer.metadata.language,
+          transfer.metadata.userId,
+          transfer.metadata.extractFields
+        );
         
         // Send response back through port
         port.postMessage(result);
@@ -184,14 +173,9 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
     // Always convert to ArrayBuffer first for consistent processing
     let pdfData: Uint8Array;
     try {
-      // Convert base64 to binary data
-      const base64 = base64String.replace(/^data:application\/pdf;base64,/, '');
-      const binaryString = atob(base64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      pdfData = bytes;
+      // Import the normalizePdfData function
+      const { normalizePdfData } = await import('../../services/pdf/consolidatedPdfService');
+      pdfData = await normalizePdfData(base64String);
       console.log('Successfully converted base64 to Uint8Array');
     } catch (conversionError) {
       console.error('Error converting PDF data to Uint8Array:', conversionError);
@@ -202,25 +186,14 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
       return;
     }
     
-    // Process using our consolidated service with Uint8Array
+    // Process using our consolidated service with ArrayBuffer
     try {
-      let result;
-      if (extractFields) {
-        // Use billData extraction if fields are needed
-        result = await pdfService.extractBillDataFromPdf(
-          pdfData,
-          language
-        );
-      } else {
-        // Use text extraction if only text is needed
-        result = await pdfService.extractTextFromPdf(
-          pdfData,
-          {
-            language: language,
-            includePosition: false
-          }
-        );
-      }
+      const result = await pdfService.extractPdfContent(
+        pdfData,  // Pass Uint8Array directly
+        language,
+        userId,
+        extractFields
+      );
       
       // Send back the result
       sendResponse(result);

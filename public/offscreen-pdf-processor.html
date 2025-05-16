@@ -1,115 +1,173 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
-  <title>PDF Processing</title>
-</head>
-<body>
-  <div id="pdf-container" style="display: none;"></div>
+  <title>Offscreen PDF Processor</title>
+  <meta charset="utf-8">
+  <script src="lib/pdf.js"></script>
+  <script src="pdf.worker.min.js"></script>
   <script>
-    console.log('Offscreen PDF processing document initialized');
+    // Simple global variable to track initialization
+    let isInitialized = false;
     
-    // Import the clean PDF processor
-    importScripts('lib/pdf.js', 'lib/pdf.worker.js');
+    // Log that we're starting
+    console.log("[OFFSCREEN] Document loaded");
     
-    // Listen for messages from the service worker
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      console.log('Offscreen document received message:', message.type);
-      
-      if (message.type === 'PROCESS_PDF') {
-        processPdf(message.pdfData, message.options)
-          .then(result => sendResponse(result))
-          .catch(error => {
-            console.error('Error processing PDF:', error);
-            sendResponse({
-              success: false,
-              error: error.message || 'Failed to process PDF'
-            });
-          });
-          
-        return true; // Keep the message channel open for async response
+    // Initialize PDF.js
+    let pdfjsLib;
+    try {
+      console.log("[OFFSCREEN] Looking for PDF.js...");
+      if (typeof window.pdfjsLib !== 'undefined') {
+        pdfjsLib = window.pdfjsLib;
+        console.log("[OFFSCREEN] Found window.pdfjsLib");
+      } else if (typeof window.PDFJS !== 'undefined') {
+        pdfjsLib = window.PDFJS;
+        console.log("[OFFSCREEN] Found window.PDFJS");
+      } else if (typeof window['pdfjs-dist/build/pdf'] !== 'undefined') {
+        pdfjsLib = window['pdfjs-dist/build/pdf'];
+        console.log("[OFFSCREEN] Found pdfjs-dist/build/pdf");
+      } else {
+        console.error("[OFFSCREEN] PDF.js not found");
       }
       
-      // Send a simple response for any other messages
-      sendResponse({ success: false, error: 'Unsupported operation' });
-      return false;
-    });
+      // Configure PDF.js worker
+      if (pdfjsLib && pdfjsLib.GlobalWorkerOptions) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = "pdf.worker.min.js";
+        console.log("[OFFSCREEN] Set PDF.js worker path");
+      }
+    } catch (e) {
+      console.error("[OFFSCREEN] Error initializing PDF.js:", e);
+    }
     
-    // Process PDF data using PDF.js
-    async function processPdf(pdfData, options = {}) {
+    // Simple function to process PDF data
+    async function processPdf(data, options) {
+      console.log("[OFFSCREEN] Processing PDF, size:", data.length);
       try {
-        // Convert data if needed
-        const typedArray = pdfData instanceof Uint8Array ? 
-          pdfData : new Uint8Array(pdfData);
+        const pdfData = new Uint8Array(data);
         
-        // Load the PDF document
+        // Create document loading task
         const loadingTask = pdfjsLib.getDocument({
-          data: typedArray,
-          cMapUrl: 'https://unpkg.com/pdfjs-dist@2.16.105/cmaps/',
-          cMapPacked: true,
+          data: pdfData,
+          disableFontFace: true,
+          disableRange: true
         });
         
-        // Set a timeout to prevent hanging
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => {
-            loadingTask.destroy();
-            reject(new Error('PDF processing timed out'));
-          }, options.timeout || 30000);
-        });
+        // Load document
+        const pdfDoc = await loadingTask.promise;
+        console.log("[OFFSCREEN] Loaded PDF with", pdfDoc.numPages, "pages");
         
-        // Load the document with timeout
-        const pdfDocument = await Promise.race([
-          loadingTask.promise,
-          timeoutPromise
-        ]);
-        
-        const numPages = pdfDocument.numPages;
+        // Extract text from all pages
+        let fullText = "";
         const pages = [];
-        let fullText = '';
         
-        // Extract text from each page
-        for (let i = 1; i <= numPages; i++) {
-          const page = await pdfDocument.getPage(i);
-          const textContent = await page.getTextContent();
+        for (let i = 1; i <= pdfDoc.numPages; i++) {
+          const page = await pdfDoc.getPage(i);
+          const content = await page.getTextContent();
           
-          let pageText = '';
-          for (const item of textContent.items) {
-            if ('str' in item) {
-              pageText += item.str + ' ';
-            }
-          }
+          // Extract text
+          const pageText = content.items
+            .map(item => item.str || "")
+            .join(" ");
+            
+          fullText += pageText + "\n\n";
           
-          fullText += pageText + '\n';
+          // Add to pages array
           pages.push({
             pageNumber: i,
             text: pageText
           });
           
-          // Clean up page resources
           page.cleanup();
         }
         
-        // Close the PDF document
-        pdfDocument.destroy();
+        console.log("[OFFSCREEN] Extracted text from all pages");
         
+        // Return the result
         return {
           success: true,
-          text: fullText,
-          pages: pages
+          text: fullText.trim(),
+          pages
         };
       } catch (error) {
-        console.error('Error processing PDF in offscreen document:', error);
+        console.error("[OFFSCREEN] Error processing PDF:", error);
         return {
           success: false,
-          error: error.message || 'Unknown PDF processing error'
+          text: "",
+          error: error.message || "Unknown error"
         };
       }
     }
     
-    // Notify the service worker that the offscreen document is ready
-    chrome.runtime.sendMessage({
-      type: 'OFFSCREEN_PDF_READY'
+    // Send ready signal immediately
+    try {
+      console.log("[OFFSCREEN] Sending READY signal");
+      chrome.runtime.sendMessage({
+        type: "OFFSCREEN_DOCUMENT_READY",
+        timestamp: Date.now()
+      }).catch(e => console.error("[OFFSCREEN] Error sending ready signal:", e));
+    } catch (e) {
+      console.error("[OFFSCREEN] Error sending initial ready signal:", e);
+    }
+    
+    // Set up message listeners
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      console.log("[OFFSCREEN] Received message:", message?.type);
+      
+      // Handle ping messages
+      if (message?.type === "PING_OFFSCREEN_DOCUMENT") {
+        console.log("[OFFSCREEN] Received ping, sending pong");
+        try {
+          sendResponse({ type: "PONG_OFFSCREEN_DOCUMENT" });
+          
+          // Also send a ready signal
+          chrome.runtime.sendMessage({
+            type: "OFFSCREEN_DOCUMENT_READY",
+            timestamp: Date.now(),
+            isReady: true
+          }).catch(e => console.error("[OFFSCREEN] Error sending ready after ping:", e));
+        } catch (e) {
+          console.error("[OFFSCREEN] Error responding to ping:", e);
+        }
+        return true;
+      }
+      
+      // Handle PDF processing
+      if (message?.type === "PROCESS_PDF") {
+        console.log("[OFFSCREEN] Starting PDF processing");
+        
+        // Process the PDF
+        processPdf(message.pdfData, message.options)
+          .then(result => {
+            console.log("[OFFSCREEN] PDF processing complete, sending result");
+            chrome.runtime.sendMessage({
+              type: "PDF_PROCESSED",
+              result,
+              messageId: message.messageId
+            }).catch(e => console.error("[OFFSCREEN] Error sending result:", e));
+          })
+          .catch(error => {
+            console.error("[OFFSCREEN] Error in PDF processing:", error);
+            chrome.runtime.sendMessage({
+              type: "PDF_PROCESSING_ERROR",
+              error: error.message || "Unknown error",
+              messageId: message.messageId
+            }).catch(e => console.error("[OFFSCREEN] Error sending error response:", e));
+          });
+        
+        return true;
+      }
     });
+    
+    // Mark as initialized when everything is done
+    isInitialized = true;
+    console.log("[OFFSCREEN] Document fully initialized and ready");
+    
+    // Additional heartbeat to help in debugging
+    setInterval(() => {
+      console.log("[OFFSCREEN] Heartbeat - Document is active");
+    }, 10000);
   </script>
+</head>
+<body>
+  <div id="status">Offscreen PDF Processor is running</div>
 </body>
 </html> 

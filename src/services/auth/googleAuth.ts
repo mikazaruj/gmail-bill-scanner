@@ -107,97 +107,62 @@ export async function signOut(): Promise<void> {
 }
 
 /**
- * Get a valid access token, either from the existing one or by requesting a new one
- * @returns Google access token or null if authentication fails
+ * Retrieves the current access token
+ * @returns Promise resolving to the access token
  */
 export async function getAccessToken(): Promise<string | null> {
   try {
-    console.log('=== Auth: getAccessToken called ===');
+    console.log('Getting access token using chrome.identity.getAuthToken...');
     
-    // First try to get the token non-interactively
-    console.log('Auth: Trying to get token non-interactively...');
-    return await new Promise<string | null>((resolve) => {
+    return new Promise((resolve) => {
       chrome.identity.getAuthToken({ interactive: false }, (token) => {
         if (chrome.runtime.lastError) {
-          console.warn('Auth: Non-interactive token request failed:', chrome.runtime.lastError.message);
+          console.log("Error getting auth token (this is expected if not authenticated):", chrome.runtime.lastError.message);
           resolve(null);
-        } else if (token) {
-          console.log('Auth: Successfully got token non-interactively');
-          resolve(token);
-        } else {
-          console.warn('Auth: No token returned from non-interactive request');
-          resolve(null);
+          return;
         }
+        
+        if (!token) {
+          console.log('No token received, user may need to authenticate');
+          resolve(null);
+          return;
+        }
+        
+        console.log('Valid token retrieved from Chrome identity');
+        resolve(token);
       });
     });
   } catch (error) {
-    console.error('Auth: Error getting access token:', error);
+    console.error("Error getting access token:", error);
     return null;
   }
 }
 
 /**
- * Get a valid access token with refresh capabilities
- * Will try to refresh the token if the current one is invalid
- * @returns Google access token or null if authentication fails
+ * Get access token with refresh capability 
+ * Will try to get interactive token if non-interactive fails
  */
 export async function getAccessTokenWithRefresh(): Promise<string | null> {
   try {
-    console.log('=== Auth: getAccessTokenWithRefresh called ===');
+    // First try to get the existing token non-interactively
+    const token = await getAccessToken();
+    if (token) return token;
     
-    // First try the regular token getter
-    console.log('Auth: Trying to get existing token...');
-    let token = await getAccessToken();
-    
-    // If we got a token, try to use it to ensure it's still valid
-    if (token) {
-      console.log('Auth: Testing token validity...');
-      try {
-        // Make a simple API call to check if the token is still valid
-        const response = await fetch(
-          'https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=' + token,
-          { method: 'GET' }
-        );
-        
-        if (response.ok) {
-          console.log('Auth: Token is valid');
-          return token;
-        }
-        
-        const errorData = await response.json();
-        console.warn('Auth: Token validation failed:', errorData.error);
-        
-        // If the token is invalid, try to refresh it
-        console.log('Auth: Trying to refresh token...');
-        await new Promise<void>((resolve) => {
-          chrome.identity.removeCachedAuthToken({ token }, () => {
-            console.log('Auth: Removed cached auth token');
-            resolve();
-          });
-        });
-      } catch (validationError) {
-        console.error('Auth: Error validating token:', validationError);
-      }
-    }
-    
-    // If we don't have a token or it's invalid, try to get a new one interactively
-    console.log('Auth: Getting new token interactively...');
-    return await new Promise<string | null>((resolve) => {
+    // If not available, try to refresh by prompting for auth
+    console.log('No token available, attempting to get a new one interactively');
+    return new Promise((resolve, reject) => {
       chrome.identity.getAuthToken({ interactive: true }, (token) => {
-        if (chrome.runtime.lastError) {
-          console.error('Auth: Interactive token request failed:', chrome.runtime.lastError.message);
+        if (chrome.runtime.lastError || !token) {
+          console.warn('Failed to get interactive token:', chrome.runtime.lastError?.message);
           resolve(null);
-        } else if (token) {
-          console.log('Auth: Successfully got new token interactively');
-          resolve(token);
         } else {
-          console.error('Auth: No token returned from interactive request');
-          resolve(null);
+          console.log('Successfully obtained new interactive token');
+          resolve(token);
         }
       });
     });
   } catch (error) {
-    console.error('Auth: Error in getAccessTokenWithRefresh:', error);
+    console.error('Error refreshing token:', error);
     return null;
   }
 }

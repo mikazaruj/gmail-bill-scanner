@@ -22,7 +22,7 @@ module.exports = {
   entry: {
     popup: path.join(__dirname, "src/popup/index.tsx"),
     options: path.join(__dirname, "src/options/index.tsx"),
-    background: path.join(__dirname, "src/background/index.new.ts"),
+    background: path.join(__dirname, "src/background/index.ts"),
     content: path.join(__dirname, "src/content/index.ts"),
     // Include the PDF worker as a separate entry point
     'pdf-worker': path.join(__dirname, "src/workers/pdf-worker.js"),
@@ -96,42 +96,6 @@ module.exports = {
         }
       })
     }),
-    // Remove DOM Polyfill for Service Worker Environment
-    /* 
-    new webpack.BannerPlugin({
-      banner: `
-// DOM Polyfill for Service Worker Environment
-if (typeof self !== 'undefined' && typeof window === 'undefined') {
-  // Create a minimal DOM polyfill for service worker environment
-  const noop = () => {};
-  const empty = () => ({});
-  const documentPolyfill = {
-    createElement: () => ({}),
-    addEventListener: noop,
-    getElementsByTagName: () => [],
-    getElementById: () => null,
-    querySelectorAll: () => [],
-    querySelector: () => null,
-    documentElement: {},
-    body: {},
-    head: {},
-    createTextNode: () => ({}),
-    implementation: { createHTMLDocument: () => documentPolyfill },
-    visibilityState: 'visible',
-    hidden: false,
-    location: self.location,
-    domain: ''
-  };
-  // Only set if not already defined
-  if (typeof window === 'undefined') self.window = { document: documentPolyfill };
-  if (typeof document === 'undefined') self.document = documentPolyfill;
-}
-      `,
-      raw: true,
-      entryOnly: true,
-      include: 'background',
-    }),
-    */
     new MiniCssExtractPlugin({
       filename: '[name].css'
     }),
