@@ -2402,11 +2402,13 @@ async function handleScanEmails(
                 } catch (pdfError) {
                   console.error(`Error processing PDF attachment ${attachmentData.id}:`, pdfError);
                 }
-              }
-            } catch (attachmentError) {
-              console.error(`Error processing attachments for ${messageId}:`, attachmentError);
-            }
-        }
+              } // End of for loop over attachmentIds
+            } // End of if (attachmentIds.length > 0)
+            
+          } catch (attachmentError) {
+            console.error(`Error processing attachments for ${messageId}:`, attachmentError);
+          }
+        } // End of if (settings.processAttachments)
       } catch (emailError) {
         console.error(`Error processing email ${messageId}:`, emailError);
         stats.errors++;
