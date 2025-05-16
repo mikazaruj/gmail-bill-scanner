@@ -121,7 +121,17 @@ export async function scanEmailsForBills(
         
         // Add any extracted bills to our results
         if (extractionResult.success && extractionResult.bills.length > 0) {
-          bills.push(...extractionResult.bills);
+          // Ensure all required Bill properties are set
+          const validBills = extractionResult.bills.map(bill => ({
+            ...bill,
+            // Ensure required properties have default values if missing
+            vendor: bill.vendor || 'Unknown',
+            amount: typeof bill.amount === 'number' ? bill.amount : 0,
+            currency: bill.currency || 'USD',
+            date: bill.date || new Date(),
+            category: bill.category || 'Uncategorized'
+          }));
+          bills.push(...validBills);
         }
       } catch (error) {
         console.error(`Error processing email ${messageId}:`, error);

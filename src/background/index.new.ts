@@ -7,8 +7,9 @@
 
 /// <reference lib="webworker" />
 
-// Import PDF worker initialization first to ensure it's loaded early
-import '../services/pdf/initPdfWorker';
+// DO NOT import PDF worker initialization directly - it causes "document is not defined" errors
+// We'll import it dynamically when needed instead
+// import '../services/pdf/initPdfWorker';
 
 // Import the MessageHandlerRegistry
 import messageHandlerRegistry from './handlers/MessageHandlerRegistry';
@@ -648,39 +649,43 @@ const initializePdfWorkerIfNeeded = async (): Promise<boolean> => {
   console.log('Initializing PDF worker on-demand for scanning operation');
   
   try {
-    // First check if our early initialization worked
-    const { isWorkerInitialized } = await import('../services/pdf/initPdfWorker');
-    if (isWorkerInitialized) {
-      console.log('PDF worker was already initialized by the initialization module');
+    // Import the initializer function dynamically
+    const { initializePdfWorker, isWorkerInitialized } = await import('../services/pdf/initPdfWorker');
+    
+    // Check if already initialized
+    if (isWorkerInitialized()) {
+      console.log('PDF worker was already initialized');
       pdfWorkerInitialized = true;
       pdfWorkerInitializationAttempted = true;
       return true;
     }
     
-    // If not, try with a direct initialization
-    const pdfjsLib = await import('pdfjs-dist/build/pdf');
-    const pdfjsWorker = await import('pdfjs-dist/build/pdf.worker.entry');
+    // Initialize the worker explicitly
+    const success = initializePdfWorker();
     
-    // Set the worker source to the imported worker entry point
-    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker.default;
-    
-    console.log('Successfully set PDF.js worker source to imported worker entry');
-    
-    // Try to initialize our PDF processing handler if needed
-    try {
-      const { initPdfHandler } = await import('../services/pdf/pdfProcessingHandler');
-      const success = initPdfHandler();
-      console.log("PDF handler initialization result:", success ? "success" : "failed");
-    } catch (handlerError) {
-      console.warn("Non-critical error initializing PDF handler:", handlerError);
-      // Non-critical error, continue
+    if (success) {
+      console.log('Successfully initialized PDF worker');
+      
+      // Try to initialize our PDF processing handler if needed
+      try {
+        const { initPdfHandler } = await import('../services/pdf/pdfProcessingHandler');
+        const handlerSuccess = initPdfHandler();
+        console.log("PDF handler initialization result:", handlerSuccess ? "success" : "failed");
+      } catch (handlerError) {
+        console.warn("Non-critical error initializing PDF handler:", handlerError);
+        // Non-critical error, continue
+      }
+      
+      pdfWorkerInitialized = true;
+      pdfWorkerInitializationAttempted = true;
+      
+      console.log('PDF worker on-demand initialization result: success');
+      return true;
+    } else {
+      console.error('Failed to initialize PDF worker');
+      pdfWorkerInitializationAttempted = true;
+      return false;
     }
-    
-    pdfWorkerInitialized = true;
-    pdfWorkerInitializationAttempted = true;
-    
-    console.log('PDF worker on-demand initialization result: success');
-    return true;
   } catch (error) {
     console.error('Error during on-demand PDF worker initialization:', error);
     pdfWorkerInitializationAttempted = true;

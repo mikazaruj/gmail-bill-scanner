@@ -32,5 +32,5 @@ export function initializePdfWorker(): boolean {
 const initialized = initializePdfWorker();
 console.log('[PDF Worker] Initialization result:', initialized ? 'success' : 'failed');
 
-// Export the initialization state
-export const isWorkerInitialized = initialized; 
+// Export the initialization state as a function
+export const isWorkerInitialized = (): boolean => initialized; 

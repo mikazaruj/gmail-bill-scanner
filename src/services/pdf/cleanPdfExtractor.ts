@@ -47,34 +47,33 @@ export interface PdfTextItem {
 const IS_SERVICE_WORKER = 
   typeof self !== 'undefined' && 
   typeof window === 'undefined' && 
-  typeof document === 'undefined' &&
-  'skipWaiting' in self;
+  typeof (self as any).skipWaiting === 'function';
 
 /**
  * Check if code is running in a service worker context
  */
 export function isServiceWorkerContext(): boolean {
   // Multiple checks for service worker context for better reliability
-  // 1. Standard check for self, window and document
+  // 1. Standard check for self and window
   const standardCheck = typeof self !== 'undefined' && 
-                        typeof window === 'undefined' && 
-                        typeof document === 'undefined';
+                        typeof window === 'undefined';
   
   // 2. Check for service worker specific API
   const hasServiceWorkerAPI = typeof self !== 'undefined' && 
                               'skipWaiting' in self;
   
-  // 3. Check if environment lacks DOM features
-  const lacksDOM = typeof document === 'undefined';
+  // 3. Check for clients API (only available in service workers)
+  const hasClientsAPI = typeof self !== 'undefined' &&
+                        typeof (self as any).clients !== 'undefined';
   
   // Log the results for debugging
   console.log(`[PDF Extractor] Service worker detection: ` +
     `Standard check: ${standardCheck}, ` +
     `Has SW API: ${hasServiceWorkerAPI}, ` +
-    `Lacks DOM: ${lacksDOM}`);
+    `Has clients API: ${hasClientsAPI}`);
   
   // Return true if any of these indicate a service worker
-  return IS_SERVICE_WORKER || standardCheck || (hasServiceWorkerAPI && lacksDOM);
+  return IS_SERVICE_WORKER || standardCheck || hasServiceWorkerAPI || hasClientsAPI;
 }
 
 /**
@@ -92,12 +91,11 @@ export async function extractPdfText(
   pdfData: ArrayBuffer | Uint8Array,
   options: PdfExtractionOptions = {}
 ): Promise<PdfExtractionResult> {
-  console.log(`[PDF Extractor] Service worker detection: Standard check: ${IS_SERVICE_WORKER}, Has SW API: ${typeof self !== 'undefined' && 'skipWaiting' in self}, Lacks DOM: ${typeof document === 'undefined'}`);
+  console.log(`[PDF Extractor] Service worker detection: Standard check: ${IS_SERVICE_WORKER}, Has SW API: ${typeof self !== 'undefined' && 'skipWaiting' in self}`);
   
   console.log(`[PDF Extractor] Starting extraction with environment:`, { 
     serviceWorker: isServiceWorkerContext(),
-    hasWindow: typeof window !== 'undefined',
-    hasDocument: typeof document !== 'undefined'
+    hasWindow: typeof window !== 'undefined'
   });
 
   try {

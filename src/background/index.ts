@@ -40,6 +40,8 @@ import { getSupabaseClient } from '../services/supabase/client';
 import { cleanupPdfResources } from '../services/pdf/main';
 // at the top of the file with other imports, add:
 import { initializeBillExtractorForUser } from '../services/extraction/extractorFactory';
+// Add getUserFieldMappings import
+import { getUserFieldMappings } from '../services/userFieldMappingService';
 
 // Required OAuth scopes
 const SCOPES = [
@@ -129,7 +131,7 @@ const initializePdfWorkerIfNeeded = async (): Promise<boolean> => {
   try {
     // First check if our early initialization worked
     const { isWorkerInitialized } = await import('../services/pdf/initPdfWorker');
-    if (isWorkerInitialized) {
+    if (isWorkerInitialized()) {
       console.log('PDF worker was already initialized by the initialization module');
       pdfWorkerInitialized = true;
       pdfWorkerInitializationAttempted = true;
@@ -2081,6 +2083,9 @@ async function handleScanEmails(
     
     console.log(`Found ${messageIds.length} matching emails, processing...`);
     
+    // Variable to store user field mappings for later use in deduplication
+    let userFieldMappings: any[] = [];
+    
     // Get the bill extractor
     let billExtractor;
     if (getSharedBillExtractor) {
@@ -2092,12 +2097,17 @@ async function handleScanEmails(
         try {
           console.log(`Initializing bill extractor with field mappings for user ${userId}`);
           
-          // Use the static import instead of dynamic import
-          // const { initializeBillExtractorForUser } = await import('../services/extraction/extractorFactory');
-          
           // Initialize the extractor with the user's field mappings
           billExtractor = await initializeBillExtractorForUser(userId);
           console.log('Bill extractor initialized with user field mappings');
+          
+          // Get the field mappings for later use in deduplication
+          try {
+            userFieldMappings = await getUserFieldMappings(userId);
+            console.log(`Retrieved ${userFieldMappings.length} field mappings for deduplication`);
+          } catch (mappingError) {
+            console.error('Failed to get field mappings for deduplication:', mappingError);
+          }
         } catch (initError) {
           console.error('Failed to initialize bill extractor with user field mappings:', initError);
           // Continue with default fields as fallback
@@ -2147,7 +2157,7 @@ async function handleScanEmails(
         
         if (extractionResult.success && extractionResult.bills.length > 0) {
           // Convert each Bill to BillData
-          extractedBills = extractionResult.bills.map(bill => transformBillToBillData(bill));
+          extractedBills = extractionResult.bills.map(bill => transformBillToBillData(bill, userFieldMappings));
           
           // Add to bills array
           bills.push(...extractedBills);
@@ -2260,7 +2270,7 @@ async function handleScanEmails(
                         };
                         
                         // Convert Bill to BillData format
-                        const billData = transformBillToBillData(bill);
+                        const billData = transformBillToBillData(bill, userFieldMappings);
                         
                         // Add to bills array
                         bills.push(billData);
@@ -2290,7 +2300,7 @@ async function handleScanEmails(
                       
                       if (pdfResult.success && pdfResult.bills.length > 0) {
                         // Convert each Bill to BillData
-                        const pdfBills = pdfResult.bills.map(bill => transformBillToBillData(bill));
+                        const pdfBills = pdfResult.bills.map(bill => transformBillToBillData(bill, userFieldMappings));
                         
                         // Add to bills array
                         bills.push(...pdfBills);
@@ -2374,7 +2384,7 @@ async function handleScanEmails(
     // Perform deduplication on the bills before sending response
     if (bills.length > 0) {
       const originalCount = bills.length;
-      bills = deduplicateBills(bills);
+      bills = deduplicateBills(bills, userFieldMappings);
       stats.billsFound = bills.length;
       
       if (originalCount !== bills.length) {
@@ -3025,13 +3035,13 @@ async function storeTokenDirectly(userId: string, token: string): Promise<{ succ
  * Transform a Bill object to the BillData format for UI compatibility
  * Dynamically handles user-defined field names
  */
-function transformBillToBillData(bill: Bill): BillData {
+function transformBillToBillData(bill: Bill, userFieldMappings: any[] = []): BillData {
   // Get all bill fields for logging
   const billKeys = Object.keys(bill);
   console.log(`Bill fields: ${billKeys.join(', ')}`);
   
-  // Detect which type of field mapping is being used by looking for common user fields
-  const userFieldPatterns = {
+  // Create a field type map from the user mappings if available
+  const fieldTypeMap = userFieldMappings.length > 0 ? buildFieldTypeMap(userFieldMappings) : {
     vendor: ['issuer_name', 'company_name', 'provider'],
     amount: ['total_amount', 'bill_amount', 'price'],
     date: ['invoice_date', 'issue_date', 'bill_date'],
@@ -3042,12 +3052,13 @@ function transformBillToBillData(bill: Bill): BillData {
   };
   
   // Check if we have any user-defined fields
-  const hasUserFields = Object.values(userFieldPatterns).some(patterns => 
-    patterns.some(pattern => billKeys.includes(pattern))
+  const hasUserFields = Object.values(fieldTypeMap).some(fields => 
+    fields.some(field => billKeys.includes(field))
   );
   
   if (hasUserFields) {
     console.log('Found user-defined fields in bill, using dynamic field mapping');
+    console.log('Field type map:', fieldTypeMap);
   }
   
   // Safely get vendor name if vendor is an object
@@ -3058,19 +3069,22 @@ function transformBillToBillData(bill: Bill): BillData {
 
   // Helper function to get the best value for a field type
   const getBestValue = (fieldType: string, defaultValue?: any): any => {
-    const patterns = userFieldPatterns[fieldType as keyof typeof userFieldPatterns] || [];
+    // Get the field names to check for this type
+    const fieldNames = fieldTypeMap[fieldType as keyof typeof fieldTypeMap] || [];
     
     // Try user-defined fields first
-    for (const pattern of patterns) {
-      if (bill[pattern] !== undefined && bill[pattern] !== null && bill[pattern] !== '' && bill[pattern] !== 'Unknown') {
-        console.log(`Using user-defined field ${pattern} for ${fieldType}`);
-        return bill[pattern];
+    for (const fieldName of fieldNames) {
+      if (bill[fieldName] !== undefined && bill[fieldName] !== null && 
+          bill[fieldName] !== '' && bill[fieldName] !== 'Unknown') {
+        console.log(`Using user-defined field ${fieldName} for ${fieldType}`);
+        return bill[fieldName];
       }
     }
     
     // Fall back to standard field
     const standardValue = bill[fieldType];
-    if (standardValue !== undefined && standardValue !== null && standardValue !== '' && standardValue !== 'Unknown') {
+    if (standardValue !== undefined && standardValue !== null && 
+        standardValue !== '' && standardValue !== 'Unknown') {
       return standardValue;
     }
     
@@ -3098,6 +3112,16 @@ function transformBillToBillData(bill: Bill): BillData {
     extractionConfidence: bill.extractionConfidence,
     language: bill.language
   };
+
+  // Copy over all user-defined fields that match field mappings
+  if (userFieldMappings.length > 0) {
+    for (const mapping of userFieldMappings) {
+      if (mapping.name && bill[mapping.name] !== undefined) {
+        billData[mapping.name] = bill[mapping.name];
+        console.log(`Copying user-defined field ${mapping.name} with value:`, bill[mapping.name]);
+      }
+    }
+  }
 
   // Copy over any additional fields from the bill that aren't already in billData
   // This preserves any user-defined fields and any dynamic fields
@@ -3325,7 +3349,7 @@ signalExtensionReady();
  * Deduplicate bills by combining PDF and email bills from the same source
  * Uses semantic field comparison to handle user-defined fields
  */
-function deduplicateBills(bills: BillData[]): BillData[] {
+function deduplicateBills(bills: BillData[], userFieldMappings: any[] = []): BillData[] {
   // Group bills by message ID (same email)
   const billsByMessageId = new Map<string, BillData[]>();
   const deduplicated: BillData[] = [];
@@ -3348,6 +3372,9 @@ function deduplicateBills(bills: BillData[]): BillData[] {
   });
   
   console.log(`Grouped bills by email: ${billsByMessageId.size} unique emails`);
+  
+  // Create fieldTypeMap from user mappings
+  const fieldTypeMap = buildFieldTypeMap(userFieldMappings);
   
   // Process each group of bills from the same email
   billsByMessageId.forEach((emailBills, messageId) => {
@@ -3396,22 +3423,19 @@ function deduplicateBills(bills: BillData[]): BillData[] {
         // Debug log to show what bills we're trying to match
         const pdfBillProperties = {
           id: pdfBill.id,
-          // Get all available vendor fields
-          vendors: getFieldValues(pdfBill, ['issuer_name', 'vendor', 'company_name']),
-          // Get all available amount fields
-          amounts: getFieldValues(pdfBill, ['total_amount', 'amount', 'sum', 'cost']),
-          // Get all available date fields
-          dates: getFieldValues(pdfBill, ['invoice_date', 'date', 'bill_date']),
-          // Get all available invoice number fields
-          invoices: getFieldValues(pdfBill, ['invoice_number', 'invoiceNumber', 'reference'])
+          // Get fields by type using the mapped field names
+          vendors: getFieldValues(pdfBill, fieldTypeMap.vendor || ['issuer_name', 'vendor', 'company_name']),
+          amounts: getFieldValues(pdfBill, fieldTypeMap.amount || ['total_amount', 'amount', 'sum', 'cost']),
+          dates: getFieldValues(pdfBill, fieldTypeMap.date || ['invoice_date', 'date', 'bill_date']),
+          invoices: getFieldValues(pdfBill, fieldTypeMap.invoiceNumber || ['invoice_number', 'invoiceNumber', 'reference'])
         };
         
         const emailBillProperties = {
           id: emailBill.id,
-          vendors: getFieldValues(emailBill, ['issuer_name', 'vendor', 'company_name']),
-          amounts: getFieldValues(emailBill, ['total_amount', 'amount', 'sum', 'cost']),
-          dates: getFieldValues(emailBill, ['invoice_date', 'date', 'bill_date']),
-          invoices: getFieldValues(emailBill, ['invoice_number', 'invoiceNumber', 'reference'])
+          vendors: getFieldValues(emailBill, fieldTypeMap.vendor || ['issuer_name', 'vendor', 'company_name']),
+          amounts: getFieldValues(emailBill, fieldTypeMap.amount || ['total_amount', 'amount', 'sum', 'cost']),
+          dates: getFieldValues(emailBill, fieldTypeMap.date || ['invoice_date', 'date', 'bill_date']),
+          invoices: getFieldValues(emailBill, fieldTypeMap.invoiceNumber || ['invoice_number', 'invoiceNumber', 'reference'])
         };
         
         console.log('Comparing bills with properties:', {
@@ -3656,33 +3680,110 @@ function mergeBills(pdfBill: BillData, emailBill: BillData): BillData {
     Array.from(allFields).join(', '));
   
   // Helper function to select best value between two options
-  const selectBest = <T>(pdfValue: T | undefined, emailValue: T | undefined): T | undefined => {
+  const selectBest = <T>(pdfValue: T | undefined, emailValue: T | undefined, fieldName: string): T | undefined => {
     // If one is undefined, return the other
     if (pdfValue === undefined) return emailValue;
     if (emailValue === undefined) return pdfValue;
     
-    // For strings, prefer non-empty values
+    // For strings, prefer non-empty and non-placeholder values
     if (typeof pdfValue === 'string' && typeof emailValue === 'string') {
+      // Skip empty or placeholder values
       if (pdfValue === 'Unknown' || pdfValue === 'N/A' || pdfValue === '') return emailValue;
       if (emailValue === 'Unknown' || emailValue === 'N/A' || emailValue === '') return pdfValue;
-      // Prefer longer strings (likely more information)
-      return pdfValue.length > emailValue.length ? pdfValue : emailValue;
+      
+      // For vendor fields, prefer non-generic names
+      if (fieldName.includes('vendor') || fieldName.includes('issuer') || fieldName.includes('company')) {
+        const genericTerms = ['vendor', 'company', 'business', 'merchant', 'service provider', 'unknown'];
+        const isPdfGeneric = genericTerms.some(term => pdfValue.toLowerCase() === term.toLowerCase());
+        const isEmailGeneric = genericTerms.some(term => emailValue.toLowerCase() === term.toLowerCase());
+        
+        if (isPdfGeneric && !isEmailGeneric) return emailValue;
+        if (!isPdfGeneric && isEmailGeneric) return pdfValue;
+      }
+      
+      // For description or longer text fields, prefer the longer value which likely has more information
+      const pdfLength = pdfValue.length;
+      const emailLength = emailValue.length;
+      
+      // If one is significantly longer, prefer it
+      if (pdfLength > emailLength * 1.5) return pdfValue;
+      if (emailLength > pdfLength * 1.5) return emailValue;
+      
+      // If lengths are similar, prefer PDF value as it often has more structured data
+      return pdfValue;
     }
     
-    // For numbers, prefer non-zero values
+    // For numbers, prefer non-zero values and handle currency amounts specially
     if (typeof pdfValue === 'number' && typeof emailValue === 'number') {
       if (pdfValue === 0) return emailValue;
       if (emailValue === 0) return pdfValue;
-      // Prefer larger amounts for better accuracy
-      return Math.abs(pdfValue) > Math.abs(emailValue) ? pdfValue : emailValue;
+      
+      // For amount fields, look at the difference between values
+      if (fieldName.includes('amount') || fieldName.includes('total') || fieldName.includes('price')) {
+        const diff = Math.abs(pdfValue - emailValue);
+        const max = Math.max(Math.abs(pdfValue), Math.abs(emailValue));
+        const percentDiff = (diff / max) * 100;
+        
+        // If values are within 1% of each other, they're likely the same amount
+        if (percentDiff <= 1) {
+          // Prefer the value with more decimal precision
+          const pdfStr = pdfValue.toString();
+          const emailStr = emailValue.toString();
+          
+          if (pdfStr.includes('.') && emailStr.includes('.')) {
+            const pdfDecimals = pdfStr.split('.')[1].length;
+            const emailDecimals = emailStr.split('.')[1].length;
+            
+            return pdfDecimals >= emailDecimals ? pdfValue : emailValue;
+          }
+        }
+        
+        // If the difference is significant, prefer the larger value which is likely more accurate
+        return Math.abs(pdfValue) > Math.abs(emailValue) ? pdfValue : emailValue;
+      }
+      
+      // For other numeric fields, prefer the PDF value
+      return pdfValue;
     }
     
-    // For dates, prefer more recent dates
-    if (pdfValue instanceof Date && emailValue instanceof Date) {
-      return pdfValue > emailValue ? pdfValue : emailValue;
+    // For dates, check which is more likely to be correct
+    if ((pdfValue instanceof Date || (typeof pdfValue === 'string' && !isNaN(new Date(pdfValue).getTime()))) && 
+        (emailValue instanceof Date || (typeof emailValue === 'string' && !isNaN(new Date(emailValue).getTime())))) {
+      // Convert to Date objects if they're strings
+      const pdfDate = pdfValue instanceof Date ? pdfValue : new Date(pdfValue);
+      const emailDate = emailValue instanceof Date ? emailValue : new Date(emailValue);
+      
+      // Check for invalid dates
+      if (isNaN(pdfDate.getTime())) return emailValue;
+      if (isNaN(emailDate.getTime())) return pdfValue;
+      
+      // For due dates, prefer the future date
+      if (fieldName.includes('due') || fieldName.includes('deadline') || fieldName.includes('payment_date')) {
+        const now = new Date();
+        const isPdfFuture = pdfDate > now;
+        const isEmailFuture = emailDate > now;
+        
+        if (isPdfFuture && !isEmailFuture) return pdfValue;
+        if (!isPdfFuture && isEmailFuture) return emailValue;
+      }
+      
+      // For invoice dates, prefer the one that's not today (today is often a default)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      
+      const isPdfToday = pdfDate >= today && pdfDate < tomorrow;
+      const isEmailToday = emailDate >= today && emailDate < tomorrow;
+      
+      if (isPdfToday && !isEmailToday) return emailValue;
+      if (!isPdfToday && isEmailToday) return pdfValue;
+      
+      // Prefer the PDF date as it's usually extracted more accurately
+      return pdfValue;
     }
     
-    // Default to PDF value (often more detailed)
+    // Default to PDF value (often more detailed and structured)
     return pdfValue;
   };
 
@@ -3695,7 +3796,7 @@ function mergeBills(pdfBill: BillData, emailBill: BillData): BillData {
     if (field === 'id' || field === 'source' || field === 'emailId') return;
     
     // Apply the best selection logic to each field
-    mergedBill[field] = selectBest(pdfBill[field], emailBill[field]);
+    mergedBill[field] = selectBest(pdfBill[field], emailBill[field], field);
     
     // Debug which value was selected
     if (pdfBill[field] !== undefined || emailBill[field] !== undefined) {
@@ -3726,4 +3827,81 @@ function mergeBills(pdfBill: BillData, emailBill: BillData): BillData {
   console.log('Merged bill created with fields:', Object.keys(mergedBill).join(', '));
   
   return mergedBill;
+}
+
+/**
+ * Builds a mapping of field types to field names from user mappings
+ */
+function buildFieldTypeMap(fieldMappings: any[]): Record<string, string[]> {
+  const typeMap: Record<string, string[]> = {
+    vendor: [],
+    amount: [],
+    date: [],
+    dueDate: [],
+    invoiceNumber: [],
+    accountNumber: [],
+    category: []
+  };
+  
+  // If no field mappings, return default map
+  if (!fieldMappings || fieldMappings.length === 0) {
+    typeMap.vendor = ['issuer_name', 'vendor', 'company_name'];
+    typeMap.amount = ['total_amount', 'amount', 'sum', 'cost'];
+    typeMap.date = ['invoice_date', 'date', 'bill_date'];
+    typeMap.dueDate = ['due_date', 'payment_date', 'deadline'];
+    typeMap.invoiceNumber = ['invoice_number', 'invoiceNumber', 'reference'];
+    typeMap.accountNumber = ['account_number', 'account_id', 'customer_id'];
+    typeMap.category = ['category', 'bill_type', 'expense_category'];
+    return typeMap;
+  }
+  
+  // Map fields by their explicit field_type if available
+  fieldMappings.forEach(mapping => {
+    const name = mapping.name;
+    const type = mapping.field_type || inferFieldType(name);
+    
+    if (type) {
+      if (!typeMap[type]) {
+        typeMap[type] = [];
+      }
+      typeMap[type].push(name);
+      console.log(`Field type map: Mapped field ${name} to type ${type}`);
+    }
+  });
+  
+  // Add standard field names as fallbacks
+  if (typeMap.vendor.length === 0) typeMap.vendor.push('vendor');
+  if (typeMap.amount.length === 0) typeMap.amount.push('amount');
+  if (typeMap.date.length === 0) typeMap.date.push('date');
+  if (typeMap.dueDate.length === 0) typeMap.dueDate.push('dueDate');
+  if (typeMap.invoiceNumber.length === 0) typeMap.invoiceNumber.push('invoiceNumber');
+  if (typeMap.accountNumber.length === 0) typeMap.accountNumber.push('accountNumber');
+  if (typeMap.category.length === 0) typeMap.category.push('category');
+  
+  return typeMap;
+}
+
+/**
+ * Infer field type from field name if not explicitly specified
+ */
+function inferFieldType(fieldName: string): string | null {
+  const lowerName = fieldName.toLowerCase();
+  
+  if (lowerName.includes('vendor') || lowerName.includes('issuer') || lowerName.includes('company')) {
+    return 'vendor';
+  } else if (lowerName.includes('amount') || lowerName.includes('total') || lowerName.includes('cost')) {
+    return 'amount';
+  } else if (lowerName.includes('due') || lowerName.includes('payment') || lowerName.includes('deadline')) {
+    return 'dueDate';
+  } else if (lowerName.includes('invoice') && lowerName.includes('date') || lowerName.includes('issued')) {
+    return 'date';
+  } else if (lowerName.includes('invoice') && lowerName.includes('number') || lowerName.includes('reference')) {
+    return 'invoiceNumber';
+  } else if (lowerName.includes('account') || lowerName.includes('customer')) {
+    return 'accountNumber';
+  } else if (lowerName.includes('category') || lowerName.includes('type')) {
+    return 'category';
+  }
+  
+  return null;
 }

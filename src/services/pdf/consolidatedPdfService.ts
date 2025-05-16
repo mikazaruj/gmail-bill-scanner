@@ -316,4 +316,90 @@ export async function processChunkedPdf(
       error: `Chunked PDF processing failed: ${error.message || 'Unknown error'}`
     };
   }
+}
+
+/**
+ * Extract PDF content with bill data extraction if needed
+ * 
+ * This is a unified function that's used by the PDF processing handler
+ * 
+ * @param pdfData PDF data as ArrayBuffer or Uint8Array
+ * @param language Language code for extraction
+ * @param userId Optional user ID for tracking
+ * @param extractFields Whether to extract structured fields
+ * @returns Promise with extraction result
+ */
+export async function extractPdfContent(
+  pdfData: ArrayBuffer | Uint8Array,
+  language: string = 'en',
+  userId?: string,
+  extractFields: boolean = true
+): Promise<PdfExtractionResult> {
+  try {
+    console.log(`[PDF Service] Processing PDF with extractFields=${extractFields}`);
+    
+    // If fields extraction is needed, use extractBillDataFromPdf
+    if (extractFields) {
+      return await extractBillDataFromPdf(pdfData, language);
+    } 
+    
+    // Otherwise use simple text extraction
+    return await extractTextFromPdf(pdfData, {
+      language,
+      includePosition: false,
+      timeout: 30000 // 30 second timeout
+    });
+  } catch (error: any) {
+    console.error('[PDF Service] Error in extractPdfContent:', error);
+    return {
+      success: false,
+      text: '',
+      error: `PDF extraction failed: ${error.message || 'Unknown error'}`
+    };
+  }
+}
+
+/**
+ * Normalize PDF data from various formats to Uint8Array
+ * 
+ * @param data PDF data as base64 string, ArrayBuffer, or Uint8Array
+ * @returns Promise resolving to Uint8Array
+ */
+export async function normalizePdfData(data: string | ArrayBuffer | Uint8Array): Promise<Uint8Array> {
+  try {
+    // If already Uint8Array, return directly
+    if (data instanceof Uint8Array) {
+      return data;
+    }
+    
+    // If ArrayBuffer, convert to Uint8Array
+    if (data instanceof ArrayBuffer) {
+      return new Uint8Array(data);
+    }
+    
+    // If base64 string
+    if (typeof data === 'string') {
+      // For data URLs, extract the base64 part
+      let base64 = data;
+      if (base64.startsWith('data:')) {
+        const parts = base64.split(',');
+        if (parts.length > 1) {
+          base64 = parts[1];
+        }
+      }
+      
+      // Convert base64 to binary
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return bytes;
+    }
+    
+    throw new Error('Unsupported data format');
+  } catch (error) {
+    console.error('[PDF Service] Error normalizing PDF data:', error);
+    throw error;
+  }
 } 

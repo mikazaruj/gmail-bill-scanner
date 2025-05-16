@@ -21,10 +21,8 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.entry';
 import { extractBillDataWithUserMappings } from '../services/pdf/billFieldExtractor';
 import {
-  extractPdfText,
-  processPdfFromGmailApi,
-  normalizePdfData,
-  logDiagnostics
+  extractTextFromPdfWithPosition,
+  diagnosePdfEnvironment
 } from '../services/pdf/pdfService';
 import { getSupabaseClient } from '../services/supabase/client';
 
@@ -392,13 +390,10 @@ async function processPdfData(
       : pdfData;
     
     // Extract text and position data using unified method with robust error handling
-    const extractionResult = await extractPdfText(normalizedPdfData).catch(error => {
+    const extractionResult = await extractTextFromPdfWithPosition(normalizedPdfData).catch(error => {
       // Log the error with details for troubleshooting
-      logDiagnostics(`Error in PDF extraction: ${error instanceof Error ? error.message : 'Unknown error'}`, { 
-        type: 'pdf-processor',
-        stage: 'extraction',
-        fileSize: normalizedPdfData.byteLength
-      });
+      diagnosePdfEnvironment(); // Just run diagnostics without parameters
+      console.error(`Error in PDF extraction: ${error instanceof Error ? error.message : 'Unknown error'}`);
       throw error;
     });
     
