@@ -480,9 +480,14 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         console.log('Detected encoding issues in PDF content, applying fix...');
         // This is a common fix for UTF-8 characters being incorrectly decoded as Latin1/ISO-8859-1
         // It works for most Hungarian characters (á, é, í, ó, ö, ő, ú, ü, ű)
-        const fixed = decodeURIComponent(escape(text));
-        console.log('Applied encoding fix for Hungarian characters in PDF');
-        return fixed;
+        try {
+          const fixed = decodeURIComponent(escape(text));
+          console.log('Applied encoding fix for Hungarian characters in PDF');
+          return fixed;
+        } catch (uriError) {
+          console.error('URI decoding error in PDF encoding fix:', uriError);
+          // Fall through to character mapping approach
+        }
       }
       
       // Additional replacements for common Hungarian character encoding issues in PDFs
@@ -709,10 +714,15 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         
         // This is a common fix for UTF-8 characters being incorrectly decoded as Latin1/ISO-8859-1
         // It works for most Hungarian characters (á, é, í, ó, ö, ő, ú, ü, ű)
-        const fixed = decodeURIComponent(escape(text));
-        
-        console.log('Applied encoding fix for Hungarian characters');
-        return fixed;
+        try {
+          const fixed = decodeURIComponent(escape(text));
+          console.log('Applied encoding fix for Hungarian characters');
+          return fixed;
+        } catch (uriError) {
+          console.error('URI decoding error in email encoding fix:', uriError);
+          // If decoding fails, return the original text
+          return text;
+        }
       }
       
       // If no encoding issues detected, return the original text

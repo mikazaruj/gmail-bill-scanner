@@ -33,7 +33,13 @@ export function fixEmailEncoding(text: string): string {
     if (hasEncodingIssues) {
       // This is a common fix for UTF-8 characters being incorrectly decoded as Latin1/ISO-8859-1
       // It works for most Hungarian characters (á, é, í, ó, ö, ő, ú, ü, ű)
-      return decodeURIComponent(escape(text));
+      try {
+        return decodeURIComponent(escape(text));
+      } catch (decodeError) {
+        console.error('Error in decodeURIComponent fix:', decodeError);
+        // If decoding fails, return the original text
+        return text;
+      }
     }
     
     // If no encoding issues detected, return the original text

@@ -475,7 +475,12 @@ function fixPdfEncoding(text: string, isHungarian: boolean): string {
     if (hasEncodingIssues) {
       // This is a common fix for UTF-8 characters being incorrectly decoded as Latin1/ISO-8859-1
       // It works for most Hungarian characters (á, é, í, ó, ö, ő, ú, ü, ű)
-      return decodeURIComponent(escape(text));
+      try {
+        return decodeURIComponent(escape(text));
+      } catch (uriError) {
+        console.error('[PDF Extractor] URI decoding error:', uriError);
+        // Fall through to the character map approach if decodeURIComponent fails
+      }
     }
     
     // Additional replacements for common Hungarian character encoding issues in PDFs
