@@ -149,48 +149,262 @@ function fixHungarianEncoding(text) {
     fixedText = fixedText.replace(new RegExp(incorrect, 'g'), correct);
   });
   
+  // Also fix common mismatched character sequences
+  fixedText = fixedText
+    .replace(/Ã\s*\n\s*gyfel/gi, 'Ügyfel')
+    .replace(/tÃ¡jÃ©koztat/gi, 'tájékoztat')
+    .replace(/Ã¶sszeg/gi, 'összeg')
+    .replace(/hatÃ¡ridÅ'/gi, 'határidő')
+    .replace(/\bÃ\s*n\b/gi, 'Ön')
+    .replace(/azonosÃ­t/gi, 'azonosít')
+    .replace(/számla\s+sorszám/gi, 'számla sorszáma')
+    .replace(/sz[aá]mlasz[aá]m/gi, 'számlaszám')
+    .replace(/v?e?g?össz?e?g/gi, 'végösszeg')
+    .replace(/számlakibocs[aá]t[oó]/gi, 'számlakibocsátó')
+    .replace(/vevő\s*\(fizető\)/gi, 'vevő (fizető)')
+    .replace(/fizetendő\s+[oöó]ssz?e?g/gi, 'fizetendő összeg')
+    // Additional replacements for common PDF encoding issues
+    .replace(/SzolgĂÄltatĂĂł/gi, 'Szolgáltató')
+    .replace(/CĂÂ­me/gi, 'Címe')
+    .replace(/AdĂĂłszĂÄma/gi, 'Adószáma')
+    .replace(/BankszĂÄmlaszĂÄma/gi, 'Bankszámlaszáma')
+    .replace(/rĂĹszszĂÄmla/gi, 'részszámla')
+    .replace(/ElszĂÄmolt idĂÂszak/gi, 'Elszámolt időszak')
+    .replace(/FizetendĂÂ ĂĹsszeg/gi, 'Fizetendő összeg')
+    .replace(/SzĂÄmla sorszĂÄma/gi, 'Számla sorszáma')
+    .replace(/VevĂÅ' \(fizetĂÅ'\)/gi, 'Vevő (fizető)')
+    .replace(/ĂgyfĂŠl/gi, 'Ügyfél')
+    .replace(/tĂÄjĂŠkoztat/gi, 'tájékoztat');
+  
   // Second attempt: try to detect and fix UTF-8/Latin-2 encoding issues
   try {
-    // This helps with some specific encoding issues
-    const textDecoder = new TextDecoder('iso-8859-2');
-    const textEncoder = new TextEncoder();
-    const bytes = textEncoder.encode(fixedText);
-    const decodedText = textDecoder.decode(bytes);
-    
-    if (decodedText !== fixedText && decodedText.length > 0) {
-      console.log("[OFFSCREEN] Applied ISO-8859-2 decoding fix");
-      fixedText = decodedText;
+    // Check if we still have encoding issues
+    if (fixedText.includes('Ă') || fixedText.includes('Ĺ') || fixedText.includes('Â')) {
+      try {
+        fixedText = decodeURIComponent(escape(fixedText));
+      } catch (e) {
+        console.warn("[OFFSCREEN] Error applying primary encoding fix:", e);
+      }
+
+      // If we still have issues, try ISO-8859-2 fix
+      if (fixedText.includes('Ă') || fixedText.includes('Ĺ') || fixedText.includes('Â')) {
+        try {
+          // This helps with some specific encoding issues
+          const textDecoder = new TextDecoder('iso-8859-2');
+          const textEncoder = new TextEncoder();
+          const bytes = textEncoder.encode(fixedText);
+          const decodedText = textDecoder.decode(bytes);
+          
+          if (decodedText !== fixedText && decodedText.length > 0) {
+            console.log("[OFFSCREEN] Applied ISO-8859-2 decoding fix");
+            fixedText = decodedText;
+          }
+        } catch (e) {
+          console.warn("[OFFSCREEN] Error applying secondary encoding fix:", e);
+        }
+      }
     }
   } catch (e) {
-    console.warn("[OFFSCREEN] Error applying secondary encoding fix:", e);
-  }
-  
-  // Third attempt: apply fixes for specific patterns that might remain
-  try {
-    // Fix double-encoded characters (happens with some PDFs)
-    fixedText = fixedText.replace(/Ă&#8218;/g, 'á')
-                        .replace(/Ă&#8364;/g, 'é')
-                        .replace(/Ă&#8240;/g, 'ó')
-                        .replace(/Ĺ&#8364;/g, 'é')
-                        .replace(/Ă&#732;/g, 'ő')
-                        .replace(/ƒ&#8218;/g, 'á')
-                        .replace(/ƒ&#8364;/g, 'é');
-    
-    // Remove common garbage sequences found in corrupted PDFs
-    fixedText = fixedText.replace(/Ť&#321;&#205;&#336;/g, '')
-                        .replace(/ŤŃÍŐçrç|YQ/g, '')
-                        .replace(/startxref \d+ %EOF/g, '')
-                        .replace(/<\/Type \/Sig \/Filter \/Adobe\.PPKLite/g, '');
-                        
-    // Remove binary/hexadecimal data often found in corrupted PDFs
-    fixedText = fixedText.replace(/[0-9a-f]{32,}/gi, '')
-                        .replace(/\bobj\s+<<.*?>>\s+endobj\b/gs, '')
-                        .replace(/0x[0-9a-f]+/gi, '');
-  } catch (e) {
-    console.warn("[OFFSCREEN] Error applying pattern-specific fixes:", e);
+    console.warn("[OFFSCREEN] Error applying encoding fixes:", e);
   }
   
   return fixedText;
+}
+
+// Process PDF document with batch processing
+async function processDocument(pdfData, options = {}) {
+  const startTime = performance.now();
+  
+  try {
+    // Extract options with defaults
+    const {
+      includePosition = true,
+      maxPages = 20,
+      earlyStopThreshold = 0.7,
+      batchSize = 4, // Process pages in batches
+      fieldMappings = {}
+    } = options;
+    
+    // Load the PDF
+    const loadingTask = pdfjsLib.getDocument({
+      data: pdfData,
+      disableWorker: true
+    });
+    
+    const pdf = await loadingTask.promise;
+    // Use the maxPages from the destructured options
+    const pagesToProcess = Math.min(maxPages, pdf.numPages);
+    
+    console.log(`[OFFSCREEN] PDF loaded with ${pdf.numPages} pages, processing up to ${pagesToProcess}`);
+    
+    // Create result object
+    const result = {
+      success: true,
+      text: '',
+      pages: [],
+      pagesCount: pdf.numPages,
+      pagesProcessed: 0,
+      textLength: 0,
+      earlyStop: false,
+      earlyStopReason: ''
+    };
+    
+    // Keep track of found fields for early stopping
+    const requiredFields = Object.keys(fieldMappings || {});
+    const foundFields = {};
+    
+    // Process pages in batches
+    for (let batchStart = 1; batchStart <= pagesToProcess; batchStart += batchSize) {
+      // Check if we should stop early before processing this batch
+      if (result.earlyStop) break;
+      
+      const batchEnd = Math.min(batchStart + batchSize - 1, pagesToProcess);
+      console.log(`[OFFSCREEN] Processing batch of pages ${batchStart}-${batchEnd}`);
+      
+      // Create promises for all pages in this batch
+      const pagePromises = [];
+      for (let i = batchStart; i <= batchEnd; i++) {
+        pagePromises.push(processPage(pdf, i));
+      }
+      
+      // Process all pages in this batch in parallel
+      const processedPages = await Promise.all(pagePromises);
+      
+      // Add processed pages to results
+      for (const { pageNumber, pageText, textItems } of processedPages) {
+        result.pages.push({
+          pageNumber,
+          text: pageText,
+          items: textItems
+        });
+        
+        // Add to full text
+        result.text += pageText + '\n';
+        result.pagesProcessed++;
+        result.textLength += pageText.length;
+      }
+      
+      // Check for early stopping after each batch if we have field mappings
+      if (requiredFields.length > 0 && earlyStopThreshold < 1.0) {
+        // Try to find fields in current accumulated text
+        for (const field of requiredFields) {
+          // Skip fields we've already found
+          if (foundFields[field]) continue;
+          
+          // Check for field using regex pattern
+          const pattern = fieldMappings[field];
+          if (pattern && typeof pattern === 'string') {
+            try {
+              const regex = new RegExp(pattern, 'i');
+              const match = result.text.match(regex);
+              
+              if (match && match[1]) {
+                console.log(`[OFFSCREEN] Found field "${field}" in batch ${batchStart}-${batchEnd}: "${match[1].trim().substring(0, 30)}..."`);
+                foundFields[field] = match[1].trim();
+              }
+            } catch (e) {
+              console.warn(`[OFFSCREEN] Invalid regex pattern for field ${field}: ${e.message}`);
+            }
+          }
+        }
+        
+        // Calculate how many fields we've found
+        const fieldsFoundCount = Object.keys(foundFields).length;
+        if (requiredFields.length > 0) {
+          const fieldFoundRatio = fieldsFoundCount / requiredFields.length;
+          
+          console.log(`[OFFSCREEN] After batch ${batchStart}-${batchEnd}: found ${fieldsFoundCount}/${requiredFields.length} fields (${(fieldFoundRatio * 100).toFixed(1)}%)`);
+          
+          // If we've found enough fields, stop early
+          if (fieldFoundRatio >= earlyStopThreshold) {
+            result.earlyStop = true;
+            result.earlyStopReason = `Found ${fieldsFoundCount}/${requiredFields.length} fields (${(fieldFoundRatio * 100).toFixed(1)}%), which meets the threshold of ${earlyStopThreshold * 100}%`;
+            console.log(`[OFFSCREEN] Early stopping after batch ${batchStart}-${batchEnd}: ${result.earlyStopReason}`);
+            break;
+          }
+          
+          // Also stop early if we've found all the important fields
+          const criticalFields = ['total_amount', 'due_date', 'invoice_number'].filter(f => requiredFields.includes(f));
+          if (criticalFields.length > 0) {
+            const foundCriticalFields = criticalFields.filter(f => !!foundFields[f]);
+            if (foundCriticalFields.length === criticalFields.length) {
+              result.earlyStop = true;
+              result.earlyStopReason = `Found all critical fields: ${foundCriticalFields.join(', ')}`;
+              console.log(`[OFFSCREEN] Early stopping after batch ${batchStart}-${batchEnd}: ${result.earlyStopReason}`);
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    const processingTime = Math.round(performance.now() - startTime);
+    console.log(`[OFFSCREEN] PDF processing complete in ${processingTime}ms: ${result.pagesProcessed}/${pdf.numPages} pages, ${result.textLength} characters`);
+    
+    return result;
+  } catch (error) {
+    console.error("[OFFSCREEN] Error processing PDF:", error);
+    return {
+      success: false,
+      error: error.message || "Unknown error in PDF processing"
+    };
+  }
+}
+
+// Process a single page of a PDF document
+async function processPage(pdf, pageNumber) {
+  try {
+    // Get the page
+    const page = await pdf.getPage(pageNumber);
+    
+    // Extract text content
+    const textContent = await page.getTextContent();
+    
+    // Process text content
+    let pageText = '';
+    const textItems = [];
+    
+    textContent.items.forEach(item => {
+      const itemText = item.str || '';
+      pageText += itemText + ' ';
+      
+      // Store position information if enabled
+      if (item.transform) {
+        const [, , , , x, y] = item.transform;
+        textItems.push({
+          text: itemText,
+          x,
+          y,
+          width: item.width || 0,
+          height: item.height || 0
+        });
+      }
+    });
+    
+    // Clean up the text - remove excessive whitespace
+    pageText = pageText.replace(/\s+/g, ' ').trim();
+    
+    // Apply Hungarian encoding fixes
+    pageText = fixHungarianEncoding(pageText);
+    
+    // Fix the individual text items as well
+    textItems.forEach(item => {
+      item.text = fixHungarianEncoding(item.text);
+    });
+    
+    return {
+      pageNumber,
+      pageText,
+      textItems
+    };
+  } catch (error) {
+    console.error(`[OFFSCREEN] Error processing page ${pageNumber}:`, error);
+    return {
+      pageNumber,
+      pageText: '',
+      textItems: []
+    };
+  }
 }
 
 // Simple function to process PDF data

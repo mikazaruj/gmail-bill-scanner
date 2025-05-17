@@ -29,6 +29,7 @@ export interface ExtractionResult {
   error?: string;
   earlyStop?: boolean;
   pagesProcessed?: number;
+  earlyStopReason?: string; // Reason for early stopping
 }
 
 /**
@@ -42,6 +43,8 @@ export interface ExtractionOptions {
   shouldEarlyStop?: boolean;
   maxPages?: number;
   forceOffscreenDocument?: boolean;
+  closeOffscreenAfterUse?: boolean; // Close the offscreen document after PDF processing is complete
+  earlyStopThreshold?: number; // Threshold for early stopping (0.0-1.0)
 }
 
 /**

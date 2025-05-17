@@ -182,6 +182,16 @@ export async function handleScanEmails(
       console.log('Step 14 skipped: Auto-export not enabled or no bills found');
     }
     
+    // Clean up PDF resources
+    console.log('Step 15: Cleaning up PDF resources');
+    try {
+      const { cleanupPdfResources } = await import('../../services/pdf/pdfService');
+      await cleanupPdfResources();
+      console.log('Step 15 complete: PDF resources cleaned up');
+    } catch (cleanupError) {
+      console.warn('Step 15 warning: Error cleaning up PDF resources:', cleanupError);
+    }
+    
     console.log('=== END: Email scan process completed successfully ===');
   } catch (error) {
     console.error('Error scanning emails:', error);

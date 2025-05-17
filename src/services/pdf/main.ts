@@ -28,9 +28,26 @@ import {
 /**
  * Enhanced extraction result with bill data
  */
-export interface ExtractionResult extends CleanResult {
-  billData?: BillData;
-  fieldMappings?: any[];  // Add field mappings to result
+export interface ExtractionResult {
+  success: boolean;
+  text: string;
+  pages?: Array<{
+    pageNumber: number;
+    text: string;
+    items?: Array<{
+      text: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }>;
+  }>;
+  error?: string;
+  pagesProcessed?: number;
+  earlyStop?: boolean;
+  earlyStopReason?: string; // Reason for early stopping if applicable
+  billData?: any; // Optional bill data extracted from the PDF
+  fieldMappings?: Record<string, string | RegExp>;  // Field mappings as Record not array
   extractedFields?: Record<string, any>; // Add extracted fields to result
 }
 
@@ -63,7 +80,12 @@ export interface PdfExtractionOptions {
   extractBillData?: boolean;
   workerUrl?: string;
   forceOffscreenDocument?: boolean; // Add option to force using offscreen document
-  fieldMappings?: any[]; // Add field mappings for extraction
+  fieldMappings?: Record<string, string | RegExp>; // Field mappings as Record not array
+  maxPages?: number;
+  shouldEarlyStop?: boolean;
+  pdfDataSize?: number;
+  closeOffscreenAfterUse?: boolean; // Close the offscreen document after processing
+  earlyStopThreshold?: number; // Threshold for early stopping (0-1)
 }
 
 /**
@@ -130,7 +152,9 @@ export async function extractPdfText(
           includePosition: options.includePosition !== false,
           language: options.language,
           timeout: options.timeout || 60000,
-          maxPages: 20 // Process more pages by default
+          maxPages: options.maxPages || 20, // Process more pages by default
+          earlyStopThreshold: options.shouldEarlyStop ? 0.7 : 1.0, // Use 1.0 to disable early stopping
+          fieldMappings: options.fieldMappings || {}
         };
         
         // Use offscreen document to extract text
@@ -143,10 +167,27 @@ export async function extractPdfText(
           pages: offscreenResult.pages || [],
           error: offscreenResult.error,
           earlyStop: offscreenResult.earlyStop,
+          earlyStopReason: offscreenResult.earlyStopReason,
           pagesProcessed: offscreenResult.pagesProcessed
         };
         
         console.log(`[PDF Service] Offscreen document extraction ${result.success ? 'successful' : 'failed'}: ${result.text?.length || 0} characters, ${result.pages?.length || 0} pages`);
+        
+        // Close the offscreen document if requested
+        if (options.closeOffscreenAfterUse) {
+          console.log('[PDF Service] Closing offscreen document after processing as requested');
+          try {
+            // Import pdfService and use the cleanupPdfResources function
+            const pdfService = await import('./pdfService');
+            if ('cleanupPdfResources' in pdfService) {
+              await pdfService.cleanupPdfResources();
+            } else {
+              console.warn('[PDF Service] cleanupPdfResources function not found');
+            }
+          } catch (cleanupError) {
+            console.warn('[PDF Service] Error cleaning up resources:', cleanupError);
+          }
+        }
         
         // If Hungarian, try to extract fields using hungarianPatternMatcher
         if (result.success && result.text && options.language === 'hu') {

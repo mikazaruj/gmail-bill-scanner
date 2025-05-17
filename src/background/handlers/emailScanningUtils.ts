@@ -6,10 +6,24 @@
 // Import statements would be at the top of the actual file
 import { getAccessToken } from '../../services/auth/googleAuth';
 import { buildBillSearchQuery } from '../../services/gmailSearchBuilder';
-import { BillData } from '../../types/Message';
-import { Bill } from '../../types/Bill';
+import type { BillData } from '../../types/Message';
+import type { Bill } from '../../types/Bill';
 import fieldMappingService from '../../services/fieldMapping/FieldMappingService';
 import { initializeBillExtractorForUser } from '../../services/extraction/extractorFactory';
+
+// Define minimal type for PDF extraction to avoid errors
+interface PdfExtractionOptions {
+  language?: string;
+  includePosition?: boolean;
+  timeout?: number;
+  forceOffscreenDocument?: boolean;
+  maxPages?: number;
+  shouldEarlyStop?: boolean;
+  batchSize?: number;
+  earlyStopThreshold?: number;
+  closeOffscreenAfterUse?: boolean;
+  [key: string]: any;
+}
 
 /**
  * Build a Gmail search query based on settings and trusted sources
@@ -143,7 +157,7 @@ export async function processEmails(
       
       if (extractionResult.success && extractionResult.bills.length > 0) {
         // Convert each Bill to BillData
-        extractedBills = extractionResult.bills.map(bill => fieldMappingService.transformBillToBillData(bill));
+        extractedBills = extractionResult.bills.map((bill: Bill) => fieldMappingService.transformBillToBillData(bill));
         
         // Add to bills array
         bills.push(...extractedBills);
@@ -292,22 +306,35 @@ export async function processPdfAttachment(
   
   // Try to use optimized PDF processor first
   try {
-    // Import the extractPdfText function
-    const { extractPdfText } = await import('../../services/pdf/main');
+    // Import the pdf module and use extractText method correctly
+    const pdfModule = await import('../../services/pdf/main');
     
     // Process the PDF with the optimized approach
-    const pdfResult = await extractPdfText(
+    const pdfResult = await pdfModule.extractPdfText(
       attachmentBuffer,
       {
         language: settings.inputLanguage as string || 'en',
         includePosition: true,
         timeout: 60000, // 60 second timeout
-        forceOffscreenDocument: true // Force using offscreen document for better PDF processing
-      }
+        forceOffscreenDocument: true, // Force using offscreen document for better PDF processing
+        shouldEarlyStop: true,
+        maxPages: 20, // Increased from 10 to 20 pages for better extraction
+        batchSize: 4, // Process 4 pages at once in parallel
+        closeOffscreenAfterUse: false, // Don't close after each PDF, we'll close at the end of the whole process
+        earlyStopThreshold: 0.7 // Set the early stop threshold
+      } as PdfExtractionOptions
     );
     
     if (pdfResult.success && pdfResult.text && pdfResult.text.length > 100) {
       console.log(`Successfully extracted ${pdfResult.text.length} characters from PDF using offscreen document approach`);
+      
+      // Log early stopping if it happened
+      if (pdfResult.earlyStop) {
+        const stopReason = pdfResult.earlyStopReason || 'Found required fields';
+        console.log(`PDF processing stopped early after ${pdfResult.pagesProcessed} pages: ${stopReason}`);
+      } else {
+        console.log(`PDF fully processed: ${pdfResult.pagesProcessed || '?'} pages`);
+      }
       
       // Use the bill extractor to process the PDF text through the same extraction pipeline as emails
       try {
@@ -325,7 +352,7 @@ export async function processPdfAttachment(
         
         if (extractionResult.success && extractionResult.bills.length > 0) {
           // Convert each Bill to BillData
-          const pdfBills = extractionResult.bills.map(bill => fieldMappingService.transformBillToBillData(bill));
+          const pdfBills = extractionResult.bills.map((bill: Bill) => fieldMappingService.transformBillToBillData(bill));
           
           console.log(`Successfully extracted bill data from PDF attachment`);
           return pdfBills;
@@ -382,7 +409,7 @@ export async function processPdfAttachment(
     
     if (pdfResult.success && pdfResult.bills.length > 0) {
       // Convert each Bill to BillData
-      const pdfBills = pdfResult.bills.map(bill => fieldMappingService.transformBillToBillData(bill));
+      const pdfBills = pdfResult.bills.map((bill: Bill) => fieldMappingService.transformBillToBillData(bill));
       
       console.log(`Successfully extracted ${pdfBills.length} bills from PDF attachment`);
       return pdfBills;
@@ -423,7 +450,7 @@ export async function handleAutoExport(settings: any, bills: BillData[]): Promis
     await handleExportToSheets({ 
       bills, 
       autoExportToSheets: settings.autoExportToSheets 
-    }, (response) => {
+    }, (response: { success: boolean; error?: string; spreadsheetUrl?: string }) => {
       if (response.success) {
         console.log('Auto-export to Sheets successful');
         
