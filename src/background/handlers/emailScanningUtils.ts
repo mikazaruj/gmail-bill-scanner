@@ -272,7 +272,7 @@ export async function processEmails(
 }
 
 /**
- * Process a PDF attachment to extract bills
+ * Process a PDF attachment from an email
  */
 export async function processPdfAttachment(
   messageId: string,
@@ -301,12 +301,13 @@ export async function processPdfAttachment(
       {
         language: settings.inputLanguage as string || 'en',
         includePosition: true,
-        timeout: 60000 // 60 second timeout
+        timeout: 60000, // 60 second timeout
+        forceOffscreenDocument: true // Force using offscreen document for better PDF processing
       }
     );
     
     if (pdfResult.success && pdfResult.text && pdfResult.text.length > 100) {
-      console.log(`Successfully extracted ${pdfResult.text.length} characters from PDF using optimized approach`);
+      console.log(`Successfully extracted ${pdfResult.text.length} characters from PDF using offscreen document approach`);
       
       // Create a bill object
       const bill: Bill = {
@@ -327,7 +328,7 @@ export async function processPdfAttachment(
           fileName: attachmentData.fileName
         },
         notes: pdfResult.text.slice(0, 500), // Store first 500 chars of extracted text as notes
-        extractionMethod: 'direct-binary',
+        extractionMethod: 'offscreen-document',
         language: settings.inputLanguage as 'en' | 'hu' || 'en'
       };
       
@@ -338,7 +339,7 @@ export async function processPdfAttachment(
       return [billData];
     }
   } catch (optimizedPdfError) {
-    console.warn('Optimized PDF processing failed, falling back to regular extractor:', optimizedPdfError);
+    console.warn('Offscreen document PDF processing failed, falling back to regular extractor:', optimizedPdfError);
   }
   
   // Fall back to using the regular bill extractor

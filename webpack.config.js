@@ -125,7 +125,10 @@ module.exports = {
         { from: 'public/pdf-processor.html', to: 'pdf-processor.html' },
         { from: 'public/pdf-processor-ui.js', to: 'pdf-processor-ui.js' },
         // Copy the offscreen PDF processor HTML
-        { from: 'public/offscreen-pdf-processor.html', to: 'offscreen-pdf-processor.html' }
+        { from: 'public/offscreen-pdf-processor.html', to: 'offscreen-pdf-processor.html' },
+        // Copy local PDF.js files for CSP compliance
+        { from: 'public/pdfjs/pdf.min.js', to: 'pdfjs/pdf.min.js' },
+        { from: 'public/pdfjs/pdf.worker.min.js', to: 'pdfjs/pdf.worker.min.js' },
       ],
     }),
     // Use HtmlWebpackPlugin to generate HTML files - use different names to avoid conflicts

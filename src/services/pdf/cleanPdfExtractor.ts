@@ -476,13 +476,30 @@ function fixPdfEncoding(text: string, isHungarian: boolean = true): string {
   if (!text) return '';
   
   try {
-    // First try the standard decoding
+    // Replace the problematic decodeURIComponent approach with a safer implementation
+    // that doesn't throw URI malformed errors
+    
+    // First try a safer character encoding fix approach
     try {
-      // This might throw errors with malformed URI sequences
-      return decodeURIComponent(escape(text));
-    } catch (uriError) {
-      console.log('[PDF Extractor] URI decoding error:', uriError);
-      // Continue with manual character fixes
+      // Instead of using decodeURIComponent(escape(text)) which can throw errors,
+      // use a more direct character replacement approach
+      let fixedText = text;
+      
+      // Replace common UTF-8 encoding issues
+      fixedText = fixedText
+        // Replace UTF-8 encoded characters with their proper representation
+        .replace(/\\u([0-9a-f]{4})/gi, (match, code) => 
+          String.fromCharCode(parseInt(code, 16)))
+        .replace(/&#(\d+);/g, (match, code) => 
+          String.fromCharCode(parseInt(code, 10)));
+      
+      // If the text was changed, return it
+      if (fixedText !== text) {
+        return fixedText;
+      }
+    } catch (basicFixError) {
+      console.log('[PDF Extractor] Basic encoding fix failed:', basicFixError);
+      // Continue with next approach
     }
     
     // If standard decoding fails and Hungarian is the target language,
@@ -497,7 +514,7 @@ function fixPdfEncoding(text: string, isHungarian: boolean = true): string {
       }
     }
     
-    // If standard decoding fails, apply manual Hungarian character fixes
+    // Apply manual Hungarian character fixes
     // Map of incorrectly encoded characters to proper Hungarian characters
     const charMap: Record<string, string> = {
       'Ã¡': 'á',

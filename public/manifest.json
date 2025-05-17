@@ -52,6 +52,8 @@
         "pdf-worker.js",
         "lib/pdf.js",
         "lib/pdf.worker.js",
+        "pdfjs/pdf.min.js",
+        "pdfjs/pdf.worker.min.js",
         "offscreen-pdf-processor.html"
       ],
       "matches": [

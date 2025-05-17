@@ -99,6 +99,66 @@ let pdfWorkerInitialized = false;
 let pdfWorkerInitializationAttempted = false;
 let authInitializationComplete = false; // New flag to track authentication initialization
 
+// Track offscreen document status
+let offscreenDocumentReady = false;
+
+// Set up message listeners for offscreen document
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Handle ready signal from offscreen document
+  if (message?.type === 'OFFSCREEN_DOCUMENT_READY') {
+    logger.info('Received ready signal from offscreen document:', message);
+    offscreenDocumentReady = true;
+    
+    // Let the offscreen document know we received the message
+    try {
+      sendResponse({ 
+        type: 'READY_ACKNOWLEDGED', 
+        timestamp: Date.now() 
+      });
+    } catch (e) {
+      logger.error('Error sending ready acknowledgment:', e);
+    }
+    
+    return true; // Keep the message channel open for the response
+  }
+  
+  // Also handle ping messages from the offscreen document
+  if (message?.type === 'PING_OFFSCREEN_DOCUMENT') {
+    logger.debug('Received ping from offscreen document');
+    
+    try {
+      sendResponse({ 
+        type: 'PONG_BACKGROUND', 
+        timestamp: Date.now() 
+      });
+    } catch (e) {
+      logger.error('Error responding to ping:', e);
+    }
+    
+    return true; // Keep the message channel open for the response
+  }
+  
+  // Handle PDF processing results
+  if (message?.type === 'PDF_PROCESSED' || message?.type === 'PDF_PROCESSING_ERROR') {
+    logger.debug(`Received ${message.type} message from offscreen document`);
+    // This will be handled by specific listeners in pdfService.ts
+    return true;
+  }
+});
+
+// Ping interval to keep offscreen document alive
+const offscreenPingInterval = setInterval(() => {
+  if (offscreenDocumentReady) {
+    chrome.runtime.sendMessage({
+      type: 'PING_OFFSCREEN_DOCUMENT',
+      timestamp: Date.now()
+    }).catch(error => {
+      logger.warn('Error pinging offscreen document:', error);
+      offscreenDocumentReady = false;
+    });
+  }
+}, 30000); // Ping every 30 seconds
+
 // Signal that the extension is ready to load
 const signalExtensionReady = () => {
   logger.info('=== Extension core is ready to use ===');
@@ -195,6 +255,9 @@ ServiceWorkerContext.onUnload(() => {
   } catch (error) {
     logger.error('Error during PDF cleanup:', error);
   }
+  
+  // Clear interval when service worker unloads
+  clearInterval(offscreenPingInterval);
 });
 
 // Token storage key for compatibility
@@ -263,6 +326,56 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'PING') {
     sendResponse({ success: true, message: 'Background script is active' });
     return;
+  }
+  
+  // Handle PDF_PROCESSED message from offscreen document
+  if (message.type === 'PDF_PROCESSED') {
+    logger.info('Received processed PDF result from offscreen document');
+    // No need to send a response as this is a one-way message
+    // The result will be handled by the listener set up in extractTextFromPdfWithPosition
+    return true;
+  }
+  
+  // Handle PDF_PROCESSING_ERROR message from offscreen document
+  if (message.type === 'PDF_PROCESSING_ERROR') {
+    logger.error('Received PDF processing error from offscreen document:', message.error);
+    // No need to send a response as this is a one-way message
+    // The error will be handled by the listener set up in extractTextFromPdfWithPosition
+    return true;
+  }
+  
+  // Handle OFFSCREEN_DOCUMENT_READY message
+  if (message.type === 'OFFSCREEN_DOCUMENT_READY') {
+    logger.info('Offscreen document is ready for PDF processing');
+    // Mark that the offscreen document is ready
+    chrome.storage.local.set({ 'offscreen_document_ready': true });
+    return true;
+  }
+  
+  // Handle PING_OFFSCREEN_DOCUMENT message (keep-alive mechanism)
+  if (message.type === 'PING_OFFSCREEN_DOCUMENT') {
+    logger.debug('Received ping from offscreen document');
+    sendResponse({ type: 'PONG_OFFSCREEN_DOCUMENT', timestamp: Date.now() });
+    return true;
+  }
+  
+  // Handle FIX_HUNGARIAN_ENCODING message
+  if (message.type === 'FIX_HUNGARIAN_ENCODING') {
+    // Try to fix Hungarian encoding issues
+    try {
+      const { text, isHungarian } = message;
+      if (isHungarian && text) {
+        // Apply Hungarian encoding fixes
+        const fixedText = applyHungarianEncodingFixes(text);
+        sendResponse({ fixedText });
+      } else {
+        sendResponse({ fixedText: text });
+      }
+    } catch (error) {
+      logger.error('Error fixing Hungarian encoding:', error);
+      sendResponse({ fixedText: message.text });
+    }
+    return true;
   }
   
   // Handle AUTHENTICATE with high priority - respond even if PDF is loading
@@ -464,36 +577,154 @@ async function finishUserOAuth(url: string) {
   }
 }
 
-// Simplified PDF worker initialization with reliable error handling
+// Replace the existing initializePdfWorker function
 const initializePdfWorker = async () => {
-  try {
-    logger.info('Initializing PDF.js worker with Node.js compatible approach');
-    
-    // Import the PDF.js modules using the Node.js compatible paths
-    const pdfjsLib = await import('pdfjs-dist/build/pdf');
-    const pdfjsWorker = await import('pdfjs-dist/build/pdf.worker.entry');
-    
-    // Set the worker source to the imported worker entry point
-    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker.default;
-    
-    logger.info('Successfully set PDF.js worker source to imported worker entry');
-    
-    // Try to initialize our PDF processing handler if needed
+  logger.info('Initializing PDF worker');
+
+  // Function to create or recreate the offscreen document
+  async function createOffscreenDocument() {
     try {
-      const { initPdfHandler } = await import('../services/pdf/pdfProcessingHandler');
-      const success = initPdfHandler();
-      logger.debug("PDF handler initialization result:", success ? "success" : "failed");
-    } catch (handlerError) {
-      logger.warn("Non-critical error initializing PDF handler:", handlerError);
-      // Non-critical error, continue
+      // Check if we already have an offscreen document
+      let existingContexts: any[] = [];
+      try {
+        // Chrome API might need to be accessed with some type casting
+        // @ts-ignore
+        existingContexts = await chrome.offscreen.getContexts();
+      } catch (e) {
+        logger.warn('Error checking for existing offscreen document:', e);
+      }
+
+      // If an offscreen document already exists, try to close it first
+      if (existingContexts && existingContexts.length > 0) {
+        logger.info('Existing offscreen document found, closing it before recreation');
+        try {
+          await chrome.offscreen.closeDocument();
+          logger.info('Successfully closed existing offscreen document');
+        } catch (e) {
+          logger.warn('Error closing existing offscreen document:', e);
+          // Continue anyway, Chrome will handle conflicts
+        }
+      }
+
+      // Create a new offscreen document
+      logger.info('Creating offscreen document for PDF processing');
+      await chrome.offscreen.createDocument({
+        url: 'offscreen-pdf-processor.html',
+        reasons: ['DOM_PARSER'] as any,
+        justification: 'Parse PDF documents and extract text content',
+      });
+      
+      logger.info('Offscreen document created, waiting for ready signal');
+      
+      // Set a timeout to verify the document was properly initialized
+      return new Promise<boolean>((resolve) => {
+        const timeout = setTimeout(() => {
+          logger.warn('Timed out waiting for offscreen document ready signal');
+          resolve(false);
+        }, 5000);
+        
+        // One-time listener for the ready message
+        function readyListener(message: any) {
+          if (message?.type === 'OFFSCREEN_DOCUMENT_READY') {
+            logger.info('Received ready signal from offscreen document:', message);
+            clearTimeout(timeout);
+            chrome.runtime.onMessage.removeListener(readyListener);
+            offscreenDocumentReady = true;
+            resolve(true);
+          }
+        }
+        
+        chrome.runtime.onMessage.addListener(readyListener);
+        
+        // Send a ping to trigger a response
+        setTimeout(() => {
+          chrome.runtime.sendMessage({
+            type: 'PING_OFFSCREEN_DOCUMENT',
+            action: 'init_check'
+          });
+        }, 500);
+      });
+    } catch (error) {
+      logger.error('Error creating offscreen document:', error);
+      return false;
     }
+  }
+
+  // Try to create the offscreen document, with a few retries if needed
+  let success = false;
+  let attempts = 0;
+  const maxAttempts = 3;
+  
+  while (!success && attempts < maxAttempts) {
+    attempts++;
+    logger.info(`Creating offscreen document (attempt ${attempts}/${maxAttempts})`);
     
-    return true;
-  } catch (error) {
-    logger.error('Error in PDF worker initialization:', error);
+    success = await createOffscreenDocument();
+    
+    if (!success && attempts < maxAttempts) {
+      const delay = attempts * 1000;
+      logger.info(`Offscreen document creation failed, retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  
+  if (!success) {
+    logger.error('Failed to initialize PDF worker after multiple attempts');
     return false;
   }
+  
+  logger.info('PDF worker successfully initialized');
+  return true;
 };
 
-// Signal extension ready and initialize PDF worker
-signalExtensionReady(); 
+// Make sure to call initializePdfWorker during startup
+// Add this near the end of the initialization code
+(async () => {
+  try {
+    // This will initialize the PDF worker on startup
+    await initializePdfWorker();
+  } catch (e) {
+    logger.error('Error during PDF worker initialization:', e);
+  }
+})();
+
+/**
+ * Helper function to apply Hungarian encoding fixes
+ */
+function applyHungarianEncodingFixes(text: string): string {
+  if (!text) return '';
+  
+  try {
+    // Hungarian character mappings for common encoding issues
+    const hungarianCharacterMap: Record<string, string> = {
+      'Ă': 'Á', 'ă': 'á',
+      'Ś': 'Ő', 'ś': 'ő',
+      'Ę': 'É', 'ę': 'é',
+      'Î': 'Í', 'î': 'í',
+      'Ţ': 'Ű', 'ţ': 'ű',
+      'Ş': 'Ö', 'ş': 'ö',
+      'Ł': 'Ó', 'ł': 'ó'
+    };
+    
+    // Apply character substitutions
+    let fixedText = text;
+    Object.entries(hungarianCharacterMap).forEach(([incorrect, correct]) => {
+      fixedText = fixedText.replace(new RegExp(incorrect, 'g'), correct);
+    });
+    
+    // Apply additional UTF-8 fix if needed
+    const hasEncodingIssues = /Ă/.test(fixedText);
+    if (hasEncodingIssues) {
+      try {
+        fixedText = decodeURIComponent(escape(fixedText));
+      } catch (e) {
+        // Ignore decode errors and keep the partially fixed text
+      }
+    }
+    
+    return fixedText;
+  } catch (error) {
+    logger.error('Error in Hungarian encoding fix:', error);
+    return text; // Return original text on error
+  }
+} 

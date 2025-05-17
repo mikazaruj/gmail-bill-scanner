@@ -18,6 +18,13 @@ import {
   isServiceWorkerContext
 } from './cleanPdfExtractor';
 
+// Import offscreen implementation
+import {
+  extractTextFromPdfWithPosition as offscreenExtractPdfText,
+  ExtractionResult as OffscreenResult,
+  ExtractionOptions as OffscreenOptions
+} from './pdfService';
+
 /**
  * Enhanced extraction result with bill data
  */
@@ -53,6 +60,15 @@ export interface PdfExtractionOptions {
   timeout?: number;
   extractBillData?: boolean;
   workerUrl?: string;
+  forceOffscreenDocument?: boolean; // Add option to force using offscreen document
+}
+
+/**
+ * Check if offscreen document API is available
+ */
+function hasOffscreenDocumentSupport(): boolean {
+  return typeof chrome !== 'undefined' && 
+         typeof chrome.offscreen !== 'undefined';
 }
 
 /**
@@ -93,7 +109,50 @@ export async function extractPdfText(
     const inServiceWorkerContext = isServiceWorkerContext();
     console.log(`[PDF Service] Running in service worker context: ${inServiceWorkerContext}`);
     
-    // Use the clean PDF extraction
+    // Check if we should use offscreen document approach
+    const hasOffscreenSupport = hasOffscreenDocumentSupport();
+    const shouldUseOffscreen = hasOffscreenSupport && 
+                             (options.forceOffscreenDocument === true || 
+                              (options.language === 'hu' && inServiceWorkerContext));
+    
+    console.log(`[PDF Service] Using offscreen document for extraction: ${shouldUseOffscreen} (available: ${hasOffscreenSupport}, forced: ${options.forceOffscreenDocument === true})`);
+    
+    // Use offscreen document if available and appropriate
+    if (shouldUseOffscreen) {
+      try {
+        console.log('[PDF Service] Attempting to use offscreen document for PDF extraction');
+        
+        // Convert options
+        const offscreenOptions: OffscreenOptions = {
+          includePosition: options.includePosition !== false,
+          language: options.language,
+          timeout: options.timeout || 60000,
+          maxPages: 20 // Process more pages by default
+        };
+        
+        // Use offscreen document to extract text
+        const offscreenResult = await offscreenExtractPdfText(pdfData, offscreenOptions);
+        
+        // Convert to expected format
+        const result: ExtractionResult = {
+          success: offscreenResult.success,
+          text: offscreenResult.text || '',
+          pages: offscreenResult.pages || [],
+          error: offscreenResult.error,
+          earlyStop: offscreenResult.earlyStop,
+          pagesProcessed: offscreenResult.pagesProcessed
+        };
+        
+        console.log(`[PDF Service] Offscreen document extraction ${result.success ? 'successful' : 'failed'}: ${result.text?.length || 0} characters, ${result.pages?.length || 0} pages`);
+        
+        return result;
+      } catch (offscreenError) {
+        console.error('[PDF Service] Error using offscreen document, falling back to clean extractor:', offscreenError);
+        // Fall back to clean extractor on error
+      }
+    }
+    
+    // Use the clean PDF extraction as fallback
     const result = await cleanExtractPdfText(pdfData, {
       includePosition: options.includePosition !== false,
       timeout: options.timeout || 60000,
@@ -187,7 +246,7 @@ function applySimpleHungarianFix(text: string, isHungarian: boolean = false): st
     if (!isHungarian) return text;
     
     // Check for common encoding issues with Hungarian characters
-    const hasEncodingIssues = /Ã/.test(text);
+    const hasEncodingIssues = /Ă/.test(text);
     let fixedText = text;
     
     if (hasEncodingIssues) {
@@ -218,7 +277,8 @@ export async function extractTextFromPdfBuffer(pdfData: ArrayBuffer | Uint8Array
     const result = await extractPdfText(pdfData, {
       includePosition: false,
       extractBillData: false,
-      timeout: 45000 // 45 second timeout for simple text extraction
+      timeout: 45000, // 45 second timeout for simple text extraction
+      forceOffscreenDocument: true // Try to use offscreen document for best results
     });
     
     return result.success ? result.text : '';
@@ -244,7 +304,8 @@ export async function processPdfFromGmailApi(
       language,
       includePosition: true,
       extractBillData: true,
-      timeout: 60000 // 1 minute timeout for Gmail API processing
+      timeout: 60000, // 1 minute timeout for Gmail API processing
+      forceOffscreenDocument: true // Always use offscreen document for Gmail processing
     });
     
     return {
@@ -252,10 +313,12 @@ export async function processPdfFromGmailApi(
       pages: result.pages,
       billData: result.billData
     };
-  } catch (error) {
-    console.error('[PDF Service] Error processing PDF from Gmail API:', error);
+  } catch (error: any) {
+    console.error('[PDF Service] Error in processPdfFromGmailApi:', error);
     return {
-      text: error instanceof Error ? `Error: ${error.message}` : 'Unknown error',
+      text: '',
+      pages: [],
+      billData: undefined
     };
   }
 }
