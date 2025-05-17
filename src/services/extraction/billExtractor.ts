@@ -24,6 +24,7 @@ import { ExtractionResult } from "../../types";
 import { decodeBase64 } from '../../utils/base64Decode';
 import { createBill } from "../../utils/billTransformers"; // Import createBill
 import { createDynamicBill, ensureBillFormat } from '../dynamicBillFactory'; // Static import
+import { isHungarianBill } from './utils/hungarianPatternMatcher'; // Import the hungarianPatternMatcher utilities
 
 // Gmail message header interface
 interface GmailMessageHeader {

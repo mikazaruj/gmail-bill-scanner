@@ -15,6 +15,48 @@
       ]
     }
   ],
+  "stems": {
+    "szamla": ["számla", "számlát", "számlán", "számlák", "számlákból", "számlázás", "számlázási"],
+    "fizet": ["fizetés", "fizetési", "fizetve", "fizetendő", "fizetnivaló", "fizetésre", "fizetését", "fizetést"],
+    "dij": ["díj", "díjak", "díjszabás", "díjbekérő", "díjat", "díjról", "díjhoz", "díjakról"],
+    "hatarido": ["határidő", "határideje", "határidővel", "határidőre", "határidőt"],
+    "esedek": ["esedékesség", "esedékes", "esedékességi"],
+    "lejarat": ["lejárat", "lejárati", "lejáratkor"],
+    "ertesit": ["értesítő", "értesítés", "értesítjük", "értesítve"],
+    "tajekoztat": ["tájékoztató", "tájékoztatás", "tájékoztatjuk"],
+    "emlekeztet": ["emlékeztető", "emlékeztetjük"],
+    "egyenleg": ["egyenleg", "egyenlege", "egyenleget", "egyenlegek"],
+    "befizet": ["befizetés", "befizetési", "befizetett", "befizetendő"],
+    "tartozas": ["tartozás", "tartozik", "tartozása", "tartozások"],
+    "kiegyenlit": ["kiegyenlítés", "kiegyenlítése", "kiegyenlítve", "kiegyenlítendő"],
+    "hatralék": ["hátralék", "hátraléka", "hátralékos", "hátralékok"],
+    "aram": ["áram", "áramot", "árammal", "áramszámla"],
+    "gaz": ["gáz", "gázszámla", "gázzal", "gázfogyasztás"],
+    "viz": ["víz", "vízszámla", "vízzel", "vízfogyasztás", "vízművek"],
+    "kozuzem": ["közüzemi", "közüzem", "közüzemek"],
+    "szolgaltat": ["szolgáltató", "szolgáltatás", "szolgáltatást", "szolgáltatások"],
+    "fogyaszt": ["fogyasztás", "fogyasztási", "fogyasztó", "fogyasztott", "fogyasztva"],
+    "fizetendo": ["fizetendő", "fizetendőt", "fizetendők"],
+    "osszeg": ["összeg", "összege", "összeget", "összegek", "összesen"],
+    "teljes": ["teljes", "teljesen", "teljessé"],
+    "netto": ["nettó", "nettót", "nettóból"],
+    "brutto": ["bruttó", "bruttót", "bruttóból"],
+    "afa": ["áfa", "áfát", "áfával", "adó"],
+    "vegosszeg": ["végösszeg", "végösszeget", "végösszege"],
+    "azonosit": ["azonosító", "azonosítás", "azonosítója", "azonosítva"],
+    "ugyfel": ["ügyfél", "ügyfelek", "ügyfélszám"],
+    "felhasznalo": ["felhasználó", "felhasználói", "felhasználás"],
+    "fogyaszto": ["fogyasztó", "fogyasztói"],
+    "szerzo": ["szerződés", "szerződő", "szerződéses"],
+    "cim": ["cím", "címe", "címen", "címzett"],
+    "idoszak": ["időszak", "időszaki", "időszakban"],
+    "elszamol": ["elszámolás", "elszámolt", "elszámolási"],
+    "vevo": ["vevő", "vevőnek", "vevőt"],
+    "kelt": ["kelt", "keltezés"],
+    "kiallitas": ["kiállítás", "kiállítva", "kiállító"],
+    "datum": ["dátum", "dátuma", "dátummal"],
+    "keszites": ["készítés", "készült", "készítve"]
+  },
   "billKeywords": [
     "számla", "számlák", "számlázás", "számlázási", "számláról", "számlához",
     "fizetés", "fizetési", "fizetve", "fizetendő", "fizetnivaló", "fizetésre", "fizetését", "fizetést",
@@ -76,7 +118,11 @@
   },
   "fieldExtractors": [
     {
-      "fieldName": "amount",
+      "fieldName": "total_amount",
+      "fieldType": "currency",
+      "semanticType": "fizetendoOsszeg",
+      "hungarianType": "fizetendő összeg",
+      "stemGroups": [["fizetendo", "osszeg"], ["vegosszeg"], ["teljes", "osszeg"], ["fizetendo"], ["szamla", "osszeg"]],
       "label": "Fizetendő összeg",
       "patterns": [
         "(?:Fizetendő|Összesen)(?:\\s+(?:összeg|összesen))?:?\\s*(?:Ft\\.?|HUF)?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
@@ -104,7 +150,37 @@
       "postProcessing": "removeSpaces"
     },
     {
-      "fieldName": "dueDate",
+      "fieldName": "subtotal_amount",
+      "fieldType": "currency",
+      "semanticType": "nettoOsszeg",
+      "hungarianType": "nettó összeg",
+      "stemGroups": [["netto", "osszeg"], ["afa", "nelkul"], ["ado", "nelkul"]],
+      "label": "Nettó összeg",
+      "patterns": [
+        "(?:Nettó|ÁFA nélküli)\\s+(?:összeg|összesen):?\\s*(?:Ft\\.?|HUF)?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+        "Nettó érték\\s*összesen\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+        "Adó\\s+nélkül:?\\s*(?:Ft\\.?|HUF)?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)"
+      ]
+    },
+    {
+      "fieldName": "tax_amount",
+      "fieldType": "currency",
+      "semanticType": "afaOsszeg",
+      "hungarianType": "áfa összeg",
+      "stemGroups": [["afa", "osszeg"], ["ado", "osszeg"]],
+      "label": "ÁFA összege",
+      "patterns": [
+        "(?:ÁFA|Áfa|Adó)\\s+(?:összeg|összesen)?:?\\s*(?:Ft\\.?|HUF)?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+        "ÁFA\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+        "Áfa\\s+összege?\\s*:\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)"
+      ]
+    },
+    {
+      "fieldName": "due_date",
+      "fieldType": "date",
+      "semanticType": "fizetesiHatarido",
+      "hungarianType": "fizetési határidő",
+      "stemGroups": [["fizet", "hatarido"], ["esedek"], ["befizet", "hatarido"]],
       "label": "Fizetési határidő",
       "patterns": [
         "Fizetési\\s+határidő:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
@@ -117,7 +193,11 @@
       ]
     },
     {
-      "fieldName": "billingPeriod",
+      "fieldName": "service_period",
+      "fieldType": "date",
+      "semanticType": "elszamoltIdoszak",
+      "hungarianType": "elszámolt időszak",
+      "stemGroups": [["elszamol", "idoszak"]],
       "label": "Elszámolt időszak",
       "patterns": [
         "Elszámolt\\s+időszak:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2}\\s*-\\s*\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
@@ -127,7 +207,11 @@
       ]
     },
     {
-      "fieldName": "billingDate",
+      "fieldName": "invoice_date",
+      "fieldType": "date",
+      "semanticType": "szamlaKelte",
+      "hungarianType": "számla kelte",
+      "stemGroups": [["szamla", "kelt"], ["kiallitas", "datum"], ["keszites", "kelt"]],
       "label": "Számla kiállítás dátuma",
       "patterns": [
         "Dátum:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
@@ -140,7 +224,11 @@
       ]
     },
     {
-      "fieldName": "accountNumber",
+      "fieldName": "account_number",
+      "fieldType": "text",
+      "semanticType": "ugyfelAzonosito",
+      "hungarianType": "ügyfél azonosító",
+      "stemGroups": [["ugyfel", "azonosit"], ["fogyaszto", "azonosit"], ["felhasznalo", "azonosit"]],
       "label": "Ügyfél azonosító",
       "patterns": [
         "(?:ügyfél|fogyasztó)?\\s*(?:azonosító|szám):?\\s*([A-Z0-9\\-]+)",
@@ -156,7 +244,11 @@
       ]
     },
     {
-      "fieldName": "customerId",
+      "fieldName": "customer_id",
+      "fieldType": "text",
+      "semanticType": "vevoAzonosito",
+      "hungarianType": "vevő azonosító",
+      "stemGroups": [["vevo", "azonosit"]],
       "label": "Vevő azonosító",
       "patterns": [
         "Vevő \\(Fizető\\) azonosító:\\s*([A-Za-z0-9\\-]+)",
@@ -167,36 +259,11 @@
       ]
     },
     {
-      "fieldName": "customerName",
-      "label": "Felhasználó neve",
-      "patterns": [
-        "Felhasználó neve:\\s*([^\\n]+)",
-        "Vevő \\(Fizető\\) neve:\\s*([^\\n]+)",
-        "Vevő neve:\\s*([^\\n]+)",
-        "Ügyfél neve:\\s*([^\\n]+)"
-      ]
-    },
-    {
-      "fieldName": "customerAddress",
-      "label": "Felhasználó címe",
-      "patterns": [
-        "Felhasználó címe:\\s*([^\\n]+)",
-        "Vevő \\(Fizető\\) címe:\\s*([^\\n]+)",
-        "Vevő címe:\\s*([^\\n]+)",
-        "Ügyfél címe:\\s*([^\\n]+)"
-      ]
-    },
-    {
-      "fieldName": "serviceAddress",
-      "label": "Felhasználási hely címe",
-      "patterns": [
-        "Felhasználási hely címe:\\s*([^\\n]+)",
-        "Fogyasztási hely címe:\\s*([^\\n]+)",
-        "Szolgáltatás helye:\\s*([^\\n]+)"
-      ]
-    },
-    {
-      "fieldName": "vendor",
+      "fieldName": "issuer_name",
+      "fieldType": "text",
+      "semanticType": "szolgaltato",
+      "hungarianType": "szolgáltató",
+      "stemGroups": [["szolgaltat"], ["elado"], ["kibocsato"]],
       "label": "Szolgáltató",
       "patterns": [
         "Szolgáltató:?\\s*([^\\n]+)",
@@ -207,7 +274,11 @@
       ]
     },
     {
-      "fieldName": "invoiceNumber",
+      "fieldName": "invoice_number",
+      "fieldType": "text",
+      "semanticType": "szamlaSorszam",
+      "hungarianType": "számla sorszáma",
+      "stemGroups": [["szamla", "sorszam"], ["szamla", "azonosit"]],
       "label": "Számla sorszáma",
       "patterns": [
         "Számla\\s+sorszáma:?\\s*([A-Za-z0-9\\-\\/]+)",
@@ -217,6 +288,164 @@
         "Számlaszám:\\s*\\n?\\s*([A-Za-z0-9\\-\\/]+)",
         "Számla sorszáma:\\s*([0-9]+)"
       ]
+    },
+    {
+      "fieldName": "customer_name",
+      "fieldType": "text",
+      "semanticType": "felhasznaloNev",
+      "hungarianType": "felhasználó neve",
+      "stemGroups": [["felhasznalo", "nev"], ["ugyfel", "nev"], ["vevo", "nev"]],
+      "label": "Felhasználó neve",
+      "patterns": [
+        "Felhasználó neve:\\s*([^\\n]+)",
+        "Vevő \\(Fizető\\) neve:\\s*([^\\n]+)",
+        "Vevő neve:\\s*([^\\n]+)",
+        "Ügyfél neve:\\s*([^\\n]+)"
+      ]
+    },
+    {
+      "fieldName": "customer_address",
+      "fieldType": "text",
+      "semanticType": "felhasznaloCim",
+      "hungarianType": "felhasználó címe",
+      "stemGroups": [["felhasznalo", "cim"], ["ugyfel", "cim"], ["vevo", "cim"]],
+      "label": "Felhasználó címe",
+      "patterns": [
+        "Felhasználó címe:\\s*([^\\n]+)",
+        "Vevő \\(Fizető\\) címe:\\s*([^\\n]+)",
+        "Vevő címe:\\s*([^\\n]+)",
+        "Ügyfél címe:\\s*([^\\n]+)"
+      ]
+    },
+    {
+      "fieldName": "service_address",
+      "fieldType": "text",
+      "semanticType": "szolgaltatasiCim",
+      "hungarianType": "szolgáltatási cím",
+      "stemGroups": [["szolgaltat", "cim"], ["fogyasztas", "hely", "cim"]],
+      "label": "Felhasználási hely címe",
+      "patterns": [
+        "Felhasználási hely címe:\\s*([^\\n]+)",
+        "Fogyasztási hely címe:\\s*([^\\n]+)",
+        "Szolgáltatás helye:\\s*([^\\n]+)"
+      ]
+    },
+    {
+      "fieldName": "bill_category",
+      "fieldType": "text",
+      "semanticType": "szamlaKategoria",
+      "hungarianType": "számla kategória",
+      "stemGroups": [["szamla", "tipus"], ["szolgaltat", "tipus"]],
+      "label": "Számla kategória",
+      "patterns": [
+        "Szolgáltatás típusa:?\\s*([^\\n]+)",
+        "Számla típusa:?\\s*([^\\n]+)"
+      ]
+    },
+    {
+      "fieldName": "previous_balance",
+      "fieldType": "currency",
+      "semanticType": "elozo_egyenleg",
+      "hungarianType": "előző egyenleg",
+      "stemGroups": [["elozo", "egyenleg"], ["athozott", "egyenleg"]],
+      "label": "Előző egyenleg",
+      "patterns": [
+        "(?:Előző|Korábbi)\\s+(?:egyenleg|számlaegyenleg)\\s*:\\s*(?:Ft\\.?|HUF)?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)",
+        "Áthozott\\s+egyenleg\\s*:\\s*(?:Ft\\.?|HUF)?\\s*(\\d{1,3}(?:[., ]\\d{3})*(?:[.,]\\d{1,2})?)"
+      ]
+    },
+    {
+      "fieldName": "usage_amount",
+      "fieldType": "number",
+      "semanticType": "fogyasztasMennyiseg",
+      "hungarianType": "fogyasztási mennyiség",
+      "stemGroups": [["fogyaszt", "mennyiseg"], ["elszamol", "mennyiseg"]],
+      "label": "Fogyasztás mennyisége",
+      "patterns": [
+        "(?:Fogyasztás|Mennyiség)\\s*:\\s*(\\d+(?:[.,]\\d+)?)\\s*(?:m3|kWh|m³)",
+        "Elszámolt\\s+(?:mennyiség|fogyasztás)\\s*:\\s*(\\d+(?:[.,]\\d+)?)\\s*(?:m3|kWh|m³)"
+      ]
+    },
+    {
+      "fieldName": "usage_unit",
+      "fieldType": "text",
+      "semanticType": "fogyasztasiEgyseg",
+      "hungarianType": "fogyasztási egység",
+      "stemGroups": [["fogyaszt", "egyseg"], ["mertekegyseg"]],
+      "label": "Fogyasztás mértékegysége",
+      "patterns": [
+        "(?:Fogyasztás|Mennyiség)\\s*:\\s*\\d+(?:[.,]\\d+)?\\s*(m3|kWh|m³)",
+        "Elszámolt\\s+(?:mennyiség|fogyasztás)\\s*:\\s*\\d+(?:[.,]\\d+)?\\s*(m3|kWh|m³)"
+      ]
+    },
+    {
+      "fieldName": "meter_number",
+      "fieldType": "text",
+      "semanticType": "meroSzam",
+      "hungarianType": "mérő szám",
+      "stemGroups": [["mero", "szam"], ["villanyora", "szam"]],
+      "label": "Mérőszám",
+      "patterns": [
+        "(?:Mérő|Gázmérő|Vízmérő|Villanyóra)\\s+(?:szám|azonosító)\\s*:\\s*([A-Za-z0-9\\-]+)",
+        "Mérőállás\\s+azonosító\\s*:\\s*([A-Za-z0-9\\-]+)"
+      ]
+    }
+  ],
+  "fieldDatabaseMapping": {
+    "fizetendoOsszeg": "total_amount",
+    "nettoOsszeg": "subtotal_amount",
+    "afaOsszeg": "tax_amount",
+    "elozo_egyenleg": "previous_balance",
+    "fizetesiHatarido": "due_date",
+    "szamlaKelte": "invoice_date",
+    "elszamoltIdoszak": "service_period",
+    "szolgaltato": "issuer_name",
+    "ugyfelAzonosito": "account_number",
+    "vevoAzonosito": "customer_id",
+    "szamlaSorszam": "invoice_number",
+    "szamlaKategoria": "bill_category",
+    "felhasznaloNev": "customer_name",
+    "felhasznaloCim": "customer_address",
+    "szolgaltatasiCim": "service_address",
+    "meroSzam": "meter_number",
+    "fogyasztasiEgyseg": "usage_unit",
+    "fogyasztasMennyiseg": "usage_amount"
+  },
+  "mappingRules": [
+    {
+      "priority": 1,
+      "patternField": "total_amount",
+      "databaseField": "total_amount"
+    },
+    {
+      "priority": 1,
+      "patternField": "due_date",
+      "databaseField": "due_date"
+    },
+    {
+      "priority": 1, 
+      "patternField": "invoice_number",
+      "databaseField": "invoice_number"
+    },
+    {
+      "priority": 1,
+      "patternField": "issuer_name",
+      "databaseField": "issuer_name"
+    },
+    {
+      "priority": 2,
+      "patternField": "account_number",
+      "databaseField": "account_number"
+    },
+    {
+      "priority": 2,
+      "patternField": "customer_id",
+      "databaseField": "account_number"
+    },
+    {
+      "priority": 3,
+      "patternField": "subtotal_amount",
+      "databaseField": "subtotal_amount"
     }
   ],
   "serviceTypes": {
@@ -335,7 +564,16 @@
     "fogyasztási", "mérőállás", "előírás", "banki", "csekk", "átutalás", "rezsikökkentett",
     "bruttó", "nettó", "villamosenergia", "megtakarítás"
   ],
-  "billIndicatorThreshold": 1,
+  "billIdentifierThreshold": 2,
+  "stemMatchThreshold": 0.4,
+  "patternMatchThreshold": 0.5,
+  "extractionMethodWeights": {
+    "exactPattern": 1.0,
+    "stemPattern": 0.7,
+    "semanticMatch": 0.5,
+    "companyPattern": 0.9,
+    "fallback": 0.3
+  },
   "confidence": {
     "minimumRequired": 0.3,
     "keywordMatch": 0.1,
@@ -356,5 +594,19 @@
       "Fizetési határidő:?\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})",
       "Fizetési határidő:\\s+(\\d{4}\\.\\d{2}\\.\\d{2})"
     ]
-  }
+  },
+  "knownHighlightedFields": [
+    {
+      "field": "total_amount",
+      "identifiers": ["fizetendő összeg", "végösszeg", "összesen fizetendő", "fizetendő"]
+    },
+    {
+      "field": "due_date",
+      "identifiers": ["fizetési határidő", "esedékesség", "befizetési határidő"]
+    },
+    {
+      "field": "invoice_number",
+      "identifiers": ["számlaszám", "számla sorszáma", "sorszám"]
+    }
+  ]
 } 

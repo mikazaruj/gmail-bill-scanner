@@ -1,166 +1,141 @@
-// Text matching utilities with Hungarian word stem recognition
+/**
+ * Text Matching Utilities
+ * 
+ * This module provides utilities for text matching, particularly
+ * for Hungarian language handling.
+ */
 
+/**
+ * Interface for stem dictionary that maps root forms to variations
+ */
 export interface StemDictionary {
   [stem: string]: string[];
 }
 
+/**
+ * Hungarian stem dictionary mapping root forms to variations
+ */
 export const hungarianStems: StemDictionary = {
-  // Base forms and common variations
-  "számla": ["számla", "számlá", "számlát", "számlák", "számlán", "számláz"],
-  "fizet": ["fizet", "fizetés", "fizetendő", "fizetési", "fizetett", "fizetni", "fizetve"],
-  "összeg": ["összeg", "összeget", "összege", "összegek", "összegben"],
-  "határidő": ["határidő", "határideje", "határidőt", "határidőig"],
-  "elszámolás": ["elszámolás", "elszámolási", "elszámolt", "elszámolási", "elszámolást"],
-  "fogyasztás": ["fogyasztás", "fogyasztási", "fogyasztásmérő", "fogyasztást", "fogyaszt"],
-  "szolgáltatás": ["szolgáltatás", "szolgáltatási", "szolgáltató", "szolgáltatást"],
-  "díj": ["díj", "díjak", "díjat", "díját", "díjas", "díjú"],
-  "időszak": ["időszak", "időszaki", "időszakban", "időszakra", "időszakos"],
-  "víz": ["víz", "vize", "vizet", "vizes", "vízi", "vízközmű"],
-  "áram": ["áram", "áramos", "áramot", "áramszámla"],
-  "gáz": ["gáz", "gázos", "gázszámla", "gázfogyasztás"]
+  "szamla": ["számla", "számlát", "számlán", "számlák", "számlákból", "számlázás", "számlázási"],
+  "fizet": ["fizetés", "fizetési", "fizetve", "fizetendő", "fizetnivaló", "fizetésre", "fizetését", "fizetést"],
+  "dij": ["díj", "díjak", "díjszabás", "díjbekérő", "díjat", "díjról", "díjhoz", "díjakról"],
+  "hatarido": ["határidő", "határideje", "határidővel", "határidőre", "határidőt"],
+  "esedek": ["esedékesség", "esedékes", "esedékességi"],
+  "lejarat": ["lejárat", "lejárati", "lejáratkor"],
+  "ertesit": ["értesítő", "értesítés", "értesítjük", "értesítve"],
+  "tajekoztat": ["tájékoztató", "tájékoztatás", "tájékoztatjuk"],
+  "emlekeztet": ["emlékeztető", "emlékeztetjük"],
+  "egyenleg": ["egyenleg", "egyenlege", "egyenleget", "egyenlegek"],
+  "befizet": ["befizetés", "befizetési", "befizetett", "befizetendő"],
+  "tartozas": ["tartozás", "tartozik", "tartozása", "tartozások"],
+  "kiegyenlit": ["kiegyenlítés", "kiegyenlítése", "kiegyenlítve", "kiegyenlítendő"],
+  "hatralék": ["hátralék", "hátraléka", "hátralékos", "hátralékok"],
+  "aram": ["áram", "áramot", "árammal", "áramszámla"],
+  "gaz": ["gáz", "gázszámla", "gázzal", "gázfogyasztás"],
+  "viz": ["víz", "vízszámla", "vízzel", "vízfogyasztás", "vízművek"],
+  "kozuzem": ["közüzemi", "közüzem", "közüzemek"],
+  "szolgaltat": ["szolgáltató", "szolgáltatás", "szolgáltatást", "szolgáltatások"],
+  "fogyaszt": ["fogyasztás", "fogyasztási", "fogyasztó", "fogyasztott", "fogyasztva"],
+  "fizetendo": ["fizetendő", "fizetendőt", "fizetendők"],
+  "osszeg": ["összeg", "összege", "összeget", "összegek", "összesen"],
+  "teljes": ["teljes", "teljesen", "teljessé"],
+  "netto": ["nettó", "nettót", "nettóból"],
+  "brutto": ["bruttó", "bruttót", "bruttóból"],
+  "afa": ["áfa", "áfát", "áfával", "adó"],
+  "vegosszeg": ["végösszeg", "végösszeget", "végösszege"],
+  "azonosit": ["azonosító", "azonosítás", "azonosítója", "azonosítva"],
+  "ugyfel": ["ügyfél", "ügyfelek", "ügyfélszám"],
+  "felhasznalo": ["felhasználó", "felhasználói", "felhasználás"],
+  "fogyaszto": ["fogyasztó", "fogyasztói"],
+  "szerzo": ["szerződés", "szerződő", "szerződéses"],
+  "cim": ["cím", "címe", "címen", "címzett"],
+  "idoszak": ["időszak", "időszaki", "időszakban"],
+  "elszamol": ["elszámolás", "elszámolt", "elszámolási"],
+  "vevo": ["vevő", "vevőnek", "vevőt"],
+  "kelt": ["kelt", "keltezés"],
+  "kiallitas": ["kiállítás", "kiállítva", "kiállító"],
+  "datum": ["dátum", "dátuma", "dátummal"],
+  "keszites": ["készítés", "készült", "készítve"],
+  "mero": ["mérő", "mérők", "mérőóra"],
+  "villanyora": ["villanyóra", "villanyórák"],
+  "mennyiseg": ["mennyiség", "mennyiséget", "mennyiségben"],
+  "egyseg": ["egység", "egységár", "egységenként"],
+  "mertekegyseg": ["mértékegység", "mértékegységek"],
+  "elozo": ["előző", "előzőleg"],
+  "athozott": ["áthozott", "áthozatal"],
+  "nelkul": ["nélkül", "nélküli"],
+  "ado": ["adó", "adóval", "adót"],
+  "nev": ["név", "neve", "nevét"],
+  "sorszam": ["sorszám", "sorszáma", "sorszámot"],
+  "kibocsato": ["kibocsátó", "kibocsátott"],
+  "elado": ["eladó", "eladott", "eladói"],
+  "tipus": ["típus", "típusú", "típusok"]
 };
 
-// Create a reverse lookup map for quick stem identification
-export const createWordToStemMap = (stems: StemDictionary): Record<string, string> => {
-  const wordToStem: Record<string, string> = {};
-  Object.entries(stems).forEach(([stem, variations]) => {
-    variations.forEach(variation => {
-      wordToStem[variation] = stem;
-    });
-  });
-  return wordToStem;
-};
+/**
+ * Get variations of a Hungarian word based on its stem
+ * 
+ * @param stem The root form to find variations for
+ * @returns Array of variations if the stem exists, or empty array
+ */
+export function getHungarianWordVariations(stem: string): string[] {
+  return hungarianStems[stem] || [];
+}
 
-// Normalize text for better matching
-export const normalizeText = (text: string): string => {
-  return text
-    .replace(/\s+/g, ' ')
-    .replace(/[áà]/g, 'a')
-    .replace(/[éè]/g, 'e')
-    .replace(/[íì]/g, 'i')
-    .replace(/[óò]/g, 'o')
-    .replace(/[úùüű]/g, 'u')
-    .replace(/[öő]/g, 'o')
-    .trim();
-};
-
-// Find stem for a word, with partial matching for unknown variations
-export const findStem = (word: string, wordToStem: Record<string, string>, stems: StemDictionary): string | null => {
-  const normalized = normalizeText(word.toLowerCase());
+/**
+ * Find if text contains any of the variations of the given stems
+ * 
+ * @param text Text to search in
+ * @param stems Array of stems to check
+ * @returns True if any variation of any stem is found
+ */
+export function containsAnyWordVariation(text: string, stems: string[]): boolean {
+  if (!text) return false;
   
-  // Direct match to known variation
-  if (wordToStem[normalized]) {
-    return wordToStem[normalized];
-  }
+  const normalizedText = text.toLowerCase();
   
-  // Partial matching for unknown variations
-  // Try to match beginning of word (most common in Hungarian due to suffixes)
-  for (const [stem, variations] of Object.entries(stems)) {
-    // Check if word starts with any known variation
-    if (variations.some(variation => normalized.startsWith(variation))) {
-      return stem;
-    }
+  for (const stem of stems) {
+    const variations = hungarianStems[stem] || [stem];
     
-    // For shorter words, check if any variation starts with this word
-    if (normalized.length >= 4 && variations.some(variation => 
-        variation.startsWith(normalized))) {
-      return stem;
-    }
-  }
-  
-  return null; // No stem found
-};
-
-// Create a regex pattern that matches any variation of the stems
-export const createStemPattern = (stemsList: string[], stems: StemDictionary): RegExp => {
-  const stemPatterns = stemsList.map(stem => {
-    const variations = stems[stem] || [stem];
-    return variations.join('|');
-  });
-  
-  return new RegExp(stemPatterns.join('|'), 'i');
-};
-
-// Detect keywords by stem recognition
-export const detectKeywordsByStems = (text: string, requiredStems: string[], wordToStem: Record<string, string>, stems: StemDictionary): number => {
-  // Tokenize text into words
-  const words = text.toLowerCase().split(/\s+/);
-  
-  // Track which stems we've found
-  const foundStems = new Set<string>();
-  
-  // Check each word for stem matches
-  words.forEach(word => {
-    const stem = findStem(word, wordToStem, stems);
-    if (stem && requiredStems.includes(stem)) {
-      foundStems.add(stem);
-    }
-  });
-  
-  // Return percentage of required stems found
-  return foundStems.size / requiredStems.length;
-};
-
-// Find nearby items based on positioning data
-export interface PositionItem {
-  text: string;
-  x: number;
-  y: number;
-  width?: number;
-  height?: number;
-}
-
-export interface ProximityThreshold {
-  x: number;
-  y: number;
-}
-
-// Find multiple nearby items based on position
-export const findNearbyValueItems = (
-  labelItem: PositionItem, 
-  allItems: PositionItem[], 
-  fieldType: string
-): PositionItem[] => {
-  // Define different proximity thresholds based on field type
-  const proximityThresholds: Record<string, ProximityThreshold> = {
-    amount: { x: 150, y: 30 },
-    dueDate: { x: 120, y: 30 },
-    invoiceNumber: { x: 150, y: 30 },
-    period: { x: 150, y: 30 }
-  };
-  
-  const threshold = proximityThresholds[fieldType] || { x: 100, y: 30 };
-  
-  // Find all items that are within threshold distance
-  return allItems
-    .filter(item => item !== labelItem && 
-      Math.abs(item.x - labelItem.x) < threshold.x && 
-      Math.abs(item.y - labelItem.y) < threshold.y)
-    .sort((a, b) => {
-      // Sort by distance, prioritizing items to the right or below
-      const distA = Math.sqrt(Math.pow(a.x - labelItem.x, 2) + Math.pow(a.y - labelItem.y, 2));
-      const distB = Math.sqrt(Math.pow(b.x - labelItem.x, 2) + Math.pow(b.y - labelItem.y, 2));
-      return distA - distB;
-    });
-};
-
-// Clean extracted values for different field types
-export const cleanExtractedValue = (value: string, fieldType: string): string => {
-  switch (fieldType) {
-    case 'amount':
-      return value
-        .replace(/\s+/g, '')  // Remove all whitespace
-        .replace(/[^\d,.]/g, '') // Keep only digits and decimal separators
-        .replace(/,/g, '.'); // Standardize to period decimal separator
-    case 'date':
-      // Standardize date format
-      const dateMatch = value.match(/(\d{4})[./-](\d{1,2})[./-](\d{1,2})/);
-      if (dateMatch) {
-        const [_, year, month, day] = dateMatch;
-        return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    for (const variation of variations) {
+      if (normalizedText.includes(variation.toLowerCase())) {
+        return true;
       }
-      return value;
-    default:
-      return value.trim();
+    }
   }
+  
+  return false;
+}
+
+/**
+ * Calculate text similarity score
+ * 
+ * @param text1 First text to compare
+ * @param text2 Second text to compare
+ * @returns Similarity score between 0 and 1
+ */
+export function calculateTextSimilarity(text1: string, text2: string): number {
+  if (!text1 || !text2) return 0;
+  
+  const set1 = new Set(text1.toLowerCase().split(/\s+/));
+  const set2 = new Set(text2.toLowerCase().split(/\s+/));
+  
+  // Count overlapping words
+  let intersection = 0;
+  for (const word of set1) {
+    if (set2.has(word)) {
+      intersection++;
+    }
+  }
+  
+  // Jaccard similarity
+  const union = set1.size + set2.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+export default {
+  hungarianStems,
+  getHungarianWordVariations,
+  containsAnyWordVariation,
+  calculateTextSimilarity
 }; 
