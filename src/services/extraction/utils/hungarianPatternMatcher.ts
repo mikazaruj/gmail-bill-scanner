@@ -28,6 +28,21 @@ export interface ExtractedField {
   originalPattern?: string;
 }
 
+// Define a flexible interface for Hungarian patterns to accommodate dynamic properties
+export interface HungarianPatterns {
+  language: string;
+  documentIdentifiers?: Array<{name: string; patterns: string[]}>;
+  fieldExtractors?: any[];
+  stems?: Record<string, string[]>;
+  stemMatchThreshold?: number;
+  specialCompanyPatterns?: Record<string, any>;
+  hungarianUtilityIndicators?: string[];
+  billIdentifierThreshold?: number;
+  mappingRules?: Array<{patternField: string; databaseField: string; priority: number}>;
+  fieldDatabaseMapping?: Record<string, string>;
+  [key: string]: any; // Allow additional dynamic properties
+}
+
 /**
  * Find potential fields in text based on stem matching
  */
@@ -104,11 +119,15 @@ function calculateStemGroupMatch(text: string, stemGroup: string[], stemDictiona
  */
 export function extractFieldsFromText(
   text: string,
-  patterns = hungarianPatterns,
+  patterns: HungarianPatterns = hungarianPatterns as unknown as HungarianPatterns,
   companyName?: string
 ): Record<string, ExtractedField> {
   // Find potential fields first
-  const potentialFields = findPotentialFields(text, patterns.fieldExtractors);
+  const potentialFields = findPotentialFields(
+    text, 
+    patterns.fieldExtractors || [], 
+    patterns.stemMatchThreshold || 0.5
+  );
   
   // Prepare result object
   const extractedFields: Record<string, ExtractedField> = {};
@@ -125,7 +144,7 @@ export function extractFieldsFromText(
   
   // First try company-specific patterns if available
   if (companyPatterns) {
-    extractCompanySpecificFields(text, companyPatterns, extractedFields, patterns.extractionMethodWeights);
+    extractCompanySpecificFields(text, companyPatterns, extractedFields, patterns.extractionMethodWeights || {});
   }
   
   // Then process regular patterns for fields that stemming suggests should be present
@@ -133,15 +152,15 @@ export function extractFieldsFromText(
     // Skip if we already extracted this field
     if (extractedFields[fieldName]) continue;
     
-    const extractor = patterns.fieldExtractors.find(e => e.fieldName === fieldName);
+    const extractor = patterns.fieldExtractors?.find(e => e.fieldName === fieldName);
     if (!extractor) continue;
     
     // Try to extract using patterns
-    extractFieldWithPatterns(text, extractor, confidence, extractedFields, patterns.extractionMethodWeights);
+    extractFieldWithPatterns(text, extractor, confidence, extractedFields, patterns.extractionMethodWeights || {});
   }
   
   // Look for any fields we missed (with lower confidence)
-  for (const extractor of patterns.fieldExtractors) {
+  for (const extractor of (patterns.fieldExtractors || [])) {
     // Skip if we already extracted this field
     if (extractedFields[extractor.fieldName]) continue;
     
@@ -151,7 +170,7 @@ export function extractFieldsFromText(
       extractor, 
       0.1, // Lower confidence as fallback
       extractedFields, 
-      patterns.extractionMethodWeights,
+      patterns.extractionMethodWeights || {},
       'fallback'
     );
   }
@@ -338,13 +357,13 @@ function extractCompanySpecificFields(
 export function mapToUserFields(
   extractedFields: Record<string, ExtractedField>,
   userMappings: any[],
-  patterns = hungarianPatterns
+  patterns: HungarianPatterns = hungarianPatterns as unknown as HungarianPatterns
 ): Record<string, any> {
   const mappedFields: Record<string, any> = {};
   
   // Get mapping rules sorted by priority
-  const sortedRules = [...patterns.mappingRules]
-    .sort((a, b) => a.priority - b.priority);
+  const mappingRules = patterns.mappingRules || [];
+  const sortedRules = [...mappingRules].sort((a, b) => a.priority - b.priority);
   
   // For each extracted field
   for (const [fieldName, extractionInfo] of Object.entries(extractedFields)) {
@@ -367,7 +386,7 @@ export function mapToUserFields(
     
     // If no direct mapping, try semantic type
     const semanticType = extractionInfo.semanticType;
-    if (semanticType && patterns.fieldDatabaseMapping[semanticType]) {
+    if (semanticType && patterns.fieldDatabaseMapping?.[semanticType]) {
       const dbFieldName = patterns.fieldDatabaseMapping[semanticType];
       const userField = userMappings.find(m => m.name === dbFieldName);
       
@@ -387,25 +406,38 @@ export function mapToUserFields(
 /**
  * Detect if text is likely a Hungarian bill based on patterns
  */
-export function isHungarianBill(text: string, patterns = hungarianPatterns): { 
+export function isHungarianBill(text: string, patterns: HungarianPatterns = hungarianPatterns as unknown as HungarianPatterns): { 
   isHungarianBill: boolean;
   confidence: number;
   billType?: string;
   company?: string;
 } {
+  // Safety check for patterns
+  if (!patterns) {
+    console.error('Hungarian patterns are undefined or null in isHungarianBill');
+    return {
+      isHungarianBill: false,
+      confidence: 0
+    };
+  }
+
   const normalizedText = normalizeHungarianText(text);
   let billTypeMatches = 0;
   let detectedType: string | undefined = undefined;
   
   // Check document identifiers
-  for (const docType of patterns.documentIdentifiers) {
-    const matchingPatterns = docType.patterns.filter(
-      pattern => normalizedText.includes(normalizeHungarianText(pattern))
-    );
-    
-    if (matchingPatterns.length >= 2) {
-      billTypeMatches++;
-      detectedType = docType.name;
+  if (patterns.documentIdentifiers && Array.isArray(patterns.documentIdentifiers)) {
+    for (const docType of patterns.documentIdentifiers) {
+      if (!docType || !docType.patterns || !Array.isArray(docType.patterns)) continue;
+      
+      const matchingPatterns = docType.patterns.filter(
+        pattern => normalizedText.includes(normalizeHungarianText(pattern))
+      );
+      
+      if (matchingPatterns.length >= 2) {
+        billTypeMatches++;
+        detectedType = docType.name;
+      }
     }
   }
   
@@ -413,31 +445,40 @@ export function isHungarianBill(text: string, patterns = hungarianPatterns): {
   let companyMatches = 0;
   let detectedCompany: string | undefined = undefined;
   
-  for (const company of Object.keys(patterns.specialCompanyPatterns)) {
-    // Check if company name is in text
-    if (normalizedText.includes(normalizeHungarianText(company))) {
-      companyMatches++;
-      detectedCompany = company;
-      
-      // If we detect both bill type and specific company, high confidence
-      if (billTypeMatches > 0) {
-        return {
-          isHungarianBill: true,
-          confidence: 0.9,
-          billType: detectedType,
-          company: detectedCompany
-        };
+  // Safety check for specialCompanyPatterns
+  if (patterns.specialCompanyPatterns && typeof patterns.specialCompanyPatterns === 'object') {
+    for (const company of Object.keys(patterns.specialCompanyPatterns)) {
+      // Check if company name is in text
+      if (normalizedText.includes(normalizeHungarianText(company))) {
+        companyMatches++;
+        detectedCompany = company;
+        
+        // If we detect both bill type and specific company, high confidence
+        if (billTypeMatches > 0) {
+          return {
+            isHungarianBill: true,
+            confidence: 0.9,
+            billType: detectedType,
+            company: detectedCompany
+          };
+        }
       }
     }
   }
   
   // Check Hungarian utility indicators
-  const indicatorMatches = patterns.hungarianUtilityIndicators.filter(
-    indicator => normalizedText.includes(normalizeHungarianText(indicator))
-  ).length;
+  let indicatorMatches = 0;
+  if (patterns.hungarianUtilityIndicators && Array.isArray(patterns.hungarianUtilityIndicators)) {
+    indicatorMatches = patterns.hungarianUtilityIndicators.filter(
+      indicator => normalizedText.includes(normalizeHungarianText(indicator))
+    ).length;
+  }
+  
+  // Get bill identifier threshold with fallback default
+  const billIdentifierThreshold = patterns.billIdentifierThreshold || 2;
   
   // Determine if it's a bill and with what confidence
-  if (billTypeMatches >= patterns.billIdentifierThreshold || indicatorMatches >= 5) {
+  if (billTypeMatches >= billIdentifierThreshold || indicatorMatches >= 5) {
     return {
       isHungarianBill: true,
       confidence: billTypeMatches > 0 ? 0.8 : 0.6,

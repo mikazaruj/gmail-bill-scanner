@@ -206,7 +206,7 @@ export class BillExtractor {
     
     return typeMap;
   }
-
+  
   /**
    * Infer field type from field name if not explicitly specified
    */
@@ -402,6 +402,39 @@ export class BillExtractor {
           // Log confidence for tracking
           if (result.confidence) {
             console.log(`Email pattern confidence: ${result.confidence}`);
+          }
+          
+          // Log extracted fields and values if bills were found
+          if (result.success && result.bills.length > 0) {
+            console.log(`=== EXTRACTION RESULTS FROM ${strategy.name} ===`);
+            
+            result.bills.forEach((bill, index) => {
+              console.log(`Bill #${index + 1} - Fields extracted from email:`);
+              
+              // Log all extracted fields with their values
+              Object.entries(bill).forEach(([field, value]) => {
+                if (field !== 'source' && field !== 'extractionMethod' && field !== 'confidence') {
+                  console.log(`  - ${field}: ${JSON.stringify(value)}`);
+                }
+              });
+              
+              // Log field mapping information
+              console.log('\nField mapping to user-defined fields:');
+              
+              // Show how these fields map to semantic field types
+              Object.entries(this.fieldsByType).forEach(([type, mappedFields]) => {
+                if (mappedFields.length > 0) {
+                  console.log(`  - Type '${type}' maps to: ${mappedFields.join(', ')}`);
+                  
+                  // For each field of this type, show the value that was extracted
+                  mappedFields.forEach(fieldName => {
+                    console.log(`    * ${fieldName}: ${bill[fieldName] !== undefined ? JSON.stringify(bill[fieldName]) : 'not extracted'}`);
+                  });
+                }
+              });
+            });
+            
+            console.log('=== END EXTRACTION RESULTS ===\n');
           }
           
           // Keep track of best result by confidence
@@ -632,18 +665,37 @@ export class BillExtractor {
             console.log(`${strategy.name} PDF confidence: ${result.confidence}`);
           }
           
-          // Also log extraction results for debugging
+          // Log extracted fields and values if bills were found
           if (result.success && result.bills.length > 0) {
-            const bill = result.bills[0];
-            console.log(`${strategy.name} extracted bill:`, {
-              vendor: bill.vendor,
-              amount: bill.amount,
-              invoiceNumber: bill.invoiceNumber,
-              dueDate: bill.dueDate,
-              accountNumber: bill.accountNumber
+            console.log(`=== PDF EXTRACTION RESULTS FROM ${strategy.name} ===`);
+            
+            result.bills.forEach((bill, index) => {
+              console.log(`PDF Bill #${index + 1} - Fields extracted from PDF:`);
+              
+              // Log all extracted fields with their values
+              Object.entries(bill).forEach(([field, value]) => {
+                if (field !== 'source' && field !== 'extractionMethod' && field !== 'confidence') {
+                  console.log(`  - ${field}: ${JSON.stringify(value)}`);
+                }
+              });
+              
+              // Log field mapping information
+              console.log('\nField mapping to user-defined fields:');
+              
+              // Show how these fields map to semantic field types
+              Object.entries(this.fieldsByType).forEach(([type, mappedFields]) => {
+                if (mappedFields.length > 0) {
+                  console.log(`  - Type '${type}' maps to: ${mappedFields.join(', ')}`);
+                  
+                  // For each field of this type, show the value that was extracted
+                  mappedFields.forEach(fieldName => {
+                    console.log(`    * ${fieldName}: ${bill[fieldName] !== undefined ? JSON.stringify(bill[fieldName]) : 'not extracted'}`);
+                  });
+                }
+              });
             });
-          } else {
-            console.log(`${strategy.name} extraction failed:`, result.error);
+            
+            console.log('=== END PDF EXTRACTION RESULTS ===\n');
           }
           
           // Keep track of best result by confidence
@@ -668,12 +720,37 @@ export class BillExtractor {
               // Convert emailBill to DynamicBill if needed
               const dynamicEmailBill = ensureBillFormat(emailBill);
               
+              // Log email bill data before merging
+              console.log('=== EMAIL BILL DATA BEFORE MERGING ===');
+              Object.entries(dynamicEmailBill).forEach(([field, value]) => {
+                if (field !== 'source' && field !== 'extractionMethod' && field !== 'confidence') {
+                  console.log(`  - ${field}: ${JSON.stringify(value)}`);
+                }
+              });
+              
               // Convert pdfBill to DynamicBill if needed
               const pdfBill = result.bills[0];
               const dynamicPdfBill = ensureBillFormat(pdfBill);
               
+              // Log PDF bill data before merging
+              console.log('=== PDF BILL DATA BEFORE MERGING ===');
+              Object.entries(dynamicPdfBill).forEach(([field, value]) => {
+                if (field !== 'source' && field !== 'extractionMethod' && field !== 'confidence') {
+                  console.log(`  - ${field}: ${JSON.stringify(value)}`);
+                }
+              });
+              
               // Replace the first bill with the merged bill
               result.bills[0] = this.mergeBills(dynamicEmailBill, dynamicPdfBill);
+              
+              // Log the merged bill
+              console.log('=== MERGED BILL DATA ===');
+              Object.entries(result.bills[0]).forEach(([field, value]) => {
+                if (field !== 'source' && field !== 'extractionMethod' && field !== 'confidence') {
+                  console.log(`  - ${field}: ${JSON.stringify(value)}`);
+                }
+              });
+              console.log('=== END MERGED BILL DATA ===\n');
             }
             
             return result;
@@ -807,41 +884,199 @@ export class BillExtractor {
    */
   mergeBills(emailBill: DynamicBill, pdfBill: DynamicBill): DynamicBill {
     console.log('Merging bills from email and PDF sources');
+    console.log(`=== BILL MERGING PROCESS ===`);
 
     // Create a new bill with the best information from both sources
     const mergedBill: DynamicBill = {
       ...emailBill, // Start with email bill data
+    };
+    
+    // Track all fields that we merge for logging
+    const mergeLog: Record<string, {source: string, reason: string, emailValue: any, pdfValue: any, finalValue: any}> = {};
+    
+    // Process vendor field
+    if (emailBill.vendor && emailBill.vendor !== 'Unknown') {
+      mergeLog.vendor = {
+        source: 'email',
+        reason: 'Email had non-empty, non-Unknown value',
+        emailValue: emailBill.vendor,
+        pdfValue: pdfBill.vendor,
+        finalValue: emailBill.vendor
+      };
+      mergedBill.vendor = emailBill.vendor;
+    } else {
+      mergeLog.vendor = {
+        source: 'pdf',
+        reason: 'Email had empty or Unknown value',
+        emailValue: emailBill.vendor,
+        pdfValue: pdfBill.vendor,
+        finalValue: pdfBill.vendor
+      };
+      mergedBill.vendor = pdfBill.vendor;
+    }
+    
+    // Process amount field - prefer the one that's non-zero
+    if (emailBill.amount && emailBill.amount > 0) {
+      mergeLog.amount = {
+        source: 'email',
+        reason: 'Email had positive amount',
+        emailValue: emailBill.amount,
+        pdfValue: pdfBill.amount,
+        finalValue: emailBill.amount
+      };
+      mergedBill.amount = emailBill.amount;
+    } else {
+      mergeLog.amount = {
+        source: 'pdf',
+        reason: 'Email had zero or negative amount',
+        emailValue: emailBill.amount,
+        pdfValue: pdfBill.amount,
+        finalValue: pdfBill.amount
+      };
+      mergedBill.amount = pdfBill.amount;
+    }
+    
+    // Process date fields - use the more specific one
+    if (emailBill.date) {
+      mergeLog.date = {
+        source: 'email',
+        reason: 'Email had date value',
+        emailValue: emailBill.date,
+        pdfValue: pdfBill.date,
+        finalValue: emailBill.date
+      };
+      mergedBill.date = emailBill.date;
+    } else {
+      mergeLog.date = {
+        source: 'pdf',
+        reason: 'Email had no date value',
+        emailValue: emailBill.date,
+        pdfValue: pdfBill.date,
+        finalValue: pdfBill.date
+      };
+      mergedBill.date = pdfBill.date;
+    }
+    
+    if (emailBill.dueDate) {
+      mergeLog.dueDate = {
+        source: 'email',
+        reason: 'Email had due date value',
+        emailValue: emailBill.dueDate,
+        pdfValue: pdfBill.dueDate,
+        finalValue: emailBill.dueDate
+      };
+      mergedBill.dueDate = emailBill.dueDate;
+    } else {
+      mergeLog.dueDate = {
+        source: 'pdf',
+        reason: 'Email had no due date value',
+        emailValue: emailBill.dueDate,
+        pdfValue: pdfBill.dueDate,
+        finalValue: pdfBill.dueDate
+      };
+      mergedBill.dueDate = pdfBill.dueDate;
+    }
+    
+    // Process other fields, prefer non-null values
+    if (emailBill.accountNumber) {
+      mergeLog.accountNumber = {
+        source: 'email',
+        reason: 'Email had account number value',
+        emailValue: emailBill.accountNumber,
+        pdfValue: pdfBill.accountNumber,
+        finalValue: emailBill.accountNumber
+      };
+      mergedBill.accountNumber = emailBill.accountNumber;
+    } else {
+      mergeLog.accountNumber = {
+        source: 'pdf',
+        reason: 'Email had no account number value',
+        emailValue: emailBill.accountNumber,
+        pdfValue: pdfBill.accountNumber,
+        finalValue: pdfBill.accountNumber
+      };
+      mergedBill.accountNumber = pdfBill.accountNumber;
+    }
+    
+    if (emailBill.invoiceNumber) {
+      mergeLog.invoiceNumber = {
+        source: 'email',
+        reason: 'Email had invoice number value',
+        emailValue: emailBill.invoiceNumber,
+        pdfValue: pdfBill.invoiceNumber,
+        finalValue: emailBill.invoiceNumber
+      };
+      mergedBill.invoiceNumber = emailBill.invoiceNumber;
+    } else {
+      mergeLog.invoiceNumber = {
+        source: 'pdf',
+        reason: 'Email had no invoice number value',
+        emailValue: emailBill.invoiceNumber,
+        pdfValue: pdfBill.invoiceNumber,
+        finalValue: pdfBill.invoiceNumber
+      };
+      mergedBill.invoiceNumber = pdfBill.invoiceNumber;
+    }
+    
+    // Handle user-defined fields
+    const allFieldTypes = Object.keys(this.fieldsByType);
+    console.log(`Processing user-defined fields by type: ${allFieldTypes.join(', ')}`);
+    
+    allFieldTypes.forEach(type => {
+      const fieldsOfType = this.fieldsByType[type] || [];
       
-      // Use PDF data for fields that are missing or "Unknown" in email
-      vendor: emailBill.vendor && emailBill.vendor !== 'Unknown' 
-        ? emailBill.vendor 
-        : pdfBill.vendor,
-      
-      // For amount, prefer the one that's non-zero
-      amount: (emailBill.amount && emailBill.amount > 0) ? emailBill.amount : pdfBill.amount,
-      
-      // For dates, use the more specific one
-      date: emailBill.date || pdfBill.date,
-      dueDate: emailBill.dueDate || pdfBill.dueDate,
-      
-      // For other fields, prefer non-null values
-      accountNumber: emailBill.accountNumber || pdfBill.accountNumber,
-      invoiceNumber: emailBill.invoiceNumber || pdfBill.invoiceNumber,
+      fieldsOfType.forEach(fieldName => {
+        // Skip standard fields we've already processed
+        if (['vendor', 'amount', 'date', 'dueDate', 'accountNumber', 'invoiceNumber'].includes(fieldName)) {
+          return;
+        }
+        
+        if (emailBill[fieldName] && emailBill[fieldName] !== 'Unknown') {
+          mergeLog[fieldName] = {
+            source: 'email',
+            reason: 'Email had non-empty value',
+            emailValue: emailBill[fieldName],
+            pdfValue: pdfBill[fieldName],
+            finalValue: emailBill[fieldName]
+          };
+          mergedBill[fieldName] = emailBill[fieldName];
+        } else if (pdfBill[fieldName]) {
+          mergeLog[fieldName] = {
+            source: 'pdf',
+            reason: 'Email had no value, using PDF',
+            emailValue: emailBill[fieldName],
+            pdfValue: pdfBill[fieldName],
+            finalValue: pdfBill[fieldName]
+          };
+          mergedBill[fieldName] = pdfBill[fieldName];
+        }
+      });
+    });
       
       // Keep track of both sources
-      source: {
+    mergedBill.source = {
         type: 'combined',
         messageId: emailBill.source?.messageId || pdfBill.source?.messageId,
         attachmentId: pdfBill.source?.attachmentId,
         fileName: pdfBill.source?.fileName
-      },
+    };
       
       // Set confidence to the higher of the two
-      confidence: Math.max(
+    mergedBill.confidence = Math.max(
         emailBill.confidence || 0, 
         pdfBill.confidence || 0
-      )
-    };
+    );
+    
+    // Log all merge decisions
+    console.log('Bill merging decisions:');
+    Object.entries(mergeLog).forEach(([field, log]) => {
+      console.log(`  - Field: ${field}`);
+      console.log(`    Source: ${log.source}`);
+      console.log(`    Reason: ${log.reason}`);
+      console.log(`    Email value: ${JSON.stringify(log.emailValue)}`);
+      console.log(`    PDF value: ${JSON.stringify(log.pdfValue)}`);
+      console.log(`    Final value: ${JSON.stringify(log.finalValue)}`);
+    });
     
     console.log('Merged bill created:', {
       vendor: mergedBill.vendor,
@@ -851,6 +1086,8 @@ export class BillExtractor {
       accountNumber: mergedBill.accountNumber,
       invoiceNumber: mergedBill.invoiceNumber
     });
+    
+    console.log(`=== END BILL MERGING PROCESS ===`);
     
     return mergedBill;
   }
@@ -973,7 +1210,9 @@ export class BillExtractor {
       });
       
       // Create a field type mapping for semantic field access
-      this.fieldsByType = this.buildFieldTypeMap(fieldMappings);
+      // Use the more sophisticated mapping function that properly handles field types
+      // Even if we don't have field definitions, pass an empty array
+      this.fieldsByType = this.buildFieldTypeMapWithDefinitions(fieldMappings, this.fieldDefinitions || []);
       
       console.log('Bill extractor initialized with user field mappings:', 
         fieldMappings.map(m => m.name).join(', '));
@@ -994,54 +1233,6 @@ export class BillExtractor {
     } catch (error) {
       console.error('Error initializing bill extractor with field mappings:', error);
     }
-  }
-
-  /**
-   * Build a mapping of field types to field names
-   * This enables semantic access to fields regardless of their actual names
-   */
-  private buildFieldTypeMap(fieldMappings: any[]): Record<string, string[]> {
-    // Create a dynamic type map instead of hardcoding specific types
-    const typeMap: Record<string, string[]> = {};
-    
-    // Include all common field types
-    const commonTypes = [
-      'vendor', 'amount', 'date', 'dueDate', 'invoiceNumber', 
-      'accountNumber', 'category', 'text', 'currency'
-    ];
-    
-    // Initialize all common types with empty arrays
-    commonTypes.forEach(type => {
-      typeMap[type] = [];
-    });
-    
-    // Map fields by their explicit field_type if available
-    fieldMappings.forEach(mapping => {
-      const name = mapping.name;
-      const type = mapping.field_type || this.inferFieldType(name);
-      
-      if (type) {
-        // Create the type entry if it doesn't exist yet
-        if (!typeMap[type]) {
-          typeMap[type] = [];
-        }
-        typeMap[type].push(name);
-        console.log(`Mapped field ${name} to type ${type}`);
-      }
-    });
-    
-    // Add standard field names as fallbacks
-    if (typeMap.vendor?.length === 0) typeMap.vendor.push('vendor');
-    if (typeMap.amount?.length === 0) typeMap.amount.push('amount');
-    if (typeMap.date?.length === 0) typeMap.date.push('date');
-    if (typeMap.dueDate?.length === 0) typeMap.dueDate.push('dueDate');
-    if (typeMap.invoiceNumber?.length === 0) typeMap.invoiceNumber.push('invoiceNumber');
-    if (typeMap.accountNumber?.length === 0) typeMap.accountNumber.push('accountNumber');
-    if (typeMap.category?.length === 0) typeMap.category.push('category');
-    if (typeMap.text?.length === 0) typeMap.text.push('text');
-    if (typeMap.currency?.length === 0) typeMap.currency.push('currency');
-    
-    return typeMap;
   }
 
   /**
@@ -1114,7 +1305,7 @@ export class BillExtractor {
           return false;
         }
       }
-    } catch (error) {
+  } catch (error) {
       console.error('Failed to initialize with user context:', error);
       return false;
     }
