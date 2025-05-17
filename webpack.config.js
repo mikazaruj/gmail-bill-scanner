@@ -126,6 +126,8 @@ module.exports = {
         { from: 'public/pdf-processor-ui.js', to: 'pdf-processor-ui.js' },
         // Copy the offscreen PDF processor HTML
         { from: 'public/offscreen-pdf-processor.html', to: 'offscreen-pdf-processor.html' },
+        // Copy the offscreen PDF processor JavaScript
+        { from: 'public/offscreen.js', to: 'offscreen.js' },
         // Copy local PDF.js files for CSP compliance
         { from: 'public/pdfjs/pdf.min.js', to: 'pdfjs/pdf.min.js' },
         { from: 'public/pdfjs/pdf.worker.min.js', to: 'pdfjs/pdf.worker.min.js' },

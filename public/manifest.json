@@ -54,7 +54,8 @@
         "lib/pdf.worker.js",
         "pdfjs/pdf.min.js",
         "pdfjs/pdf.worker.min.js",
-        "offscreen-pdf-processor.html"
+        "offscreen-pdf-processor.html",
+        "offscreen.js"
       ],
       "matches": [
         "https://mail.google.com/*",

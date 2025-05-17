@@ -41,6 +41,7 @@ export interface ExtractionOptions {
   fieldMappings?: Record<string, string | RegExp>;
   shouldEarlyStop?: boolean;
   maxPages?: number;
+  forceOffscreenDocument?: boolean;
 }
 
 /**
@@ -110,130 +111,121 @@ export async function extractTextFromPdfWithPosition(
   options: ExtractionOptions = {}
 ): Promise<ExtractionResult> {
   try {
-    // Ensure we have the correct data type
-    const pdfBuffer = pdfData instanceof ArrayBuffer 
-      ? new Uint8Array(pdfData) 
-      : pdfData;
+    // Generate a unique ID for this processing request
+    const messageId = `pdf_req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
     
-    // Check for offscreen API availability
-    const hasOffscreenApi = typeof chrome !== 'undefined' && 
-                           typeof chrome.offscreen !== 'undefined';
-    
-    console.log('[PDF Service] Checking offscreen API availability:', {
-      hasOffscreenApi,
-      chromeApiKeys: typeof chrome !== 'undefined' ? Object.keys(chrome).join(', ') : 'chrome undefined'
-    });
-    
-    if (!hasOffscreenApi) {
-      throw new Error('Offscreen API not available, PDF extraction requires Chrome 109+');
+    // Ensure pdfData is a Uint8Array 
+    let pdfBuffer: Uint8Array;
+    if (pdfData instanceof ArrayBuffer) {
+      pdfBuffer = new Uint8Array(pdfData);
+    } else {
+      pdfBuffer = pdfData;
     }
     
-    // Create or get existing offscreen document and wait for it to be ready
-    try {
-      await ensureOffscreenDocument();
-      console.log('[PDF Service] Offscreen document is ready for use');
-    } catch (offscreenError) {
-      console.error('[PDF Service] Failed to ensure offscreen document:', offscreenError);
-      throw new Error('Failed to initialize offscreen document: ' + 
-        (offscreenError instanceof Error ? offscreenError.message : String(offscreenError)));
-    }
+    // Determine if we're in a service worker context
+    const inServiceWorker = typeof ServiceWorkerGlobalScope !== 'undefined' && self instanceof ServiceWorkerGlobalScope;
     
-    // Generate a unique message ID to track this specific request
-    const messageId = `pdf-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+    console.log("[PDF Service] Running in service worker context:", inServiceWorker);
     
-    // Get user field mappings if we should do early stopping
-    let fieldMappings: Record<string, string> = {};
+    // Determine if we should use the offscreen document for processing
+    const offscreenAvailable = 'offscreen' in chrome;
+    const useOffscreenDocument = options.forceOffscreenDocument || 
+                                (offscreenAvailable && inServiceWorker);
     
-    if (options.shouldEarlyStop && (!options.fieldMappings || Object.keys(options.fieldMappings).length === 0)) {
+    console.log("[PDF Service] Using offscreen document for extraction:", 
+      useOffscreenDocument, 
+      "(available:", offscreenAvailable, 
+      ", forced:", options.forceOffscreenDocument, 
+      ")"
+    );
+    
+    // If we're using the offscreen document, ensure it's available
+    if (useOffscreenDocument) {
       try {
-        // Try to get default patterns if no mappings provided
-        console.log('[PDF Service] Getting default field patterns for early stopping');
-        const { getDefaultPatterns } = await import('../extraction/patterns/patternLoader');
-        const defaultPatterns = getDefaultPatterns(options.language as 'en' | 'hu');
-        
-        // Convert complex pattern objects to simple regex strings for offscreen use
-        Object.entries(defaultPatterns).forEach(([field, pattern]) => {
-          if (typeof pattern === 'object' && pattern !== null && 'regex' in pattern) {
-            fieldMappings[field] = (pattern as { regex: string }).regex;
-          }
-        });
+        // This will create an offscreen document if none exists, or use existing one
+        await ensureOffscreenDocument();
       } catch (error) {
-        console.warn('[PDF Service] Could not load default patterns:', error);
+        // If there's an error ensuring the offscreen document, and it's not the "document already exists" error,
+        // log it but continue with the processing (it might still work with the existing document)
+        console.error("[PDF Service] Failed to ensure offscreen document:", error);
       }
-    } else if (options.fieldMappings) {
-      // Convert any RegExp objects to strings
-      Object.entries(options.fieldMappings).forEach(([field, pattern]) => {
-        if (pattern instanceof RegExp) {
-          fieldMappings[field] = pattern.source;
-        } else if (typeof pattern === 'string') {
-          fieldMappings[field] = pattern;
-        }
+      
+      // At this point, we either have a working offscreen document or have logged the error
+      // Extract the field mappings from options if provided
+      const fieldMappings = options.fieldMappings || [];
+      
+      console.log('[PDF Service] Preparing to send PDF data to offscreen document', {
+        pdfSize: pdfBuffer.byteLength,
+        messageId,
+        language: options.language || 'auto',
+        includePosition: options.includePosition !== false,
+        fieldMappingsCount: Object.keys(fieldMappings).length,
+        maxPages: options.maxPages || 10
       });
-    }
-    
-    console.log('[PDF Service] Preparing to send PDF data to offscreen document', {
-      pdfSize: pdfBuffer.byteLength,
-      messageId,
-      language: options.language || 'auto',
-      includePosition: options.includePosition !== false,
-      fieldMappingsCount: Object.keys(fieldMappings).length,
-      maxPages: options.maxPages || 10
-    });
-    
-    // Verify offscreen document is still active and responsive before sending data
-    await pingOffscreenDocument();
-    
-    // Set up a promise to wait for response
-    const processingPromise = new Promise<ExtractionResult>((resolve, reject) => {
-      // Set up a listener for the result
-      const messageListener = (message: any) => {
-        if (message.messageId !== messageId) return;
+      
+      // Verify offscreen document is still active and responsive before sending data
+      await pingOffscreenDocument();
+      
+      // Set up a promise to wait for response
+      const processingPromise = new Promise<ExtractionResult>((resolve, reject) => {
+        // Set up a listener for the result
+        const messageListener = (message: any) => {
+          if (message.messageId !== messageId) return;
+          
+          if (message.type === 'PDF_PROCESSED') {
+            chrome.runtime.onMessage.removeListener(messageListener);
+            console.log('[PDF Service] Received processed PDF result', {
+              success: message.result.success,
+              textLength: message.result.text?.length || 0,
+              pagesCount: message.result.pages?.length || 0
+            });
+            resolve(message.result);
+          } else if (message.type === 'PDF_PROCESSING_ERROR') {
+            chrome.runtime.onMessage.removeListener(messageListener);
+            console.error('[PDF Service] Received error from offscreen document:', message.error);
+            reject(new Error(message.error));
+          }
+        };
         
-        if (message.type === 'PDF_PROCESSED') {
+        chrome.runtime.onMessage.addListener(messageListener);
+        
+        // Set a timeout for processing (60 seconds)
+        setTimeout(() => {
           chrome.runtime.onMessage.removeListener(messageListener);
-          console.log('[PDF Service] Received processed PDF result', {
-            success: message.result.success,
-            textLength: message.result.text?.length || 0,
-            pagesCount: message.result.pages?.length || 0
-          });
-          resolve(message.result);
-        } else if (message.type === 'PDF_PROCESSING_ERROR') {
-          chrome.runtime.onMessage.removeListener(messageListener);
-          console.error('[PDF Service] Received error from offscreen document:', message.error);
-          reject(new Error(message.error));
-        }
+          reject(new Error('PDF processing timeout in offscreen document'));
+        }, options.timeout || 60000);
+        
+        // Send PDF data to offscreen document with error handling and retry
+        sendPdfDataWithRetry({
+          type: 'PROCESS_PDF',
+          pdfData: Array.from(pdfBuffer),
+          options: {
+            language: options.language || 'auto',
+            includePosition: options.includePosition !== false,
+            fieldMappings: fieldMappings,
+            maxPages: options.maxPages || 10,
+            earlyStopThreshold: 0.7
+          },
+          messageId
+        }, messageListener, reject);
+      });
+      
+      // Wait for the result
+      try {
+        console.log('[PDF Service] Waiting for offscreen document to process PDF...');
+        return await processingPromise;
+      } catch (error) {
+        console.error('[PDF Service] Error processing PDF in offscreen document:', error);
+        throw error;
+      }
+    } else {
+      // If we're not using the offscreen document, process the PDF in the main thread
+      console.log('[PDF Service] Processing PDF in main thread');
+      return {
+        success: true,
+        text: '',
+        pages: []
       };
-      
-      chrome.runtime.onMessage.addListener(messageListener);
-      
-      // Set a timeout for processing (60 seconds)
-      setTimeout(() => {
-        chrome.runtime.onMessage.removeListener(messageListener);
-        reject(new Error('PDF processing timeout in offscreen document'));
-      }, options.timeout || 60000);
-      
-      // Send PDF data to offscreen document with error handling and retry
-      sendPdfDataWithRetry({
-        type: 'PROCESS_PDF',
-        pdfData: Array.from(pdfBuffer),
-        options: {
-          language: options.language || 'auto',
-          includePosition: options.includePosition !== false,
-          fieldMappings: fieldMappings,
-          maxPages: options.maxPages || 10,
-          earlyStopThreshold: 0.7
-        },
-        messageId
-      }, messageListener, reject);
-    });
-    
-    // Wait for the result
-    try {
-      console.log('[PDF Service] Waiting for offscreen document to process PDF...');
-      return await processingPromise;
-    } catch (error) {
-      console.error('[PDF Service] Error processing PDF in offscreen document:', error);
-      throw error;
     }
   } catch (error) {
     console.error('[PDF Service] PDF extraction failed:', error);
@@ -343,67 +335,82 @@ async function ensureOffscreenDocument(): Promise<void> {
     throw new Error("Offscreen API not available");
   }
   
-  // Check if offscreen document already exists
+  // First check if we already have an offscreen document
   try {
-    let offscreenDocuments: any[] = [];
-    try {
-      // @ts-ignore - Chrome extension API type definition issue
-      offscreenDocuments = await chrome.offscreen.getContexts();
-    } catch (e) {
-      console.warn("[PDF Service] Error checking contexts:", e);
+    // Try to check if document exists using hasDocument API if available
+    let documentExists = false;
+    
+    // In newer Chrome versions, we can use hasDocument()
+    if ('hasDocument' in chrome.offscreen) {
+      try {
+        documentExists = await chrome.offscreen.hasDocument();
+        console.log("[PDF Service] Checked document existence using hasDocument API:", documentExists);
+      } catch (e) {
+        console.warn("[PDF Service] Error using hasDocument API:", e);
+      }
     }
     
-    if (offscreenDocuments && offscreenDocuments.length > 0) {
-      console.log("[PDF Service] Found existing offscreen document");
-      
-      // Try to ping existing document to see if it's responsive
+    // If we couldn't determine using hasDocument, try to ping the document
+    if (!documentExists) {
+      // Try pinging existing document to see if it's responsive
       const pingResult = await pingOffscreenDocument();
+      documentExists = pingResult;
       
       if (pingResult) {
-        console.log("[PDF Service] Existing offscreen document is responsive");
-        return;
-      }
-      
-      console.log("[PDF Service] Existing offscreen document not responsive, closing and recreating");
-      
-      // Close any existing offscreen document
-      try {
-        await chrome.offscreen.closeDocument();
-      } catch (closeError) {
-        console.warn("[PDF Service] Error closing existing document:", closeError);
+        console.log("[PDF Service] Existing offscreen document responsive to ping");
       }
     }
+    
+    // If document exists and is responsive, we're done
+    if (documentExists) {
+      console.log("[PDF Service] Using existing offscreen document");
+      return;
+    }
+    
+    // If we get here, we need to create a new document
+    // Try to close any existing document first to be safe
+    try {
+      console.log("[PDF Service] Attempting to close any existing offscreen documents");
+      await chrome.offscreen.closeDocument();
+    } catch (closeError) {
+      // Ignore errors - it's okay if there was no document to close
+      console.log("[PDF Service] No document to close or error closing:", closeError);
+    }
+    
+    // Short delay before creating new document
+    await new Promise(resolve => setTimeout(resolve, 100));
     
     // Create offscreen document
     console.log("[PDF Service] Creating offscreen document");
-
-    // Clear any existing READY listeners before creating the document
+    console.log("[PDF Service] Proceeding with document creation");
+    
     try {
-      console.log("[PDF Service] Proceeding with document creation");
-    } catch (e) {
-      // Ignore error if listener wasn't registered
+      await chrome.offscreen.createDocument({
+        url: 'offscreen-pdf-processor.html',
+        reasons: ['DOM_PARSER'] as any,
+        justification: 'Extract text from PDF documents',
+      });
+      
+      console.log("[PDF Service] Offscreen document created, waiting for ready signal...");
+      
+      // Wait for the document to be ready
+      const isReady = await waitForOffscreenDocumentReady();
+      
+      if (!isReady) {
+        console.warn("[PDF Service] Offscreen document did not become ready in time - proceeding anyway");
+      }
+    } catch (createError: any) {
+      // Handle the specific error for document already existing
+      if (createError.message && createError.message.includes("a single offscreen document may be created")) {
+        console.log("[PDF Service] Document already exists, using existing document");
+        return;
+      }
+      
+      // For other errors, rethrow
+      throw createError;
     }
-
-    // Wait briefly before creating document (helps prevent race conditions)
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    await chrome.offscreen.createDocument({
-      url: 'offscreen-pdf-processor.html',
-      reasons: ['DOM_PARSER'] as any,
-      justification: 'Extract text from PDF documents',
-    });
-    
-    console.log("[PDF Service] Offscreen document created, waiting for ready signal...");
-
-    // Wait for the document to be ready with a simple timeout
-    const isReady = await waitForOffscreenDocumentReady();
-    
-    if (!isReady) {
-      console.warn("[PDF Service] Offscreen document did not become ready in time - proceeding anyway");
-    }
-    
   } catch (error: any) {
-    console.error("[PDF Service] Failed to create offscreen document:", error);
+    console.error("[PDF Service] Failed to ensure offscreen document:", error);
     throw new Error(`Offscreen document did not initialize properly: ${error.message || 'Unknown error'}`);
   }
 }
@@ -510,14 +517,53 @@ export async function diagnosePdfEnvironment(): Promise<{
  */
 export async function cleanupPdfResources(): Promise<void> {
   try {
-    const contexts = await chrome.runtime.getContexts({
-      contextTypes: ['OFFSCREEN_DOCUMENT']
-    });
+    // Check if we have an offscreen document using hasDocument if available
+    let documentExists = false;
     
-    if (contexts && contexts.length > 0) {
+    // Use the most modern API first if available
+    if ('hasDocument' in chrome.offscreen) {
+      try {
+        documentExists = await chrome.offscreen.hasDocument();
+      } catch (e) {
+        console.warn('[PDF Service] Error checking if document exists:', e);
+        // Fall back to ping check
+        documentExists = await pingOffscreenDocument();
+      }
+    } else {
+      // Fall back to ping check
+      documentExists = await pingOffscreenDocument();
+    }
+    
+    if (documentExists) {
       console.log('[PDF Service] Cleaning up offscreen document');
-      await chrome.offscreen.closeDocument();
-      offscreenDocumentReady = false;
+      
+      // Attempt to close with retry logic
+      let success = false;
+      let attempts = 0;
+      const maxAttempts = 3;
+      
+      while (!success && attempts < maxAttempts) {
+        try {
+          await chrome.offscreen.closeDocument();
+          success = true;
+          console.log('[PDF Service] Successfully closed offscreen document');
+          offscreenDocumentReady = false;
+        } catch (closeError) {
+          attempts++;
+          console.warn(`[PDF Service] Error closing offscreen document (attempt ${attempts}/${maxAttempts}):`, closeError);
+          
+          if (attempts < maxAttempts) {
+            // Wait a bit before retrying
+            await new Promise(resolve => setTimeout(resolve, 500 * attempts));
+          }
+        }
+      }
+      
+      if (!success) {
+        console.error('[PDF Service] Failed to close offscreen document after multiple attempts');
+      }
+    } else {
+      console.log('[PDF Service] No offscreen document to clean up');
     }
   } catch (error) {
     console.warn('[PDF Service] Error cleaning up offscreen document:', error);
