@@ -240,7 +240,11 @@
         "Felhasználási\\s+hely\\s+(?:azonosító|szám)?:?\\s*([A-Za-z0-9\\-]+)",
         "Vevő \\(Fizető\\) azonosító:\\s*([A-Za-z0-9\\-]+)",
         "Felhasználó azonosító száma:\\s*(\\d+)",
-        "Szerződéses folyószámla:\\s*([A-Za-z0-9\\-]+)"
+        "Szerződéses folyószámla:\\s*([A-Za-z0-9\\-]+)",
+        "Számlakibocsátó számlaszáma:\\s*([A-Za-z0-9\\-]+)",
+        "Számlakibocsátó\\s+szám(?:a|laszáma)?:\\s*([A-Za-z0-9\\-]+)",
+        "Felhasználási hely száma:\\s*([A-Za-z0-9\\-]+)",
+        "Szerződéses számla\\s*:\\s*([A-Za-z0-9\\-]+)"
       ]
     },
     {
@@ -286,7 +290,12 @@
         "Számlaszám:?\\s*([A-Za-z0-9\\-\\/]+)",
         "Számla\\s+azonosító:?\\s*([A-Za-z0-9\\-\\/]+)",
         "Számlaszám:\\s*\\n?\\s*([A-Za-z0-9\\-\\/]+)",
-        "Számla sorszáma:\\s*([0-9]+)"
+        "Számla sorszáma:\\s*([0-9]+)",
+        "A számla sorszáma:\\s*([0-9]+)",
+        "Számla száma:\\s*([A-Za-z0-9\\-\\/]+)",
+        "A bizonylat száma:\\s*([A-Za-z0-9\\-\\/]+)",
+        "A bizonylat sorszáma:\\s*([A-Za-z0-9\\-\\/]+)",
+        "Bizonylatszám:\\s*([A-Za-z0-9\\-\\/]+)"
       ]
     },
     {

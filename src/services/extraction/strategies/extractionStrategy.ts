@@ -17,6 +17,7 @@ export interface EmailExtractionContext {
   date: string;
   language?: 'en' | 'hu';
   isTrustedSource?: boolean; // Whether the email is from a trusted source
+  detectedCompany?: string;  // Company name detected from the bill content
 }
 
 /**

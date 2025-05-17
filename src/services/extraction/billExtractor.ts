@@ -376,6 +376,32 @@ export class BillExtractor {
       
       console.log(`Processing email with language setting: ${options.language || 'en'}`);
       
+      // Check if this is a Hungarian bill before extraction
+      // This helps us set the right strategy and patterns
+      let detectedLanguage = options.language || 'en';
+      let detectedCompany: string | undefined;
+      
+      // Import Hungarian bill detection only if needed
+      if (options.language === 'hu' || this.containsHungarianIndicators(body, subject)) {
+        try {
+          const { isHungarianBill } = await import('./utils/hungarianPatternMatcher');
+          const hungarianPatterns = await import('./patterns/hungarian-bill-patterns.json');
+          
+          const detection = isHungarianBill(body, hungarianPatterns as any);
+          if (detection.isHungarianBill) {
+            console.log(`Detected Hungarian bill with confidence: ${detection.confidence}`);
+            console.log(`Detected company: ${detection.company || 'unknown'}`);
+            detectedLanguage = 'hu';
+            detectedCompany = detection.company;
+            
+            // Update the options language to ensure all strategies use it
+            options.language = 'hu';
+          }
+        } catch (detectionError) {
+          console.error('Error detecting Hungarian bill:', detectionError);
+        }
+      }
+      
       // Try each strategy in order, stopping when we find bills
       let highestConfidence = 0;
       let bestResult: BillExtractionResult = {
@@ -391,12 +417,13 @@ export class BillExtractor {
           subject,
           body,
           date: dateStr, // Use string date for compatibility with interface
-          language: options.language,
-          isTrustedSource: options.isTrustedSource
+          language: detectedLanguage,
+          isTrustedSource: options.isTrustedSource,
+          detectedCompany // Pass the detected company if available
         };
         
         try {
-          console.log(`${strategy.name} extractor using language: ${options.language || 'en'}`);
+          console.log(`${strategy.name} extractor using language: ${detectedLanguage}`);
           const result = await strategy.extractFromEmail(context);
           
           // Log confidence for tracking
@@ -463,6 +490,61 @@ export class BillExtractor {
         error: error instanceof Error ? error.message : 'Unknown error'
       };
     }
+  }
+  
+  /**
+   * Check if text contains Hungarian language indicators
+   */
+  private containsHungarianIndicators(body: string, subject: string): boolean {
+    // Common Hungarian words and characters
+    const hungarianIndicators = [
+      'számla', 'áram', 'gáz', 'fizetési', 'határidő', 'összeg', 'fogyasztás',
+      'díj', 'forint', 'Ft', 'szolgáltató', 'szerződés', 'érték', 'ELMŰ', 'MVM',
+      'felhasználó', 'ügyfél', 'kibocsátó', 'végösszeg', 'bizonylat', 'közüzemi'
+    ];
+    
+    // Hungarian specific characters
+    const hungarianChars = ['á', 'é', 'í', 'ó', 'ö', 'ő', 'ú', 'ü', 'ű'];
+    
+    // Convert to lowercase to make comparison case-insensitive
+    const normalizedText = (body + ' ' + subject).toLowerCase();
+    
+    // Check for Hungarian words
+    for (const indicator of hungarianIndicators) {
+      if (normalizedText.includes(indicator.toLowerCase())) {
+        console.log(`Detected Hungarian indicator: ${indicator}`);
+        return true;
+      }
+    }
+    
+    // Count occurrences of Hungarian-specific characters
+    let hungarianCharCount = 0;
+    for (const char of hungarianChars) {
+      const regex = new RegExp(char, 'gi');
+      const matches = normalizedText.match(regex);
+      hungarianCharCount += matches ? matches.length : 0;
+    }
+    
+    // If we find more than a threshold of Hungarian characters, consider it Hungarian
+    if (hungarianCharCount > 5) {
+      console.log(`Detected ${hungarianCharCount} Hungarian characters`);
+      return true;
+    }
+    
+    // Try to detect Hungarian encoding problems
+    const encodingIssuePatterns = [
+      'Ã¡', 'Ã©', 'Ã³', 'Å', 'Å±', 'Ãº', 'Ã¼',
+      'szÃ¡mla', 'fizetÃ©si', 'hatÃ¡ridÅ', 'Ãsszeg'
+    ];
+    
+    for (const pattern of encodingIssuePatterns) {
+      if (normalizedText.includes(pattern.toLowerCase())) {
+        console.log(`Detected Hungarian encoding issue: ${pattern}`);
+        return true;
+      }
+    }
+    
+    return false;
   }
   
   /**

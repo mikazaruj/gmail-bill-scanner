@@ -13,7 +13,8 @@ import { createDynamicBill, ensureBillFormat } from '../../dynamicBillFactory';
 import { 
   extractFieldsFromText, 
   isHungarianBill, 
-  mapToUserFields 
+  mapToUserFields, 
+  fixHungarianEncoding
 } from '../utils/hungarianPatternMatcher';
 
 /**
@@ -41,15 +42,18 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
     const { from, subject, body, date, language, messageId } = context;
     
     try {
+      // Fix encoding issues first
+      const fixedBody = fixHungarianEncoding(body);
+      
       // Combine content for extraction
-      const fullContent = `From: ${from}\nSubject: ${subject}\n\n${body}`;
+      const fullContent = `From: ${from}\nSubject: ${subject}\n\n${fixedBody}`;
       
       // Log email content for debugging
       console.log('=== EMAIL CONTENT FOR EXTRACTION ===');
       console.log(`From: ${from}`);
       console.log(`Subject: ${subject}`);
       console.log('Email body preview (first 500 chars):');
-      console.log(body.substring(0, 500) + (body.length > 500 ? '...' : ''));
+      console.log(fixedBody.substring(0, 500) + (fixedBody.length > 500 ? '...' : ''));
       console.log('=== END EMAIL CONTENT ===');
       
       // Check if this is a Hungarian bill, with proper error handling
@@ -75,8 +79,8 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         const extractedFields = extractFieldsFromText(fullContent, undefined, hungarianCheck.company);
         
         // Add company info if detected
-        if (hungarianCheck.company) {
-          extractedFields.company = {
+        if (hungarianCheck.company && !extractedFields.issuer_name) {
+          extractedFields.issuer_name = {
             value: hungarianCheck.company,
             confidence: hungarianCheck.confidence || 0.8,
             method: 'companyPattern',
@@ -85,7 +89,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         }
         
         // Add bill type if detected
-        if (hungarianCheck.billType) {
+        if (hungarianCheck.billType && !extractedFields.bill_category) {
           extractedFields.bill_category = {
             value: hungarianCheck.billType,
             confidence: hungarianCheck.confidence || 0.8,
@@ -120,7 +124,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         };
         
         // Use mapExtractedFieldsToSchema to create a bill based on user-defined fields
-        const bill = this.mapExtractedFieldsToSchema(extractedFields, confidence, source);
+        const bill = this.mapExtractedFieldsToSchema(extractedFields, confidence, source, 'hu');
         
         // Add email-specific metadata
         bill.id = `email-${messageId}`;
@@ -184,11 +188,14 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
     }
     
     try {
+      // Fix encoding issues first
+      const fixedPdfData = fixHungarianEncoding(pdfData);
+      
       // Log PDF content for debugging
       console.log('=== PDF CONTENT FOR EXTRACTION ===');
       console.log(`File: ${fileName || 'unnamed.pdf'}`);
       console.log('PDF text preview (first 500 chars):');
-      console.log(pdfData.substring(0, 500) + (pdfData.length > 500 ? '...' : ''));
+      console.log(fixedPdfData.substring(0, 500) + (fixedPdfData.length > 500 ? '...' : ''));
       console.log('=== END PDF CONTENT ===');
       
       // Check if this is a Hungarian bill, with proper error handling
@@ -200,7 +207,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
       } = { isHungarianBill: false, confidence: 0 };
       
       try {
-        hungarianCheck = isHungarianBill(pdfData);
+        hungarianCheck = isHungarianBill(fixedPdfData);
       } catch (error) {
         console.error('Error in Hungarian bill detection for PDF:', error);
         // Continue execution with default values
@@ -211,11 +218,11 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         console.log('Extracting Hungarian bill from PDF');
         
         // Extract fields using Hungarian pattern matcher
-        const extractedFields = extractFieldsFromText(pdfData, undefined, hungarianCheck.company);
+        const extractedFields = extractFieldsFromText(fixedPdfData, undefined, hungarianCheck.company);
         
         // Add company info if detected
-        if (hungarianCheck.company) {
-          extractedFields.company = {
+        if (hungarianCheck.company && !extractedFields.issuer_name) {
+          extractedFields.issuer_name = {
             value: hungarianCheck.company,
             confidence: hungarianCheck.confidence || 0.8,
             method: 'companyPattern',
@@ -224,7 +231,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         }
         
         // Add bill type if detected
-        if (hungarianCheck.billType) {
+        if (hungarianCheck.billType && !extractedFields.bill_category) {
           extractedFields.bill_category = {
             value: hungarianCheck.billType,
             confidence: hungarianCheck.confidence || 0.8,
@@ -261,7 +268,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         };
         
         // Use mapExtractedFieldsToSchema to create a bill based on user-defined fields
-        const bill = this.mapExtractedFieldsToSchema(extractedFields, confidence, source);
+        const bill = this.mapExtractedFieldsToSchema(extractedFields, confidence, source, 'hu');
         
         // Add PDF-specific metadata
         bill.id = `pdf-${messageId}-${attachmentId}`;
@@ -349,24 +356,35 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
     messageId?: string;
     attachmentId?: string;
     fileName?: string;
-  }): any {
+  }, language?: 'en' | 'hu'): any {
     // Start with a minimal bill containing only required metadata
     const bill: any = {
       confidence: confidence,
       source,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      isPaid: false  // Default value
+      isPaid: false,  // Default value
+      language: language || 'en'  // Store the language
     };
     
     console.log('=== MAPPING EXTRACTED FIELDS TO USER SCHEMA ===');
+    console.log(`Language detected: ${language || 'en'}`);
     console.log('Raw extracted fields:', extractedFields);
     
     // Create a map of processed values from extracted fields
     const extractedValues: Record<string, any> = {};
     Object.entries(extractedFields).forEach(([fieldName, fieldInfo]) => {
       if (typeof fieldInfo === 'object' && fieldInfo && 'value' in fieldInfo) {
+        // Store the actual value, not the object with metadata
         extractedValues[fieldName] = fieldInfo.value;
+        
+        // Also store semantic type as a key if available
+        if (fieldInfo && 
+            typeof fieldInfo === 'object' && 
+            'semanticType' in fieldInfo && 
+            fieldInfo.semanticType) {
+          extractedValues[fieldInfo.semanticType as string] = fieldInfo.value;
+        }
       } else {
         extractedValues[fieldName] = fieldInfo;
       }
@@ -381,8 +399,30 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
       'invoice_date': ['invoice_date', 'bill_date', 'issue_date'],
       'due_date': ['due_date', 'payment_due_date', 'payment_deadline'],
       'total_amount': ['total_amount', 'amount', 'total', 'sum', 'bill_total'],
-      'account_number': ['account_number', 'customer_id', 'client_id', 'user_id']
+      'account_number': ['account_number', 'customer_id', 'client_id', 'user_id'],
+      'service_period': ['service_period', 'billing_period', 'period'],
+      'customer_name': ['customer_name', 'client_name', 'account_holder'],
+      'customer_address': ['customer_address', 'address', 'billing_address'],
+      'service_address': ['service_address', 'supply_address', 'consumption_address']
     };
+    
+    // Define Hungarian-specific field mappings
+    const hungarianMappings: Record<string, string[]> = {
+      'issuer_name': ['szolgaltato', 'kibocsato', 'elado', 'issuer_name'],
+      'invoice_number': ['szamlaSorszam', 'szamla_sorszama', 'invoice_number', 'szamlaszam'],
+      'invoice_date': ['szamlaKelte', 'kiallitasDatum', 'invoice_date'],
+      'due_date': ['fizetesiHatarido', 'fizetesi_hatarido', 'due_date', 'esedekesseg'],
+      'total_amount': ['fizetendoOsszeg', 'vegosszeg', 'total_amount', 'fizetendo'],
+      'account_number': ['ugyfelAzonosito', 'fogyasztoAzonosito', 'vevoAzonosito', 'account_number'],
+      'service_period': ['elszamoltIdoszak', 'szolgaltatasiIdoszak', 'service_period'],
+      'customer_name': ['felhasznaloNev', 'ugyfelNev', 'vevoNev', 'customer_name'],
+      'customer_address': ['felhasznaloCim', 'ugyfelCim', 'vevoCim', 'customer_address'],
+      'service_address': ['szolgaltatasiCim', 'fogyasztasiHelyCim', 'service_address']
+    };
+    
+    // Choose the appropriate mapping based on language
+    const mappings = (language === 'hu') ? hungarianMappings : defaultMappings;
+    console.log(`Using ${language === 'hu' ? 'Hungarian' : 'default'} field mappings`);
     
     // Apply mappings if available
     if (this.fieldMappings && this.fieldMappings.length > 0) {
@@ -391,8 +431,8 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
       this.fieldMappings.forEach(mapping => {
         const { name, field_type } = mapping;
         
-        // Use default mappings for extraction source fields if none defined
-        const sourceFields = defaultMappings[name] || [];
+        // Use language-specific mappings for extraction source fields if none defined
+        const sourceFields = mappings[name] || [];
         
         if (sourceFields.length === 0) {
           console.log(`Mapping ${name} has no extraction source fields defined, skipping`);
@@ -409,7 +449,9 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
             // Apply type conversions if needed
             if (field_type === 'date' && typeof value === 'string') {
               try {
-                bill[name] = new Date(value);
+                // Handle Hungarian date formats (YYYY.MM.DD.)
+                const cleanedDate = value.replace(/\.$/, ''); // Remove trailing dot if present
+                bill[name] = new Date(cleanedDate);
                 console.log(`Applied mapping: ${name} = ${value} (from ${sourceField}, converted to date)`);
               } catch (e) {
                 bill[name] = value;
@@ -418,7 +460,13 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
             } else if (field_type === 'amount' || field_type === 'currency') {
               if (typeof value === 'string') {
                 try {
-                  bill[name] = parseFloat(value.replace(/[^\d.,]/g, '').replace(',', '.'));
+                  // Handle Hungarian number formats (space/dot as thousand separator, comma as decimal)
+                  const numericString = value
+                    .replace(/\s+/g, '') // Remove spaces
+                    .replace(/\./g, '')  // Remove dots (thousand separators)
+                    .replace(/,/g, '.'); // Convert decimal comma to decimal point
+                    
+                  bill[name] = parseFloat(numericString);
                   console.log(`Applied mapping: ${name} = ${bill[name]} (from ${sourceField}, converted to number)`);
                 } catch (e) {
                   bill[name] = value;
@@ -462,6 +510,10 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         bill.vendor = extractedValues.company;
       } else if (extractedValues.vendor) {
         bill.vendor = extractedValues.vendor;
+      } else if (extractedValues.issuer_name) {
+        bill.vendor = extractedValues.issuer_name.replace(/^:\s*/, ''); // Remove leading ":" if present
+      } else if (extractedValues.szolgaltato) {
+        bill.vendor = extractedValues.szolgaltato;
       } else {
         bill.vendor = 'Unknown';
       }
@@ -471,17 +523,17 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
     // For amount field, check for amount or total fields in extracted data
     if (bill.amount === undefined) {
       if (bill.total_amount) {
-        bill.amount = typeof bill.total_amount === 'string' ? 
-            parseFloat(bill.total_amount.replace(/[^\d.,]/g, '').replace(',', '.')) : 
-            bill.total_amount;
+        bill.amount = this.convertHungarianAmount(bill.total_amount);
       } else if (extractedValues.amount) {
-        bill.amount = typeof extractedValues.amount === 'string' ? 
-            parseFloat(extractedValues.amount.replace(/[^\d.,]/g, '').replace(',', '.')) : 
-            extractedValues.amount;
+        bill.amount = this.convertHungarianAmount(extractedValues.amount);
+      } else if (extractedValues.total_amount) {
+        bill.amount = this.convertHungarianAmount(extractedValues.total_amount);
       } else if (extractedValues.total) {
-        bill.amount = typeof extractedValues.total === 'string' ? 
-            parseFloat(extractedValues.total.replace(/[^\d.,]/g, '').replace(',', '.')) : 
-            extractedValues.total;
+        bill.amount = this.convertHungarianAmount(extractedValues.total);
+      } else if (extractedValues.fizetendoOsszeg) {
+        bill.amount = this.convertHungarianAmount(extractedValues.fizetendoOsszeg);
+      } else if (extractedValues.vegosszeg) {
+        bill.amount = this.convertHungarianAmount(extractedValues.vegosszeg);
       } else {
         bill.amount = 0;
       }
@@ -494,15 +546,51 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         bill.date = bill.invoice_date;
       } else if (extractedValues.date) {
         bill.date = extractedValues.date;
+      } else if (extractedValues.szamlaKelte) {
+        bill.date = extractedValues.szamlaKelte;
       } else {
         bill.date = new Date();
       }
       console.log(`Set required date field fallback: ${bill.date}`);
     }
     
+    // Clean up truncated values if needed
+    if (bill.issuer_name && typeof bill.issuer_name === 'string' && bill.issuer_name.startsWith(':')) {
+      bill.issuer_name = bill.issuer_name.replace(/^:\s*/, '').trim();
+    }
+    
+    if (bill.vendor && typeof bill.vendor === 'string' && bill.vendor.startsWith(':')) {
+      bill.vendor = bill.vendor.replace(/^:\s*/, '').trim();
+    }
+    
     console.log('Final mapped bill:', bill);
     console.log('=== END MAPPING EXTRACTED FIELDS ===');
     
     return bill;
+  }
+  
+  /**
+   * Convert Hungarian formatted amount to number
+   * Handles space/dot as thousand separators and comma as decimal point
+   */
+  private convertHungarianAmount(amount: any): number {
+    if (typeof amount === 'number') return amount;
+    
+    if (typeof amount === 'string') {
+      try {
+        // Remove any non-numeric chars except comma and dot
+        const numericString = amount
+          .replace(/[^\d.,]/g, '')  // Keep only digits, dots and commas
+          .replace(/\./g, '')       // Remove dots (thousand separators)
+          .replace(/,/g, '.');      // Convert decimal comma to decimal point
+          
+        return parseFloat(numericString);
+      } catch (e) {
+        console.error('Error converting Hungarian amount:', e);
+        return 0;
+      }
+    }
+    
+    return 0;
   }
 } 

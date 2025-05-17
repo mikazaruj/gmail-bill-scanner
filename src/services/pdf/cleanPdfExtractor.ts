@@ -8,6 +8,9 @@
 // DO NOT import PDF.js directly as it causes "document is not defined" errors
 // Instead, we'll use a simpler binary analysis approach for service workers
 
+// Import Hungarian encoding fix
+import { fixHungarianEncoding } from '../extraction/utils/hungarianPatternMatcher';
+
 // Type definitions
 export interface PdfExtractionOptions {
   language?: string;
@@ -162,7 +165,13 @@ async function performBinaryExtraction(
     }
     
     // Extract text using improved method
-    const extractionResult = extractTextFromBinary(pdfData, options);
+    let extractionResult = extractTextFromBinary(pdfData, options);
+    
+    // Apply Hungarian encoding fixes if language is Hungarian
+    if (options.language === 'hu') {
+      extractionResult = fixHungarianEncoding(extractionResult);
+      console.log('[PDF Extractor] Applied Hungarian encoding fixes');
+    }
     
     // If we couldn't extract any text
     if (!extractionResult || extractionResult.trim().length === 0) {
@@ -460,65 +469,81 @@ function extractTextFromBinary(data: Uint8Array, options: PdfExtractionOptions =
 }
 
 /**
- * Fix encoding issues with Hungarian characters in PDF content
+ * Fix encoding issues in extracted PDF text
+ * This is particularly important for Hungarian special characters
  */
-function fixPdfEncoding(text: string, isHungarian: boolean): string {
+function fixPdfEncoding(text: string, isHungarian: boolean = true): string {
   if (!text) return '';
   
   try {
-    // Only apply fixes if input is likely Hungarian
-    if (!isHungarian) return text;
+    // First try the standard decoding
+    try {
+      // This might throw errors with malformed URI sequences
+      return decodeURIComponent(escape(text));
+    } catch (uriError) {
+      console.log('[PDF Extractor] URI decoding error:', uriError);
+      // Continue with manual character fixes
+    }
     
-    // Check for common encoding issues with Hungarian characters
-    const hasEncodingIssues = /Ã/.test(text);
-    
-    if (hasEncodingIssues) {
-      // This is a common fix for UTF-8 characters being incorrectly decoded as Latin1/ISO-8859-1
-      // It works for most Hungarian characters (á, é, í, ó, ö, ő, ú, ü, ű)
+    // If standard decoding fails and Hungarian is the target language,
+    // use our specialized Hungarian encoding fix
+    if (isHungarian) {
       try {
-        return decodeURIComponent(escape(text));
-      } catch (uriError) {
-        console.error('[PDF Extractor] URI decoding error:', uriError);
-        // Fall through to the character map approach if decodeURIComponent fails
+        // Use the specialized Hungarian encoding fix
+        return fixHungarianEncoding(text);
+      } catch (hungarianError) {
+        console.error('[PDF Extractor] Hungarian encoding fix failed:', hungarianError);
+        // Fall back to the basic fix below
       }
     }
     
-    // Additional replacements for common Hungarian character encoding issues in PDFs
-    let fixed = text;
+    // If standard decoding fails, apply manual Hungarian character fixes
+    // Map of incorrectly encoded characters to proper Hungarian characters
+    const charMap: Record<string, string> = {
+      'Ã¡': 'á',
+      'Ã©': 'é',
+      'Ã­': 'í',
+      'Ã³': 'ó',
+      'Ãµ': 'õ',
+      'Ãº': 'ú',
+      'Ã¼': 'ü',
+      'Å': 'ő',
+      'Å±': 'ű',
+      'ÃA': 'Á',  // Fixed duplicate key
+      'Ã‰': 'É',
+      'ÃI': 'Í',  // Fixed duplicate key
+      'Ã"': 'Ó',
+      'Ã•': 'Õ',
+      'Ãš': 'Ú',
+      'Ãœ': 'Ü',
+      'ÅO': 'Ő',  // Fixed duplicate key
+      'Å°': 'Ű',
+      // More specific replacements for common errors in PDFs
+      'ŠþÓ': 'szá',
+      'ŠþÓmla': 'számla',
+      'ôsszeg': 'összeg',
+      'hatÓridþ': 'határidő',
+      'fizetž': 'fizető',
+      'azonosÚtÛ': 'azonosító'
+    };
     
-    // Map of common encoding issues in PDFs with Hungarian characters
-    const charMap = new Map([
-      ['\u00E1', 'á'], // a with acute
-      ['\u00E9', 'é'], // e with acute
-      ['\u00ED', 'í'], // i with acute
-      ['\u00F3', 'ó'], // o with acute
-      ['\u00F6', 'ö'], // o with diaeresis
-      ['\u0151', 'ő'], // o with double acute
-      ['\u00FA', 'ú'], // u with acute
-      ['\u00FC', 'ü'], // u with diaeresis
-      ['\u0171', 'ű'], // u with double acute
-      // Capital letters
-      ['\u00C1', 'Á'], // A with acute
-      ['\u00C9', 'É'], // E with acute
-      ['\u00CD', 'Í'], // I with acute
-      ['\u00D3', 'Ó'], // O with acute
-      ['\u00D6', 'Ö'], // O with diaeresis
-      ['\u0150', 'Ő'], // O with double acute
-      ['\u00DA', 'Ú'], // U with acute
-      ['\u00DC', 'Ü'], // U with diaeresis
-      ['\u0170', 'Ű']  // U with double acute
-    ]);
+    // Replace all occurrences of incorrectly encoded characters
+    let fixedText = text;
+    Object.entries(charMap).forEach(([incorrect, correct]) => {
+      const regex = new RegExp(incorrect, 'g');
+      fixedText = fixedText.replace(regex, correct);
+    });
     
-    // Replace each problematic character
-    for (const [encoded, decoded] of charMap.entries()) {
-      fixed = fixed.replace(new RegExp(encoded, 'g'), decoded);
-    }
+    // Also handle common encoding patterns in binary PDFs
+    fixedText = fixedText
+      .replace(/\\u([0-9a-f]{4})/gi, (match, grp) => String.fromCharCode(parseInt(grp, 16)))
+      .replace(/&#([0-9]+);/g, (match, grp) => String.fromCharCode(parseInt(grp, 10)));
     
-    return fixed;
+    console.log('[PDF Extractor] Applied manual character fixes for Hungarian text');
+    return fixedText;
   } catch (error) {
     console.error('[PDF Extractor] Error fixing PDF encoding:', error);
-    // If any error occurs during encoding fix, return the original text
-    return text;
+    return text; // Return original if all fixes fail
   }
 }
 
