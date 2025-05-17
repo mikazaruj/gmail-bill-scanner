@@ -38,6 +38,7 @@ export class BillExtractor {
   private strategies: ExtractionStrategy[] = [];
   private initialized = false;
   private fieldMappings: any[] = [];
+  private fieldDefinitions: any[] = []; // Add field definitions storage
   private fieldMappingDict: Record<string, any> = {};
   private fieldsByType: Record<string, string[]> = {};
   public isInitializedForUser = false;
@@ -76,53 +77,103 @@ export class BillExtractor {
   }
 
   /**
-   * Initialize with user field mappings
+   * Initialize with field definitions
+   * For when user has no custom field mappings
    * 
-   * @param fieldMappings Array of field mappings from the database
+   * @param fieldDefinitions Array of field definitions from the database
    */
-  async initializeWithFieldMappings(fieldMappings: any[]): Promise<void> {
+  async initializeWithFieldDefinitions(fieldDefinitions: any[]): Promise<void> {
     try {
+      this.fieldDefinitions = fieldDefinitions;
+      
+      // Filter to only use default enabled fields as fallbacks
+      const defaultEnabledFields = fieldDefinitions.filter(def => def.default_enabled === true);
+      
+      console.log('Bill extractor initialized with default field definitions:', 
+        defaultEnabledFields.map(d => `${d.name} (${d.field_type})`).join(', '));
+      
+      // Build field type map using just the definitions
+      this.fieldsByType = this.buildFieldTypeMapWithDefinitions([], fieldDefinitions);
+      
+      // Pass the default field definitions to extractors
+      await this.initializeExtractorsWithFieldMappings(defaultEnabledFields);
+      
+      this.isInitializedForUser = true;
+    } catch (error) {
+      console.error('Error initializing bill extractor with field definitions:', error);
+    }
+  }
+
+  /**
+   * Initialize with both field definitions and user mappings
+   * 
+   * @param fieldDefinitions Standard field definitions from the database
+   * @param fieldMappings User-specific field mappings
+   */
+  async initializeWithFieldMappingsAndDefinitions(
+    fieldDefinitions: any[],
+    fieldMappings: any[]
+  ): Promise<void> {
+    try {
+      this.fieldDefinitions = fieldDefinitions;
       this.fieldMappings = fieldMappings;
       
-      // Create a field mapping dictionary for easy lookup
+      // Create field mapping dictionary for easy lookup
       this.fieldMappingDict = {};
       fieldMappings.forEach(mapping => {
         this.fieldMappingDict[mapping.name] = mapping;
       });
       
-      // Create a field type mapping for semantic field access
-      this.fieldsByType = this.buildFieldTypeMap(fieldMappings);
+      // Build field type map using definitions as fallbacks
+      this.fieldsByType = this.buildFieldTypeMapWithDefinitions(fieldMappings, fieldDefinitions);
       
       console.log('Bill extractor initialized with user field mappings:', 
-        fieldMappings.map(m => m.name).join(', '));
+        fieldMappings.map(m => `${m.name} (${m.field_type})`).join(', '));
       
       console.log('Field types available:', Object.keys(this.fieldsByType).join(', '));
+      
+      // Log each field type and its mapped fields for debugging
+      Object.entries(this.fieldsByType).forEach(([type, fields]) => {
+        if (fields.length > 0) {
+          console.log(`Field type '${type}' maps to:`, fields.join(', '));
+        }
+      });
       
       // Initialize extractors with field mappings
       await this.initializeExtractorsWithFieldMappings(fieldMappings);
       
       this.isInitializedForUser = true;
     } catch (error) {
-      console.error('Error initializing bill extractor with field mappings:', error);
+      console.error('Error initializing with field definitions and mappings:', error);
     }
   }
 
   /**
-   * Build a mapping of field types to field names
-   * This enables semantic access to fields regardless of their actual names
+   * Build field type map using field definitions as fallbacks
    */
-  private buildFieldTypeMap(fieldMappings: any[]): Record<string, string[]> {
-    const typeMap: Record<string, string[]> = {
-      vendor: [],
-      amount: [],
-      date: [],
-      dueDate: [],
-      invoiceNumber: [],
-      accountNumber: [],
-      category: []
-    };
+  private buildFieldTypeMapWithDefinitions(
+    fieldMappings: any[],
+    fieldDefinitions: any[]
+  ): Record<string, string[]> {
+    // Create the type map
+    const typeMap: Record<string, string[]> = {};
     
-    // Map fields by their explicit field_type if available
+    // First, organize field definitions by type for fallbacks
+    const definitionsByType: Record<string, string[]> = {};
+    fieldDefinitions.forEach(def => {
+      const type = def.field_type;
+      if (!definitionsByType[type]) {
+        definitionsByType[type] = [];
+      }
+      definitionsByType[type].push(def.name);
+    });
+    
+    // Initialize type map with empty arrays for each type
+    Object.keys(definitionsByType).forEach(type => {
+      typeMap[type] = [];
+    });
+    
+    // Map user fields by their type
     fieldMappings.forEach(mapping => {
       const name = mapping.name;
       const type = mapping.field_type || this.inferFieldType(name);
@@ -132,22 +183,29 @@ export class BillExtractor {
           typeMap[type] = [];
         }
         typeMap[type].push(name);
-        console.log(`Mapped field ${name} to type ${type}`);
+        console.log(`Mapped user field ${name} to type ${type}`);
       }
     });
     
-    // Add standard field names as fallbacks
-    if (typeMap.vendor.length === 0) typeMap.vendor.push('vendor');
-    if (typeMap.amount.length === 0) typeMap.amount.push('amount');
-    if (typeMap.date.length === 0) typeMap.date.push('date');
-    if (typeMap.dueDate.length === 0) typeMap.dueDate.push('dueDate');
-    if (typeMap.invoiceNumber.length === 0) typeMap.invoiceNumber.push('invoiceNumber');
-    if (typeMap.accountNumber.length === 0) typeMap.accountNumber.push('accountNumber');
-    if (typeMap.category.length === 0) typeMap.category.push('category');
+    // For types without user mappings, add standard fields from definitions as fallbacks
+    Object.keys(definitionsByType).forEach(type => {
+      if (typeMap[type].length === 0 && definitionsByType[type].length > 0) {
+        // Add system fields (is_system = true) first
+        const systemFields = fieldDefinitions
+          .filter(def => def.field_type === type && def.is_system === true && def.default_enabled === true)
+          .sort((a, b) => a.extraction_priority - b.extraction_priority)
+          .map(def => def.name);
+        
+        if (systemFields.length > 0) {
+          typeMap[type].push(...systemFields);
+          console.log(`Added system field fallbacks for type ${type}:`, systemFields.join(', '));
+        }
+      }
+    });
     
     return typeMap;
   }
-  
+
   /**
    * Infer field type from field name if not explicitly specified
    */
@@ -168,6 +226,10 @@ export class BillExtractor {
       return 'accountNumber';
     } else if (lowerName.includes('category') || lowerName.includes('type')) {
       return 'category';
+    } else if (lowerName.includes('currency') || lowerName.includes('denomination') || lowerName.includes('money')) {
+      return 'currency';
+    } else if (lowerName.includes('text') || lowerName.includes('description') || lowerName.includes('note')) {
+      return 'text';
     }
     
     return null;
@@ -178,6 +240,7 @@ export class BillExtractor {
    * Returns all user-defined field names for a given type, falling back to standard names
    */
   getFieldsByType(type: string): string[] {
+    // Return an empty array if the type doesn't exist in our mapping
     return this.fieldsByType[type] || [];
   }
 
@@ -259,11 +322,32 @@ export class BillExtractor {
     options: { 
       language?: 'en' | 'hu';
       isTrustedSource?: boolean;
+      userId?: string;
     } = {}
   ): Promise<BillExtractionResult> {
     try {
       if (!this.initialized) {
         this.initializeStrategies();
+      }
+      
+      // If we have a userId but aren't initialized for the user
+      if (options.userId && !this.isInitializedForUser) {
+        const initialized = await this.initializeWithUserContext(options.userId);
+        
+        if (!initialized) {
+          // Show status message if field data couldn't be loaded
+          console.error('Could not initialize field data. Database unavailable and no cached data found.');
+          
+          return {
+            success: false,
+            bills: [],
+            error: 'Bill extraction service unavailable. Please try again later.',
+            debug: {
+              reason: 'Field data initialization failed',
+              error: 'Database connection failed and no cached data available'
+            }
+          };
+        }
       }
       
       // Extract message details
@@ -443,19 +527,23 @@ export class BillExtractor {
       if (options.userId) {
         console.log(`PDF extraction with userId: ${options.userId}`);
         
-        // If we have a userId but field mappings aren't initialized, try to fetch them
-        if (options.userId && this.fieldMappings.length === 0 && !this.isInitializedForUser) {
-          try {
-            // Try to get field mappings if available
-            const { getUserFieldMappings } = await import('../userFieldMappingService');
-            const mappings = await getUserFieldMappings(options.userId);
+        // If we have a userId but aren't initialized for the user
+        if (options.userId && !this.isInitializedForUser) {
+          const initialized = await this.initializeWithUserContext(options.userId);
+          
+          if (!initialized) {
+            // Show status message if field data couldn't be loaded
+            console.error('Could not initialize field data. Database unavailable and no cached data found.');
             
-            if (mappings && mappings.length > 0) {
-              await this.initializeWithFieldMappings(mappings);
-              console.log(`Initialized field mappings for PDF extraction: ${mappings.length} mappings`);
-            }
-          } catch (error) {
-            console.error('Error getting field mappings for PDF extraction:', error);
+            return {
+              success: false,
+              bills: [],
+              error: 'Bill extraction service unavailable. Please try again later.',
+              debug: {
+                reason: 'Field data initialization failed',
+                error: 'Database connection failed and no cached data available'
+              }
+            };
           }
         }
       } else {
@@ -867,45 +955,245 @@ export class BillExtractor {
       };
     }
   }
-}
 
-/**
- * Preprocess PDF data based on language
- */
-function preprocessPdfData(base64Pdf: string, language: string): string {
-  console.log(`Preprocessing PDF data for language: ${language}`);
-  
-  // For Hungarian language, apply special preprocessing
-  if (language.toLowerCase() === 'hu') {
-    console.log('Applying Hungarian-specific PDF preprocessing');
-    // Currently just pass through, but we could add specific preprocessing here
+  /**
+   * Initialize with user field mappings
+   * 
+   * @param fieldMappings Array of field mappings from the database
+   */
+  async initializeWithFieldMappings(fieldMappings: any[]): Promise<void> {
+    try {
+      this.fieldMappings = fieldMappings;
+      
+      // Create a field mapping dictionary for easy lookup
+      this.fieldMappingDict = {};
+      fieldMappings.forEach(mapping => {
+        this.fieldMappingDict[mapping.name] = mapping;
+      });
+      
+      // Create a field type mapping for semantic field access
+      this.fieldsByType = this.buildFieldTypeMap(fieldMappings);
+      
+      console.log('Bill extractor initialized with user field mappings:', 
+        fieldMappings.map(m => m.name).join(', '));
+      
+      console.log('Field types available:', Object.keys(this.fieldsByType).join(', '));
+      
+      // Log each field type and its mapped fields for debugging
+      Object.entries(this.fieldsByType).forEach(([type, fields]) => {
+        if (fields.length > 0) {
+          console.log(`Field type '${type}' maps to:`, fields.join(', '));
+        }
+      });
+      
+      // Initialize extractors with field mappings
+      await this.initializeExtractorsWithFieldMappings(fieldMappings);
+      
+      this.isInitializedForUser = true;
+    } catch (error) {
+      console.error('Error initializing bill extractor with field mappings:', error);
+    }
   }
-  
-  return base64Pdf;
-}
 
-// Add a helper function to convert base64 to ArrayBuffer
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  try {
-    // For data URLs, extract the base64 part
-    if (base64.startsWith('data:')) {
-      const parts = base64.split(',');
-      if (parts.length > 1) {
-        base64 = parts[1];
+  /**
+   * Build a mapping of field types to field names
+   * This enables semantic access to fields regardless of their actual names
+   */
+  private buildFieldTypeMap(fieldMappings: any[]): Record<string, string[]> {
+    // Create a dynamic type map instead of hardcoding specific types
+    const typeMap: Record<string, string[]> = {};
+    
+    // Include all common field types
+    const commonTypes = [
+      'vendor', 'amount', 'date', 'dueDate', 'invoiceNumber', 
+      'accountNumber', 'category', 'text', 'currency'
+    ];
+    
+    // Initialize all common types with empty arrays
+    commonTypes.forEach(type => {
+      typeMap[type] = [];
+    });
+    
+    // Map fields by their explicit field_type if available
+    fieldMappings.forEach(mapping => {
+      const name = mapping.name;
+      const type = mapping.field_type || this.inferFieldType(name);
+      
+      if (type) {
+        // Create the type entry if it doesn't exist yet
+        if (!typeMap[type]) {
+          typeMap[type] = [];
+        }
+        typeMap[type].push(name);
+        console.log(`Mapped field ${name} to type ${type}`);
+      }
+    });
+    
+    // Add standard field names as fallbacks
+    if (typeMap.vendor?.length === 0) typeMap.vendor.push('vendor');
+    if (typeMap.amount?.length === 0) typeMap.amount.push('amount');
+    if (typeMap.date?.length === 0) typeMap.date.push('date');
+    if (typeMap.dueDate?.length === 0) typeMap.dueDate.push('dueDate');
+    if (typeMap.invoiceNumber?.length === 0) typeMap.invoiceNumber.push('invoiceNumber');
+    if (typeMap.accountNumber?.length === 0) typeMap.accountNumber.push('accountNumber');
+    if (typeMap.category?.length === 0) typeMap.category.push('category');
+    if (typeMap.text?.length === 0) typeMap.text.push('text');
+    if (typeMap.currency?.length === 0) typeMap.currency.push('currency');
+    
+    return typeMap;
+  }
+
+  /**
+   * Initialize with user field mappings
+   * 
+   * @param fieldMappings Array of field mappings from the database
+   */
+  async initializeWithUserContext(userId: string): Promise<boolean> {
+    try {
+      // Import services for getting field data
+      const { getUserFieldMappings } = await import('../userFieldMappingService');
+      const { getFieldDefinitions } = await import('../fieldDefinitionService');
+      
+      try {
+        // Attempt to load from database first
+        console.log('Attempting to load field data from database');
+        
+        // Get both field mappings and definitions
+        const [mappings, definitions] = await Promise.all([
+          getUserFieldMappings(userId),
+          getFieldDefinitions()
+        ]);
+        
+        if (definitions && definitions.length > 0) {
+          // Store successful database load in cache
+          this.cacheFieldDefinitions(definitions);
+          
+          if (mappings && mappings.length > 0) {
+            // Cache successful mapping load
+            this.cacheUserFieldMappings(userId, mappings);
+            
+            // Initialize with both definitions and mappings
+            await this.initializeWithFieldMappingsAndDefinitions(definitions, mappings);
+            console.log(`Initialized with ${mappings.length} user field mappings and ${definitions.length} field definitions`);
+            return true;
+          } else {
+            // Just use definitions if no user mappings
+            await this.initializeWithFieldDefinitions(definitions);
+            console.log(`No user mappings found, initialized with ${definitions.length} field definitions`);
+            return true;
+          }
+        } else {
+          throw new Error('No field definitions returned from database');
+        }
+      } catch (dbError) {
+        // Database access failed, try cached data
+        console.error('Database access failed:', dbError);
+        console.log('Attempting to use cached field data');
+        
+        const cachedData = await this.loadCachedFieldData(userId);
+        
+        if (cachedData.definitions && cachedData.definitions.length > 0) {
+          if (cachedData.mappings && cachedData.mappings.length > 0) {
+            // Use cached mappings and definitions
+            await this.initializeWithFieldMappingsAndDefinitions(
+              cachedData.definitions, 
+              cachedData.mappings
+            );
+            console.log(`Using cached data: ${cachedData.mappings.length} mappings and ${cachedData.definitions.length} definitions`);
+            return true;
+          } else {
+            // Just use cached definitions
+            await this.initializeWithFieldDefinitions(cachedData.definitions);
+            console.log(`Using cached definitions: ${cachedData.definitions.length} definitions`);
+            return true;
+          }
+        } else {
+          // No cached data available
+          console.error('No cached field data available');
+          return false;
+        }
+      }
+    } catch (error) {
+      console.error('Failed to initialize with user context:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Cache field definitions for offline use
+   */
+  private cacheFieldDefinitions(definitions: any[]): void {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage) {
+        chrome.storage.local.set({ 
+          'cached_field_definitions': definitions,
+          'field_definitions_cached_at': Date.now()
+        });
+        console.log(`Cached ${definitions.length} field definitions`);
+      } else {
+        // Fallback to localStorage if chrome.storage is not available
+        localStorage.setItem('cached_field_definitions', JSON.stringify(definitions));
+        localStorage.setItem('field_definitions_cached_at', Date.now().toString());
+        console.log(`Cached ${definitions.length} field definitions to localStorage`);
+      }
+    } catch (error) {
+      console.error('Failed to cache field definitions:', error);
+    }
+  }
+
+  /**
+   * Cache user field mappings for offline use
+   */
+  private cacheUserFieldMappings(userId: string, mappings: any[]): void {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage) {
+        chrome.storage.local.set({ 
+          [`user_field_mappings_${userId}`]: mappings,
+          [`user_mappings_cached_at_${userId}`]: Date.now()
+        });
+        console.log(`Cached ${mappings.length} field mappings for user ${userId}`);
+      } else {
+        // Fallback to localStorage if chrome.storage is not available
+        localStorage.setItem(`user_field_mappings_${userId}`, JSON.stringify(mappings));
+        localStorage.setItem(`user_mappings_cached_at_${userId}`, Date.now().toString());
+        console.log(`Cached ${mappings.length} field mappings for user ${userId} to localStorage`);
+      }
+    } catch (error) {
+      console.error('Failed to cache user field mappings:', error);
+    }
+  }
+
+  /**
+   * Load cached field data
+   */
+  private async loadCachedFieldData(userId: string): Promise<{
+    definitions: any[],
+    mappings: any[]
+  }> {
+    // Check if chrome.storage is available
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      return new Promise((resolve) => {
+        chrome.storage.local.get([
+          'cached_field_definitions',
+          `user_field_mappings_${userId}`
+        ], (result) => {
+          resolve({
+            definitions: result.cached_field_definitions || [],
+            mappings: result[`user_field_mappings_${userId}`] || []
+          });
+        });
+      });
+    } else {
+      // Fallback to localStorage if chrome.storage is not available
+      try {
+        const definitions = JSON.parse(localStorage.getItem('cached_field_definitions') || '[]');
+        const mappings = JSON.parse(localStorage.getItem(`user_field_mappings_${userId}`) || '[]');
+        
+        return { definitions, mappings };
+      } catch (error) {
+        console.error('Error loading cached data from localStorage:', error);
+        return { definitions: [], mappings: [] };
       }
     }
-    
-    // Standard base64 conversion
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes.buffer;
-  } catch (error) {
-    console.error('Error converting base64 to ArrayBuffer:', error);
-    throw error;
   }
 }
-
-// Deprecated function has been removed - please use the BillExtractor class instead 
