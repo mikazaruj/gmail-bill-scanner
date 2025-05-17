@@ -30,6 +30,8 @@ import {
  */
 export interface ExtractionResult extends CleanResult {
   billData?: BillData;
+  fieldMappings?: any[];  // Add field mappings to result
+  extractedFields?: Record<string, any>; // Add extracted fields to result
 }
 
 /**
@@ -61,6 +63,7 @@ export interface PdfExtractionOptions {
   extractBillData?: boolean;
   workerUrl?: string;
   forceOffscreenDocument?: boolean; // Add option to force using offscreen document
+  fieldMappings?: any[]; // Add field mappings for extraction
 }
 
 /**
@@ -134,7 +137,7 @@ export async function extractPdfText(
         const offscreenResult = await offscreenExtractPdfText(pdfData, offscreenOptions);
         
         // Convert to expected format
-        const result: ExtractionResult = {
+        let result: ExtractionResult = {
           success: offscreenResult.success,
           text: offscreenResult.text || '',
           pages: offscreenResult.pages || [],
@@ -145,6 +148,49 @@ export async function extractPdfText(
         
         console.log(`[PDF Service] Offscreen document extraction ${result.success ? 'successful' : 'failed'}: ${result.text?.length || 0} characters, ${result.pages?.length || 0} pages`);
         
+        // If Hungarian, try to extract fields using hungarianPatternMatcher
+        if (result.success && result.text && options.language === 'hu') {
+          try {
+            // Dynamically import the hungarianPatternMatcher to extract fields
+            const { extractFieldsFromText, isHungarianBill, fixHungarianEncoding } = await import('../extraction/utils/hungarianPatternMatcher');
+            
+            // Fix encoding issues first
+            const fixedText = fixHungarianEncoding(result.text);
+            
+            // Check if this is a Hungarian bill
+            const hungarianCheck = isHungarianBill(fixedText);
+            
+            if (hungarianCheck.isHungarianBill) {
+              console.log('[PDF Service] Detected Hungarian bill in PDF, extracting fields');
+              
+              // Extract fields
+              const extractedFields = extractFieldsFromText(fixedText, undefined, hungarianCheck.company);
+              
+              // Create an enhanced result with the extracted fields
+              const enhancedResult: ExtractionResult = {
+                ...result,
+                extractedFields,
+                billData: {
+                  amount: parseFloat(extractedFields.total_amount?.value || '0') || 0,
+                  currency: 'HUF',
+                  dueDate: extractedFields.due_date?.value,
+                  serviceProvider: extractedFields.issuer_name?.value || hungarianCheck.company,
+                  billType: hungarianCheck.billType,
+                  accountNumber: extractedFields.account_number?.value
+                }
+              };
+              
+              console.log('[PDF Service] Successfully extracted fields from Hungarian PDF', enhancedResult.billData);
+              
+              // Update reference
+              result = enhancedResult;
+            }
+          } catch (extractionError) {
+            console.error('[PDF Service] Error extracting fields from PDF:', extractionError);
+            // Continue without extraction rather than failing completely
+          }
+        }
+        
         return result;
       } catch (offscreenError) {
         console.error('[PDF Service] Error using offscreen document, falling back to clean extractor:', offscreenError);
@@ -153,11 +199,11 @@ export async function extractPdfText(
     }
     
     // Use the clean PDF extraction as fallback
-    const result = await cleanExtractPdfText(pdfData, {
+    let result = await cleanExtractPdfText(pdfData, {
       includePosition: options.includePosition !== false,
       timeout: options.timeout || 60000,
       language: options.language // Pass the language for better extraction
-    });
+    }) as unknown as ExtractionResult; // Cast to ExtractionResult
     
     // Apply Hungarian character encoding fixes if language is Hungarian
     if (result.success && result.text) {
@@ -212,14 +258,55 @@ export async function extractPdfText(
         console.error('[PDF Service] Error applying Hungarian encoding fix:', encodingFixError);
         // Continue with original text - don't fail the extraction due to encoding fixes
       }
+      
+      // After fixing encoding, try to extract fields if this is a Hungarian document
+      if (isHungarian) {
+        try {
+          // Dynamically import the hungarianPatternMatcher to extract fields
+          const { extractFieldsFromText, isHungarianBill } = await import('../extraction/utils/hungarianPatternMatcher');
+          
+          // Check if this is a Hungarian bill
+          const hungarianCheck = isHungarianBill(result.text);
+          
+          if (hungarianCheck.isHungarianBill) {
+            console.log('[PDF Service] Detected Hungarian bill in PDF, extracting fields');
+            
+            // Extract fields
+            const extractedFields = extractFieldsFromText(result.text, undefined, hungarianCheck.company);
+            
+            // Create an enhanced result with the extracted fields
+            const enhancedResult: ExtractionResult = {
+              ...result,
+              extractedFields,
+              billData: {
+                amount: parseFloat(extractedFields.total_amount?.value || '0') || 0,
+                currency: 'HUF',
+                dueDate: extractedFields.due_date?.value,
+                serviceProvider: extractedFields.issuer_name?.value || hungarianCheck.company,
+                billType: hungarianCheck.billType,
+                accountNumber: extractedFields.account_number?.value
+              }
+            };
+            
+            console.log('[PDF Service] Successfully extracted fields from Hungarian PDF', enhancedResult.billData);
+            
+            // Update reference
+            result = enhancedResult;
+          }
+        } catch (extractionError) {
+          console.error('[PDF Service] Error extracting fields from PDF:', extractionError);
+          // Continue without extraction rather than failing completely
+        }
+      }
     }
     
     // Process and extract bill data if needed
     if (options.extractBillData) {
+      // Already have an ExtractionResult with proper typing
       return {
         ...result,
-        // For now, we don't have bill data extraction
-        billData: undefined
+        // Return the billData from our ExtractionResult type
+        billData: result.billData 
       };
     }
     

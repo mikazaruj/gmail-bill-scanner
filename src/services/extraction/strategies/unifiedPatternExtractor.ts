@@ -220,6 +220,13 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         // Extract fields using Hungarian pattern matcher
         const extractedFields = extractFieldsFromText(fixedPdfData, undefined, hungarianCheck.company);
         
+        // Log extracted fields for debugging
+        console.log('=== EXTRACTED FIELDS FROM PDF ===');
+        Object.entries(extractedFields).forEach(([field, value]) => {
+          console.log(`${field}: ${JSON.stringify(value)}`);
+        });
+        console.log('=== END EXTRACTED FIELDS ===');
+        
         // Add company info if detected
         if (hungarianCheck.company && !extractedFields.issuer_name) {
           extractedFields.issuer_name = {
@@ -275,6 +282,31 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
         bill.extractionMethod = 'unified-pattern-hungarian';
         bill.language = 'hu';
         
+        // If we have user field mappings, apply them
+        if (this.fieldMappings.length > 0) {
+          console.log(`Applying ${this.fieldMappings.length} user field mappings to PDF extraction`);
+          try {
+            // Apply user field mappings directly
+            const mappedFields = mapToUserFields(extractedFields, this.fieldMappings);
+            
+            // Log mapping results
+            console.log('=== USER FIELD MAPPING RESULTS FOR PDF ===');
+            Object.entries(mappedFields).forEach(([field, value]) => {
+              console.log(`${field}: ${JSON.stringify(value)}`);
+            });
+            console.log('=== END USER FIELD MAPPING ===');
+            
+            // Add mapped fields to the bill
+            Object.entries(mappedFields).forEach(([field, value]) => {
+              if (value !== undefined && value !== null) {
+                bill[field] = value;
+              }
+            });
+          } catch (mappingError) {
+            console.error('Error applying user field mappings to PDF data:', mappingError);
+          }
+        }
+        
         // If we have a userId, create a dynamic bill
         if (userId) {
           try {
@@ -294,6 +326,15 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
             
             // Ensure bill has required fields
             const formattedBill = ensureBillFormat(dynamicBill);
+            
+            // Log the final bill
+            console.log('=== FINAL PDF EXTRACTION BILL ===');
+            Object.entries(formattedBill).forEach(([field, value]) => {
+              if (field !== 'source' && field !== 'extractionMethod') {
+                console.log(`${field}: ${JSON.stringify(value)}`);
+              }
+            });
+            console.log('=== END FINAL PDF EXTRACTION BILL ===');
         
             return {
               success: true,
@@ -301,7 +342,7 @@ export class UnifiedPatternExtractor implements ExtractionStrategy {
               confidence: confidence
             };
           } catch (error) {
-            console.error('Error creating dynamic bill:', error);
+            console.error('Error creating dynamic bill from PDF:', error);
             // Fall back to using the regular bill we created
           }
         }

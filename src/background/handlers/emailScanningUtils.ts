@@ -309,7 +309,32 @@ export async function processPdfAttachment(
     if (pdfResult.success && pdfResult.text && pdfResult.text.length > 100) {
       console.log(`Successfully extracted ${pdfResult.text.length} characters from PDF using offscreen document approach`);
       
-      // Create a bill object
+      // Use the bill extractor to process the PDF text through the same extraction pipeline as emails
+      try {
+        // Process the extracted text using the billExtractor's extractFromPdf method
+        const extractionResult = await billExtractor.extractFromPdf(
+          pdfResult.text, // Pass the extracted text as the PDF data
+          messageId,
+          attachmentData.id,
+          attachmentData.fileName,
+          {
+            language: settings.inputLanguage as 'en' | 'hu' | undefined,
+            userId: userId
+          }
+        );
+        
+        if (extractionResult.success && extractionResult.bills.length > 0) {
+          // Convert each Bill to BillData
+          const pdfBills = extractionResult.bills.map(bill => fieldMappingService.transformBillToBillData(bill));
+          
+          console.log(`Successfully extracted bill data from PDF attachment`);
+          return pdfBills;
+        }
+      } catch (extractorError) {
+        console.error('Error using bill extractor on PDF text:', extractorError);
+      }
+      
+      // Fallback - create a basic bill with minimal data if extractor failed
       const bill: Bill = {
         id: `${messageId}-${attachmentData.id}`,
         vendor: (pdfResult.billData as any)?.vendor || 'Unknown',
