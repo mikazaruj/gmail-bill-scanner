@@ -1,20 +1,16 @@
 /**
- * PDF Service Compatibility Layer
+ * Enhanced PDF Service
  * 
- * This file provides compatibility with older PDF extraction code
- * by redirecting all calls to the new clean implementation.
+ * This module provides PDF text extraction capabilities via the offscreen document API.
+ * It handles language detection, proper encoding, and early stopping for efficiency.
  */
 
-// Import from the new clean implementation
-import { 
-  extractPdfText as extractText, 
-  extractPdfText as extractTextOnly, 
-  extractPdfText as extractTextWithPosition,
-  PdfExtractionResult 
-} from './cleanPdfExtractor';
+// Import types from clean PDF extractor for compatibility
+import { PdfExtractionResult } from './cleanPdfExtractor';
+import { getSupabaseClient } from '../supabase/client';
 
 /**
- * Legacy extraction result type for compatibility
+ * Extraction result type
  */
 export interface ExtractionResult {
   success: boolean;
@@ -31,15 +27,20 @@ export interface ExtractionResult {
     }>;
   }>;
   error?: string;
+  earlyStop?: boolean;
+  pagesProcessed?: number;
 }
 
 /**
- * Legacy options type for compatibility
+ * Extraction options
  */
 export interface ExtractionOptions {
   includePosition?: boolean;
   language?: string;
   timeout?: number;
+  fieldMappings?: Record<string, string | RegExp>;
+  shouldEarlyStop?: boolean;
+  maxPages?: number;
 }
 
 /**
@@ -62,71 +63,208 @@ export interface BillData {
 }
 
 /**
- * Extract text from PDF
- * Compatibility function that redirects to the new clean implementation
+ * Type definition for Chrome's offscreen document context
+ */
+interface OffscreenDocumentContext {
+  contextId: string;
+  documentUrl: string;
+  reasons: string[];
+  type: string;
+}
+
+/**
+ * Extracts text from a PDF using the offscreen document API
+ */
+export async function extractTextFromPdfWithPosition(
+  pdfData: ArrayBuffer | Uint8Array,
+  options: ExtractionOptions = {}
+): Promise<ExtractionResult> {
+  try {
+    // Ensure we have the correct data type
+    const pdfBuffer = pdfData instanceof ArrayBuffer 
+      ? new Uint8Array(pdfData) 
+      : pdfData;
+    
+    // Check for offscreen API availability
+    const hasOffscreenApi = typeof chrome !== 'undefined' && 
+                           typeof chrome.offscreen !== 'undefined';
+    
+    console.log('[PDF Service] Checking offscreen API availability:', {
+      hasOffscreenApi,
+      chromeApiKeys: typeof chrome !== 'undefined' ? Object.keys(chrome).join(', ') : 'chrome undefined'
+    });
+    
+    if (!hasOffscreenApi) {
+      throw new Error('Offscreen API not available, PDF extraction requires Chrome 109+');
+    }
+    
+    // Create or get existing offscreen document
+    await ensureOffscreenDocument();
+    
+    // Generate a unique message ID to track this specific request
+    const messageId = `pdf-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+    
+    // Get user field mappings if we should do early stopping
+    let fieldMappings: Record<string, string> = {};
+    
+    if (options.shouldEarlyStop && (!options.fieldMappings || Object.keys(options.fieldMappings).length === 0)) {
+      try {
+        // Try to get default patterns if no mappings provided
+        console.log('[PDF Service] Getting default field patterns for early stopping');
+        const { getDefaultPatterns } = await import('../extraction/patterns/patternLoader');
+        const defaultPatterns = getDefaultPatterns(options.language as 'en' | 'hu');
+        
+        // Convert complex pattern objects to simple regex strings for offscreen use
+        Object.entries(defaultPatterns).forEach(([field, pattern]) => {
+          if (typeof pattern === 'object' && pattern !== null && 'regex' in pattern) {
+            fieldMappings[field] = (pattern as { regex: string }).regex;
+          }
+        });
+      } catch (error) {
+        console.warn('[PDF Service] Could not load default patterns:', error);
+      }
+    } else if (options.fieldMappings) {
+      // Convert any RegExp objects to strings
+      Object.entries(options.fieldMappings).forEach(([field, pattern]) => {
+        if (pattern instanceof RegExp) {
+          fieldMappings[field] = pattern.source;
+        } else if (typeof pattern === 'string') {
+          fieldMappings[field] = pattern;
+        }
+      });
+    }
+    
+    // Set up a promise to wait for response
+    const processingPromise = new Promise<ExtractionResult>((resolve, reject) => {
+      // Set up a listener for the result
+      const messageListener = (message: any) => {
+        if (message.messageId !== messageId) return;
+        
+        if (message.type === 'PDF_PROCESSED') {
+          chrome.runtime.onMessage.removeListener(messageListener);
+          resolve(message.result);
+        } else if (message.type === 'PDF_PROCESSING_ERROR') {
+          chrome.runtime.onMessage.removeListener(messageListener);
+          reject(new Error(message.error));
+        }
+      };
+      
+      chrome.runtime.onMessage.addListener(messageListener);
+      
+      // Set a timeout for processing (60 seconds)
+      setTimeout(() => {
+        chrome.runtime.onMessage.removeListener(messageListener);
+        reject(new Error('PDF processing timeout in offscreen document'));
+      }, 60000);
+      
+      // Send PDF data to offscreen document
+      chrome.runtime.sendMessage({
+        type: 'PROCESS_PDF',
+        pdfData: Array.from(pdfBuffer), // Convert to array for transfer
+        options: {
+          language: options.language || 'auto',
+          includePosition: options.includePosition !== false,
+          fieldMappings: fieldMappings,
+          maxPages: options.maxPages || 10,
+          earlyStopThreshold: 0.7
+        },
+        messageId
+      }).catch(error => {
+        chrome.runtime.onMessage.removeListener(messageListener);
+        reject(new Error(`Failed to send PDF data: ${error.message || 'Unknown error'}`));
+      });
+    });
+    
+    // Wait for the result
+    try {
+      console.log('[PDF Service] Waiting for offscreen document to process PDF...');
+      return await processingPromise;
+    } catch (error) {
+      console.error('[PDF Service] Error processing PDF in offscreen document:', error);
+      throw error;
+    }
+  } catch (error) {
+    console.error('[PDF Service] PDF extraction failed:', error);
+    return {
+      success: false,
+      text: '',
+      error: error instanceof Error ? error.message : 'Unknown error in PDF extraction',
+      pages: []
+    };
+  }
+}
+
+/**
+ * Ensures the offscreen document is created
+ */
+async function ensureOffscreenDocument(): Promise<void> {
+  // Check if offscreen document exists
+  let documentExists = false;
+  
+  try {
+    // Get existing contexts to see if document is already created
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT']
+    });
+    
+    if (contexts && contexts.length > 0) {
+      console.log('[PDF Service] Offscreen document already exists');
+      documentExists = true;
+    }
+  } catch (error) {
+    console.warn('[PDF Service] Error checking for existing offscreen document:', error);
+  }
+  
+  // Create the offscreen document if it doesn't exist
+  if (!documentExists) {
+    try {
+      console.log('[PDF Service] Creating offscreen document');
+      await chrome.offscreen.createDocument({
+        url: chrome.runtime.getURL('offscreen-pdf-processor.html'),
+        reasons: ['DOM_PARSER'],
+        justification: 'Process PDF files in a full DOM environment'
+      });
+      
+      console.log('[PDF Service] Offscreen document created successfully');
+      
+      // Wait a moment for the document to initialize
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (error) {
+      console.error('[PDF Service] Failed to create offscreen document:', error);
+      throw error;
+    }
+  }
+}
+
+/**
+ * Extract text from PDF (simple wrapper)
  */
 export async function extractTextFromPdf(pdfData: ArrayBuffer): Promise<string> {
-  const result = await extractText(pdfData);
+  const result = await extractTextFromPdfWithPosition(pdfData);
   return result.success ? result.text : '';
 }
 
 /**
- * Extract text with position information
- * Compatibility function that redirects to the new clean implementation
+ * Process PDF from Gmail API (compatibility wrapper)
  */
-export async function extractTextFromPdfWithPosition(pdfData: ArrayBuffer): Promise<ExtractionResult> {
-  return await extractTextWithPosition(pdfData, { includePosition: true });
-}
-
-/**
- * Extract text with details
- * Compatibility function that redirects to the new clean implementation
- */
-export async function extractTextFromPdfWithDetails(pdfData: ArrayBuffer, language: string = 'en'): Promise<{ text: string; billData?: BillData }> {
-  const result = await extractText(pdfData);
-  return {
-    text: result.success ? result.text : '',
-    billData: undefined // Bill data extraction is not implemented in the clean version
-  };
-}
-
-/**
- * Extract text from PDF buffer
- * Compatibility function that redirects to the new clean implementation
- */
-export async function extractTextFromPdfBuffer(pdfData: ArrayBuffer | Uint8Array): Promise<string> {
-  const result = await extractTextOnly(pdfData);
-  return result.success ? result.text : '';
-}
-
-/**
- * Process PDF from Gmail API
- * Compatibility function that redirects to the new clean implementation
- */
-export async function processPdfFromGmailApi(pdfData: ArrayBuffer, language: string = 'en'): Promise<{ text: string; pages?: any[]; billData?: BillData }> {
-  const result = await extractTextWithPosition(pdfData, { includePosition: true });
+export async function processPdfFromGmailApi(
+  pdfData: ArrayBuffer, 
+  language: string = 'en'
+): Promise<{ text: string; pages?: any[]; billData?: BillData }> {
+  const result = await extractTextFromPdfWithPosition(pdfData, { 
+    includePosition: true,
+    language: language
+  });
+  
   return {
     text: result.text,
     pages: result.pages,
-    billData: undefined // Bill data extraction is not implemented in the clean version
-  };
-}
-
-/**
- * Extract text with bill data
- * Compatibility function that redirects to the new clean implementation
- */
-export async function extractTextWithBillData(pdfData: ArrayBuffer | Uint8Array, language: string = 'en'): Promise<{ text: string; billData?: BillData }> {
-  const result = await extractText(pdfData);
-  return {
-    text: result.text,
-    billData: undefined // Bill data extraction is not implemented in the clean version
+    billData: undefined // Bill data extraction to be handled separately
   };
 }
 
 /**
  * Diagnose PDF environment
- * Compatibility function that returns a hardcoded positive value
  */
 export async function diagnosePdfEnvironment(): Promise<{
   inServiceWorker: boolean;
@@ -134,18 +272,33 @@ export async function diagnosePdfEnvironment(): Promise<{
   pdfJsSupported: boolean;
   details: string;
 }> {
+  const hasOffscreenApi = typeof chrome !== 'undefined' && 
+                          typeof chrome.offscreen !== 'undefined';
+  
   return {
     inServiceWorker: typeof window === 'undefined',
-    workerSupported: false, // Force worker support off to use clean implementation
+    workerSupported: hasOffscreenApi,
     pdfJsSupported: true,
-    details: 'Using clean PDF extraction implementation'
+    details: hasOffscreenApi ? 
+      'Using offscreen document for PDF extraction' : 
+      'Offscreen API not available, PDF extraction may be limited'
   };
 }
 
 /**
  * Cleanup PDF resources
- * Compatibility function that does nothing
  */
 export async function cleanupPdfResources(): Promise<void> {
-  console.log('[PDF Service] PDF resources cleaned up (compatibility layer)');
+  try {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT']
+    });
+    
+    if (contexts && contexts.length > 0) {
+      console.log('[PDF Service] Cleaning up offscreen document');
+      await chrome.offscreen.closeDocument();
+    }
+  } catch (error) {
+    console.warn('[PDF Service] Error cleaning up offscreen document:', error);
+  }
 } 

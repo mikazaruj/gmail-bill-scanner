@@ -9,25 +9,21 @@
  * Any new PDF processing functionality should be added here rather than in index.ts.
  * 
  * Key features:
- * - Uses offscreen document when available (preferred method)
- * - Enhanced PDF extraction with positional data
- * - Optimized for Hungarian utility bills
- * - Extracts structured bill data based on layout
- * - Supports field extraction with user mappings from Supabase
- * - Supports efficient chunked PDF transfer to avoid message size limits
+ * - Uses offscreen document for PDF processing (Chrome 109+)
+ * - Language detection for proper encoding (Hungarian support)
+ * - Page-by-page extraction with early stopping
+ * - Field extraction with user mappings from Supabase
+ * - Optimized for efficient processing
  */
 
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.entry';
 import { extractBillDataWithUserMappings } from '../services/pdf/billFieldExtractor';
 import {
   extractTextFromPdfWithPosition,
-  diagnosePdfEnvironment
+  diagnosePdfEnvironment,
+  cleanupPdfResources
 } from '../services/pdf/pdfService';
 import { getSupabaseClient } from '../services/supabase/client';
-
-// Configure worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+import { detectLanguage } from '../services/extraction/utils/languageDetection';
 
 // Map to track chunked PDF transfers
 interface PdfTransfer {
@@ -125,7 +121,7 @@ export function initializePdfProcessingHandlers() {
               offset += chunk.byteLength;
             }
             
-            // Process the PDF
+            // Process the PDF using the enhanced offscreen approach
             const result = await processPdfData(
               combinedBuffer.buffer,
               transfer.metadata.language,
@@ -175,9 +171,11 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
   try {
     const { 
       base64String, 
-      language = 'en', 
+      language = 'auto', 
       userId, 
-      extractFields = true
+      extractFields = true,
+      maxPages = 10,
+      shouldEarlyStop = true
     } = message;
     
     if (!base64String) {
@@ -186,7 +184,7 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
       return;
     }
     
-    // Check for offscreen API availability more carefully
+    // Check for offscreen API availability
     const hasOffscreenApi = typeof chrome !== 'undefined' && 
                            typeof chrome.offscreen !== 'undefined';
     
@@ -195,167 +193,108 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
       chromeApiKeys: typeof chrome !== 'undefined' ? Object.keys(chrome).join(', ') : 'chrome undefined'
     });
     
-    // Try using the offscreen document first if available
-    if (hasOffscreenApi) {
-      try {
-        console.log('Trying to use offscreen document for PDF processing');
-        
-        // Check if offscreen document exists
-        let shouldCreateDocument = true;
-        
-        try {
-          // Get existing contexts to see if document is already created
-          // @ts-ignore - Newer Chrome API not fully typed yet
-          const contexts = await chrome.runtime.getContexts({
-            // @ts-ignore - Context types not properly typed yet
-            contextTypes: ['OFFSCREEN_DOCUMENT']
-          });
-          
-          // @ts-ignore - Type issues due to incomplete Chrome API types
-          if (contexts && contexts.length > 0) {
-            console.log('Offscreen document already exists, no need to create it');
-            shouldCreateDocument = false;
-          }
-        } catch (contextError) {
-          console.warn('Error checking for existing offscreen document, will create new:', contextError);
-        }
-        
-        // Create the offscreen document if needed
-        if (shouldCreateDocument) {
-          try {
-            console.log('Creating offscreen document for PDF processing');
-            // @ts-ignore - Chrome API types issue
-            await chrome.offscreen.createDocument({
-              url: chrome.runtime.getURL('offscreen-pdf-processor.html'),
-              // @ts-ignore - Chrome API types issue 
-              reasons: ['DOM_PARSER'],
-              justification: 'Process PDF files in a full DOM environment'
-            });
-            
-            console.log('Offscreen document created successfully');
-            
-            // Wait a moment for the document to initialize
-            await new Promise(resolve => setTimeout(resolve, 500));
-          } catch (createError) {
-            console.error('Failed to create offscreen document:', createError);
-            throw createError;
-          }
-        }
-        
-        // Convert base64 to ArrayBuffer for consistent processing
-        let pdfData: ArrayBuffer;
-        try {
-          console.log('Converting base64 to ArrayBuffer for consistent processing');
-          pdfData = await base64ToArrayBuffer(base64String);
-        } catch (conversionError) {
-          console.error('Error converting PDF data:', conversionError);
-          throw new Error('Failed to convert PDF data');
-        }
-        
-        // Generate a unique message ID to track this specific request
-        const messageId = `pdf-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
-        
-        // Set up a promise to wait for response
-        const processingPromise = new Promise<any>((resolve, reject) => {
-          // Set up a listener for the result
-          const messageListener = (message: any) => {
-            if (message.messageId !== messageId) return;
-            
-            if (message.type === 'PDF_PROCESSED') {
-              chrome.runtime.onMessage.removeListener(messageListener);
-              resolve(message.result);
-            } else if (message.type === 'PDF_PROCESSING_ERROR') {
-              chrome.runtime.onMessage.removeListener(messageListener);
-              reject(new Error(message.error));
-            }
-          };
-          
-          chrome.runtime.onMessage.addListener(messageListener);
-          
-          // Set a timeout for processing (60 seconds)
-          setTimeout(() => {
-            chrome.runtime.onMessage.removeListener(messageListener);
-            reject(new Error('PDF processing timeout in offscreen document'));
-          }, 60000);
-          
-          // Send PDF data to offscreen document
-          chrome.runtime.sendMessage({
-            type: 'PROCESS_PDF',
-            pdfData: Array.from(new Uint8Array(pdfData)), // Convert to array for transfer
-            options: {
-              language: language || 'en',
-              includePosition: true
-            },
-            messageId
-          }).catch(error => {
-            chrome.runtime.onMessage.removeListener(messageListener);
-            reject(new Error(`Failed to send PDF data: ${error.message || 'Unknown error'}`));
-          });
-        });
-        
-        // Wait for the result
-        try {
-          console.log('Waiting for offscreen document to process PDF...');
-          const response = await processingPromise;
-          
-          if (response && response.text) {
-            console.log('Offscreen document successfully extracted PDF text');
-            
-            // Extract fields if requested for authenticated users
-            const result = await processExtractedText(
-              response.text,
-              language,
-              userId,
-              extractFields
-            );
-            
-            // Send back the extracted text and any extracted fields
-            sendResponse({
-              success: true,
-              text: response.text,
-              billData: result.billData,
-              positionalData: response.pages
-            });
-            return;
-          } else {
-            console.warn('Offscreen document failed to extract PDF text:', response?.error);
-            // Fall through to direct extraction
-          }
-        } catch (error) {
-          console.error('Error processing PDF in offscreen document:', error);
-          sendResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to extract text from PDF'
-          });
-        }
-      } catch (error) {
-        console.error('Error using offscreen document for PDF extraction:', error);
-        // Fall through to direct extraction
-      }
+    if (!hasOffscreenApi) {
+      console.warn('Offscreen API not available, cannot use optimized PDF processing');
+      sendResponse({ 
+        success: false, 
+        error: 'Offscreen API not available, PDF extraction requires Chrome 109+' 
+      });
+      return;
     }
     
-    // If offscreen processing failed or isn't available, process directly
+    // Convert base64 to ArrayBuffer for consistent processing
+    let pdfData: ArrayBuffer;
     try {
-      // Convert base64 to ArrayBuffer if needed
-      let pdfData: string | ArrayBuffer = base64String;
+      console.log('Converting base64 to ArrayBuffer for consistent processing');
+      pdfData = await base64ToArrayBuffer(base64String);
+    } catch (conversionError) {
+      console.error('Error converting PDF data:', conversionError);
+      sendResponse({ 
+        success: false, 
+        error: 'Failed to convert PDF data'
+      });
+      return;
+    }
+    
+    try {
+      // Get user field mappings if extracting fields and we have a user ID
+      let fieldMappings: Record<string, string | RegExp> = {};
       
-      if (base64String.startsWith('data:')) {
-        // Convert base64 to ArrayBuffer
-        console.log('Converting base64 to ArrayBuffer for direct processing');
-        pdfData = await base64ToArrayBuffer(base64String);
+      if (extractFields && userId) {
+        const supabase = await getSupabaseClient();
+        
+        // Query field mappings
+        const { data: userMappings, error: mappingsError } = await supabase
+          .from('field_mapping_view')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('is_enabled', true)
+          .order('display_order');
+        
+        if (mappingsError) {
+          console.error('Error fetching field mappings:', mappingsError);
+        } else if (userMappings && userMappings.length > 0) {
+          console.log(`Found ${userMappings.length} field mappings for extraction`);
+          
+          // Convert mappings to the format our extractor expects
+          userMappings.forEach(mapping => {
+            if (mapping.pattern) {
+              fieldMappings[mapping.field_name] = mapping.pattern;
+            }
+          });
+        }
       }
       
-      // Process the PDF data
-      const result = await processPdfData(pdfData, language, userId, extractFields);
+      // Process PDF with the enhanced offscreen document approach
+      const extractionResult = await extractTextFromPdfWithPosition(pdfData, {
+        language,
+        includePosition: true,
+        shouldEarlyStop,
+        maxPages,
+        fieldMappings
+      });
+      
+      if (!extractionResult.success) {
+        console.error('PDF extraction failed:', extractionResult.error);
+        sendResponse({ 
+          success: false, 
+          error: extractionResult.error || 'Failed to extract text from PDF'
+        });
+        return;
+      }
+      
+      console.log(`PDF processed successfully: ${extractionResult.pagesProcessed} pages, early stop: ${extractionResult.earlyStop}`);
+      
+      // Extract bill data if requested and we have text
+      let billData: Record<string, any> = {};
+      if (extractFields && extractionResult.text) {
+        billData = await processExtractedText(
+          extractionResult.text,
+          language,
+          userId,
+          fieldMappings
+        );
+      }
       
       // Send back the result
-      sendResponse(result);
-    } catch (error: unknown) {
-      console.error('Error processing PDF directly:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Failed to extract text from PDF';
+      sendResponse({
+        success: true,
+        text: extractionResult.text,
+        pages: extractionResult.pages,
+        billData,
+        pagesProcessed: extractionResult.pagesProcessed,
+        earlyStop: extractionResult.earlyStop
+      });
+    } catch (error) {
+      console.error('Error processing PDF:', error);
       sendResponse({
         success: false,
-        error: errorMessage
+        error: error instanceof Error ? error.message : 'Failed to process PDF'
+      });
+      
+      // Clean up resources on error
+      await cleanupPdfResources().catch(cleanupError => {
+        console.warn('Error cleaning up PDF resources:', cleanupError);
       });
     }
   } catch (error) {
@@ -368,84 +307,33 @@ export async function processPdfExtraction(message: any, sendResponse: Function)
 }
 
 /**
- * Process PDF data using unified extraction approach
- * @param pdfData PDF data as ArrayBuffer or string
- * @param language Language code
+ * Process PDF data using unified extraction approach with offscreen document
+ * @param pdfData PDF data as ArrayBuffer
+ * @param language Language code (en, hu, or auto for detection)
  * @param userId Optional user ID for field extraction
  * @param extractFields Whether to extract fields
  * @returns Processing result with text and bill data
  */
 async function processPdfData(
-  pdfData: ArrayBuffer | string,
-  language: string = 'en',
+  pdfData: ArrayBuffer,
+  language: string = 'auto',
   userId?: string,
   extractFields: boolean = true
 ): Promise<any> {
   try {
-    console.log('Using direct unified PDF processing');
+    console.log('Processing PDF data with offscreen approach');
     
-    // Ensure we have ArrayBuffer data
-    const normalizedPdfData = typeof pdfData === 'string' 
-      ? base64ToArrayBuffer(pdfData) 
-      : pdfData;
+    // Run environment diagnostics
+    const envDiagnostics = await diagnosePdfEnvironment();
+    console.log('PDF environment diagnostics:', envDiagnostics);
     
-    // Extract text and position data using unified method with robust error handling
-    const extractionResult = await extractTextFromPdfWithPosition(normalizedPdfData).catch(error => {
-      // Log the error with details for troubleshooting
-      diagnosePdfEnvironment(); // Just run diagnostics without parameters
-      console.error(`Error in PDF extraction: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      throw error;
-    });
+    // Get user field mappings if extracting fields and we have a user ID
+    let fieldMappings: Record<string, string | RegExp> = {};
     
-    // Process the extracted text to get bill data
-    const processedResult = await processExtractedText(
-      extractionResult.text,
-      language,
-      userId,
-      extractFields
-    );
-    
-    // Combine results
-    return {
-      success: true,
-      text: extractionResult.text,
-      billData: processedResult.billData,
-      positionalData: extractionResult.pages
-    };
-  } catch (error) {
-    console.error('Error processing PDF data:', error);
-    throw error;
-  }
-}
-
-/**
- * Process extracted text with user mappings if requested
- */
-async function processExtractedText(
-  text: string,
-  language: string = 'en',
-  userId?: string,
-  extractFields: boolean = true
-): Promise<any> {
-  // Only process fields if requested
-  if (!extractFields || !text) {
-    return {
-      success: true,
-      text
-    };
-  }
-  
-  try {
-    const supabase = await getSupabaseClient();
-    
-    // Result data that will be returned
-    let billData: Record<string, any> = {};
-    
-    // Get user mappings if userId is provided
-    if (userId) {
-      console.log(`Getting user field mappings for user ${userId}`);
+    if (extractFields && userId) {
+      const supabase = await getSupabaseClient();
       
-      // Query field mappings directly from field_mapping_view
+      // Query field mappings
       const { data: userMappings, error: mappingsError } = await supabase
         .from('field_mapping_view')
         .select('*')
@@ -455,51 +343,147 @@ async function processExtractedText(
       
       if (mappingsError) {
         console.error('Error fetching field mappings:', mappingsError);
-      }
-      
-      // If we got mappings, use them for extraction
-      if (userMappings && userMappings.length > 0) {
+      } else if (userMappings && userMappings.length > 0) {
         console.log(`Found ${userMappings.length} field mappings for extraction`);
         
-        try {
-          // Import the extraction module
-          const { extractBillDataWithUserMappings } = await import('../services/pdf/billFieldExtractor');
-          
-          // Extract bill data using mappings
-          billData = await extractBillDataWithUserMappings(text, userMappings, language);
-          
-          console.log('Successfully extracted field data using user mappings', billData);
-        } catch (extractionError) {
-          console.error('Error using user mappings for extraction:', extractionError);
-          // Fall back to default patterns
-          billData = await extractBillDataWithDefaultPatterns(text, language);
-        }
-      } else {
-        console.log('No user field mappings found, using default patterns');
-        // Use default patterns if no mappings
-        billData = await extractBillDataWithDefaultPatterns(text, language);
+        // Convert mappings to the format our extractor expects
+        userMappings.forEach(mapping => {
+          if (mapping.pattern) {
+            fieldMappings[mapping.field_name] = mapping.pattern;
+          }
+        });
       }
-    } else {
-      console.log('No user ID provided, using default patterns');
-      // No user ID, use default patterns
-      billData = await extractBillDataWithDefaultPatterns(text, language);
+    }
+    
+    // Extract text using the offscreen document approach
+    const extractionResult = await extractTextFromPdfWithPosition(pdfData, {
+      language,
+      includePosition: true,
+      shouldEarlyStop: extractFields,
+      fieldMappings
+    });
+    
+    if (!extractionResult.success) {
+      throw new Error(extractionResult.error || 'PDF extraction failed');
+    }
+    
+    // Process the extracted text to get bill data if requested
+    let billData: Record<string, any> = {};
+    if (extractFields && extractionResult.text) {
+      billData = await processExtractedText(
+        extractionResult.text,
+        language,
+        userId,
+        fieldMappings
+      );
     }
     
     return {
       success: true,
-      text,
-      billData
+      text: extractionResult.text,
+      pages: extractionResult.pages,
+      billData,
+      pagesProcessed: extractionResult.pagesProcessed,
+      earlyStop: extractionResult.earlyStop
     };
   } catch (error) {
-    console.error('Error processing extracted text:', error);
+    console.error('Error processing PDF data:', error);
     
-    // Return text but mark field extraction as failed
-    return {
-      success: true,
-      text,
-      fieldExtractionError: error instanceof Error ? error.message : 'Unknown error',
-      billData: null
-    };
+    // Make sure to clean up resources on error
+    await cleanupPdfResources().catch(cleanupError => {
+      console.warn('Error cleaning up PDF resources:', cleanupError);
+    });
+    
+    throw error;
+  }
+}
+
+/**
+ * Process extracted text with user mappings if requested
+ */
+async function processExtractedText(
+  text: string,
+  language: string = 'auto',
+  userId?: string,
+  fieldMappings?: Record<string, string | RegExp>
+): Promise<Record<string, any>> {
+  // Don't process if we don't have text
+  if (!text) {
+    console.log('No text to process for field extraction');
+    return {};
+  }
+  
+  try {
+    // Determine language if set to auto
+    let detectedLanguage = language;
+    if (language === 'auto') {
+      detectedLanguage = detectLanguage(text);
+      console.log(`Auto-detected language: ${detectedLanguage}`);
+    }
+    
+    // Result data that will be returned
+    let billData: Record<string, any> = {};
+    
+    // If we have user ID, use extractBillDataWithUserMappings
+    if (userId) {
+      const supabase = await getSupabaseClient();
+      
+      // Query field mappings directly from field_mapping_view if not already provided
+      if (!fieldMappings || Object.keys(fieldMappings).length === 0) {
+        const { data: userMappings, error: mappingsError } = await supabase
+          .from('field_mapping_view')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('is_enabled', true)
+          .order('display_order');
+        
+        if (mappingsError) {
+          console.error('Error fetching field mappings:', mappingsError);
+        } else if (userMappings && userMappings.length > 0) {
+          try {
+            // Extract bill data using user mappings
+            billData = await extractBillDataWithUserMappings(text, userMappings, detectedLanguage);
+            console.log('Successfully extracted field data using user mappings', billData);
+            return billData;
+          } catch (extractionError) {
+            console.error('Error using user mappings for extraction:', extractionError);
+            // Fall through to default patterns
+          }
+        }
+      } else {
+        // We already have field mappings
+        try {
+          // Convert the mappings to the format expected by extractBillDataWithUserMappings
+          const formattedMappings = Object.entries(fieldMappings).map(([field, pattern]) => ({
+            field_id: field,
+            field_name: field,
+            pattern: typeof pattern === 'string' ? pattern : pattern.source,
+            is_enabled: true,
+            display_order: 0
+          }));
+          
+          // Cast the formatted mappings to any to avoid TypeScript errors
+          // This is type-safe at runtime based on the billFieldExtractor implementation
+          billData = await extractBillDataWithUserMappings(
+            text, 
+            formattedMappings as any, 
+            detectedLanguage
+          );
+          console.log('Successfully extracted field data using provided mappings', billData);
+          return billData;
+        } catch (extractionError) {
+          console.error('Error using provided mappings for extraction:', extractionError);
+          // Fall through to default patterns
+        }
+      }
+    }
+    
+    // If we reach here, use default patterns
+    console.log('Using default patterns for extraction');
+    return await extractBillDataWithDefaultPatterns(text, detectedLanguage);
+  } catch (error) {
+    console.error('Error processing extracted text:', error);
+    return {}; // Return empty object on error
   }
 }
 
